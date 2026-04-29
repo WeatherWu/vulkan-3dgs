@@ -1,0 +1,63 @@
+#version 450
+
+// Bitonic Sort Compute Shader for Gaussian Depth Sorting
+// 用于高斯点云深度排序的双调排序算法
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// 输入：索引数组和对应的距离值
+layout(std430, binding = 0) buffer IndexBuffer {
+    uint indices[];
+};
+
+layout(std430, binding = 1) buffer DistanceBuffer {
+    float distances[];
+};
+
+// Uniform: 排序参数
+layout(push_constant) uniform SortParams {
+    uint count;      // 元素数量
+    uint stage;      // 当前阶段
+    uint substage;   // 当前子阶段
+} params;
+
+// Bitonic Sort 核心逻辑
+void main() {
+    uint globalIdx = gl_GlobalInvocationID.x;
+    
+    if (globalIdx >= params.count) return;
+    
+    // 计算配对元素的索引
+    uint pairOffset = params.substage;
+    uint indexInPair = globalIdx & (pairOffset - 1);
+    uint partnerIdx = globalIdx ^ pairOffset;
+    
+    if (partnerIdx >= params.count) return;
+    
+    // 确定排序方向（升序或降序）
+    bool ascending = ((params.stage & params.substage) != 0);
+    
+    // 获取当前元素和配对元素的距离
+    float distA = distances[globalIdx];
+    float distB = distances[partnerIdx];
+    
+    // 比较并交换（如果需要）
+    bool swap = false;
+    if (ascending) {
+        swap = (distA > distB);
+    } else {
+        swap = (distA < distB);
+    }
+    
+    if (swap) {
+        // 交换索引
+        uint tempIdx = indices[globalIdx];
+        indices[globalIdx] = indices[partnerIdx];
+        indices[partnerIdx] = tempIdx;
+        
+        // 交换距离值
+        float tempDist = distances[globalIdx];
+        distances[globalIdx] = distances[partnerIdx];
+        distances[partnerIdx] = tempDist;
+    }
+}
