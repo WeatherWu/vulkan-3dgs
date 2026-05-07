@@ -48,18 +48,14 @@ Application::~Application() {
 void Application::run() {
     LOG_INFO("Starting application main loop");
     
-    double last_time = glfwGetTime();
-    
     while (!window_->should_close() && running_) {
-        double current_time = glfwGetTime();
-        float delta_time = static_cast<float>(current_time - last_time);
-        last_time = current_time;
-        
-        window_->poll_events();
-        update(delta_time);
-        render();
-        window_->swap_buffers();
+        tick();
     }
+}
+
+void Application::tick() {
+    window_->poll_events();
+    render();
 }
 
 void Application::switchRenderMode(RenderMode mode) {
@@ -131,6 +127,7 @@ void Application::update(float delta_time) {
     projection_matrix_ = glm::perspective(glm::radians(45.0f), 
                                           1280.0f / 720.0f, 
                                           0.1f, 100.0f);
+    projection_matrix_[1][1] *= -1.0f;
 }
 
 void Application::render() {
@@ -143,7 +140,9 @@ void Application::render() {
         if (gsRenderer) {
             LOG_INFO("Setting render data with {} points", 
                      std::distance(current_model_->begin(), current_model_->end()));
-            gsRenderer->setRenderData(current_model_, view_matrix_, projection_matrix_);
+            gsRenderer->setRenderData(current_model_, view_matrix_, projection_matrix_, camera_);
+        } else {
+            LOG_WARN("Renderer is not a GaussianRenderer, skipping data setup");
         }
         
         LOG_INFO("Calling renderer_->render()");
@@ -164,6 +163,10 @@ void Application::setModel(const GaussianModel* model) {
 void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) {
     view_matrix_ = view;
     projection_matrix_ = projection;
+}
+
+void Application::setTrueCamera(const vk_gs::Camera& camera) {
+    camera_ = camera;
 }
 
 void Application::cleanup() {

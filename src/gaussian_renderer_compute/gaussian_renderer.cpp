@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <limits>
 
 namespace vk_gs {
 
@@ -151,44 +152,58 @@ void GaussianRenderer::render() {
     
     // 1. 等待上一帧完成
     vk::Result waitResult = device.waitForFences(1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
-    (void)waitResult;
+    if (waitResult != vk::Result::eSuccess) {
+        LOG_ERROR("waitForFences failed: %s", to_string(waitResult));
+        throw std::runtime_error("Failed to wait for fence!");
+    }
     
     // 2. 获取下一张交换链图像
     uint32_t imageIndex;
-    try {
-        vk::Result result = device.acquireNextImageKHR(swapchain_->getSwapchain(), UINT64_MAX, 
-                                                        imageAvailableSemaphores_[currentFrame_], nullptr, &imageIndex);
-        if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
+    vk::Result result = device.acquireNextImageKHR(swapchain_->getSwapchain(), UINT64_MAX, 
+                                                   imageAvailableSemaphores_[currentFrame_], nullptr, &imageIndex);
+    if (result != vk::Result::eSuccess){
+        if (result == vk::Result::eErrorOutOfDateKHR) {
+            LOG_WARN("Swapchain out of date, recreating");
+            recreateSwapchain(swapchain_->getExtent().width, swapchain_->getExtent().height);
+            return;
+        } else if (result != vk::Result::eSuboptimalKHR) {
+            LOG_ERROR("acquireNextImageKHR failed: %s", to_string(result));
             throw std::runtime_error("Failed to acquire swap chain image!");
+        } else {
+            LOG_INFO("Suboptimal swapchain detected, consider recreating");
         }
-    } catch (const vk::OutOfDateKHRError&) {
-        LOG_WARN("Swapchain out of date, skipping frame");
-        return;
     }
+    LOG_INFO("Acquired swap chain image successfully");
     
-    // 3. GPU排序（仅首帧或点数变化时执行）
+    // 3. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
     uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
     
-    bool needResort = !gpu_sort_completed_ || 
-                      currentPointCount != last_sorted_point_count_;
+    bool needResort = !gpu_sort_completed_ ||
+                      currentPointCount != last_sorted_point_count_ ||
+                      glm::length(camera_.get_position() - last_camera_position_) > 1e-4f;
     
     if (needResort) {
         sortGaussiansByDepthGPU();
         
         gpu_sort_completed_ = true;
         last_sorted_point_count_ = currentPointCount;
+        last_camera_position_ = camera_.get_position();
     }
+    LOG_INFO("GPU sorting  successfully");
     
     // 4. 更新Instance Buffer（仅在首次或模型变化时重建）
     if (!instanceBuffer_.getBuffer()) {
         updateVertexBuffer();
     }
+    LOG_INFO("Vertex buffer updated successfully");
     
-    // 5. 更新Uniform Buffer
-    updateUniformBuffer(ubo_.view, ubo_.projection);
+    // 5. 更新Uniform Buffer（每帧更新）
+    updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection);
+    LOG_INFO("Uniform buffer updated successfully");
     
     // 6. 记录渲染命令
     recordCommandBuffer(imageIndex);
+    LOG_INFO("Command buffer recorded successfully");
     
     // 7. 提交图形命令
     vk::SubmitInfo submitInfo{};
@@ -209,6 +224,7 @@ void GaussianRenderer::render() {
     device.resetFences(inFlightFences_[currentFrame_]);
     
     context.getDevice().getGraphicsQueue().submit(submitInfo, inFlightFences_[currentFrame_]);
+    LOG_INFO("Command buffer submitted successfully");
     
     // 8. 呈现图像
     vk::PresentInfoKHR presentInfo{};
@@ -220,12 +236,11 @@ void GaussianRenderer::render() {
                .setPSwapchains(swapchains);
     presentInfo.setPImageIndices(&imageIndex);
     
-    try {
-        vk::Result presentResult = context.getDevice().getPresentQueue().presentKHR(presentInfo);
-        (void)presentResult;
-    } catch (...) {
+    vk::Result presentResult = context.getDevice().getPresentQueue().presentKHR(presentInfo);
+    if (presentResult != vk::Result::eSuccess) {
         LOG_ERROR("Failed to present image");
     }
+    LOG_INFO("Image presented successfully");
     
     // 9. 切换到下一帧
     currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -254,12 +269,23 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
 }
 
-void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection) {
+void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera) {
     current_model_ = model;
-    ubo_.view = view;
-    ubo_.projection = projection;
-    ubo_.cameraPosition = glm::vec3(view[3][0], view[3][1], view[3][2]);
-    ubo_.time = static_cast<float>(glfwGetTime());
+    camera_ = camera;
+    for (uint32_t i = 0u; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        ubo_[i].view = view;
+        ubo_[i].projection = projection;
+        
+        // 从视图矩阵正确提取相机世界空间位置
+        // 视图矩阵 V = [R | t]，其中 t = -R * cameraPos
+        // 所以 cameraPos = -R^T * t
+        glm::mat3 rotation = glm::mat3(view);
+        glm::vec3 translation = glm::vec3(view[3][0], view[3][1], view[3][2]);
+        ubo_[i].cameraPositionTime = glm::vec4(
+            -glm::transpose(rotation) * translation,
+            static_cast<float>(glfwGetTime())
+        );
+    }
 }
 
 void GaussianRenderer::createBuffers() {
@@ -273,21 +299,25 @@ void GaussianRenderer::createBuffers() {
         context.getDevice().getQueueFamilyIndices().graphicsIndex.value());
     
     // 1. 创建主 Uniform Buffer（每个帧一个）
-    UniformBufferObject initialUBO{};
-    uniformBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                         &initialUBO, sizeof(UniformBufferObject),
-                         vk::BufferUsageFlagBits::eUniformBuffer,
-                         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    if (!uniformBuffer_.getBuffer()) {
+        UniformBufferObject initialUBO{};
+        uniformBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                             &initialUBO, sizeof(UniformBufferObject),
+                             vk::BufferUsageFlagBits::eUniformBuffer,
+                             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    }
     
     // 2. 创建屏幕信息 Uniform Buffer
-    struct ScreenInfoUBO {
-        glm::vec2 screenSize;
-        float padding[2]; // 填充到16字节对齐
-    } initialScreenInfo{};
-    screenInfoBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                            &initialScreenInfo, sizeof(ScreenInfoUBO),
-                            vk::BufferUsageFlagBits::eUniformBuffer,
-                            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    if (!screenInfoBuffer_.getBuffer()) {
+        struct ScreenInfoUBO {
+            glm::vec2 screenSize;
+            float padding[2]; // 填充到16字节对齐
+        } initialScreenInfo{};
+        screenInfoBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                                &initialScreenInfo, sizeof(ScreenInfoUBO),
+                                vk::BufferUsageFlagBits::eUniformBuffer,
+                                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    }
     
     LOG_INFO("Gaussian Jacobian projection buffers created successfully");
 }
@@ -339,7 +369,7 @@ void GaussianRenderer::createDescriptorSets() {
     poolSizes[0].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(MAX_FRAMES_IN_FLIGHT * 2);  // Graphics需要2个UBO
     poolSizes[1].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(2 * MAX_FRAMES_IN_FLIGHT); // Compute需要2个SSBO
+                .setDescriptorCount(4 * MAX_FRAMES_IN_FLIGHT); // Compute需要2个SSBO + Graphics需要2个SSBO
     
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
@@ -375,39 +405,84 @@ void GaussianRenderer::createDescriptorSets() {
 void GaussianRenderer::updateDescriptorSets() {
     auto device = getDevice();
     
-    // 为每个 Graphics Descriptor Set 更新 Uniform Buffer 绑定
+    // 为每个 Graphics Descriptor Set 更新 Uniform Buffer 和 SSBO 绑定
     for (size_t i = 0; i < descriptorSets_.size(); ++i) {
-        std::array<vk::WriteDescriptorSet, 2> writeDescriptorSets{};
+        std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
+        writeDescriptorSets.reserve(4);
         
         // Binding 0: 主Uniform Buffer (View/Projection/Camera)
         vk::DescriptorBufferInfo uboInfo{};
-        uboInfo.setBuffer(uniformBuffer_.getBuffer())
-               .setOffset(0)
-               .setRange(sizeof(UniformBufferObject));
-        
-        writeDescriptorSets[0].setDstSet(descriptorSets_[i])
-                              .setDstBinding(0)
-                              .setDstArrayElement(0)
-                              .setDescriptorCount(1)
-                              .setDescriptorType(vk::DescriptorType::eUniformBuffer)
-                              .setPBufferInfo(&uboInfo);
+        if (uniformBuffer_.getBuffer()) {
+            uboInfo.setBuffer(uniformBuffer_.getBuffer())
+                   .setOffset(0)
+                   .setRange(sizeof(UniformBufferObject));
+            
+            vk::WriteDescriptorSet write{};
+            write.setDstSet(descriptorSets_[i])
+                 .setDstBinding(0)
+                 .setDstArrayElement(0)
+                 .setDescriptorCount(1)
+                 .setDescriptorType(vk::DescriptorType::eUniformBuffer)
+                 .setPBufferInfo(&uboInfo);
+            writeDescriptorSets.push_back(write);
+        }
         
         // Binding 1: 屏幕信息Uniform Buffer
         vk::DescriptorBufferInfo screenInfo{};
-        screenInfo.setBuffer(screenInfoBuffer_.getBuffer())
-                  .setOffset(0)
-                  .setRange(sizeof(glm::vec2) + sizeof(float) * 2); // screenSize + padding
+        if (screenInfoBuffer_.getBuffer()) {
+            screenInfo.setBuffer(screenInfoBuffer_.getBuffer())
+                      .setOffset(0)
+                      .setRange(sizeof(glm::vec2) + sizeof(float) * 2); // screenSize + padding
+            
+            vk::WriteDescriptorSet write{};
+            write.setDstSet(descriptorSets_[i])
+                 .setDstBinding(1)
+                 .setDstArrayElement(0)
+                 .setDescriptorCount(1)
+                 .setDescriptorType(vk::DescriptorType::eUniformBuffer)
+                 .setPBufferInfo(&screenInfo);
+            writeDescriptorSets.push_back(write);
+        }
         
-        writeDescriptorSets[1].setDstSet(descriptorSets_[i])
-                              .setDstBinding(1)
-                              .setDstArrayElement(0)
-                              .setDescriptorCount(1)
-                              .setDescriptorType(vk::DescriptorType::eUniformBuffer)
-                              .setPBufferInfo(&screenInfo);
+        // Binding 2: 高斯实例数据 SSBO
+        vk::DescriptorBufferInfo instanceSSBO{};
+        if (instanceBuffer_.getBuffer()) {
+            instanceSSBO.setBuffer(instanceBuffer_.getBuffer())
+                        .setOffset(0)
+                        .setRange(VK_WHOLE_SIZE);
+            
+            vk::WriteDescriptorSet write{};
+            write.setDstSet(descriptorSets_[i])
+                 .setDstBinding(2)
+                 .setDstArrayElement(0)
+                 .setDescriptorCount(1)
+                 .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+                 .setPBufferInfo(&instanceSSBO);
+            writeDescriptorSets.push_back(write);
+        }
+
+        // Binding 3: 排序后的实例索引 SSBO
+        vk::DescriptorBufferInfo sortedIndexSSBO{};
+        if (gpuIndexBuffer_.getBuffer()) {
+            sortedIndexSSBO.setBuffer(gpuIndexBuffer_.getBuffer())
+                           .setOffset(0)
+                           .setRange(VK_WHOLE_SIZE);
+            
+            vk::WriteDescriptorSet write{};
+            write.setDstSet(descriptorSets_[i])
+                 .setDstBinding(3)
+                 .setDstArrayElement(0)
+                 .setDescriptorCount(1)
+                 .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+                 .setPBufferInfo(&sortedIndexSSBO);
+            writeDescriptorSets.push_back(write);
+        }
         
-        device.updateDescriptorSets(static_cast<uint32_t>(writeDescriptorSets.size()), 
-                                   writeDescriptorSets.data(), 
-                                   0, nullptr);
+        if (!writeDescriptorSets.empty()) {
+            device.updateDescriptorSets(static_cast<uint32_t>(writeDescriptorSets.size()), 
+                                       writeDescriptorSets.data(), 
+                                       0, nullptr);
+        }
     }
     
     // 为每个 Compute Descriptor Set 更新 Storage Buffer 绑定
@@ -445,7 +520,7 @@ void GaussianRenderer::updateDescriptorSets() {
                                    0, nullptr);
     }
     
-    LOG_INFO("Descriptor sets updated (Graphics UBOs: {}, Compute SSBOs: {})", 
+    LOG_INFO("Descriptor sets updated (Graphics UBOs+SSBO: {}, Compute SSBOs: {})", 
              descriptorSets_.size(), computeDescriptorSets_.size());
 }
 
@@ -461,7 +536,7 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     LOG_DEBUG("Sorting {} points", pointCount);
     
     // 1. 计算每个点到相机的距离
-    computeDistances(ubo_.cameraPosition);
+    computeDistances(glm::vec3(ubo_[currentFrame_].cameraPositionTime));
     
     // 2. 执行 Bitonic Sort（需要元素数量是 2 的幂次）
     uint32_t paddedCount = 1;
@@ -480,6 +555,7 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     // 优化：批量记录所有dispatch到单个Command Buffer，减少同步开销
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    computeCommandBuffer_.reset();
     computeCommandBuffer_.begin(beginInfo);
     
     // 绑定Compute Pipeline（只需绑定一次）
@@ -498,7 +574,7 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
         );
     }
     
-    for (uint32_t stage = 1; stage <= paddedCount; stage *= 2) {
+    for (uint32_t stage = 2; stage <= paddedCount; stage *= 2) {
         for (uint32_t substage = stage / 2; substage > 0; substage /= 2) {
             // 设置Push Constants
             struct PushConstants {
@@ -507,7 +583,7 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
                 uint32_t substage;
             } pushConstants;
             
-            pushConstants.count = pointCount;
+            pushConstants.count = paddedCount;
             pushConstants.stage = stage;
             pushConstants.substage = substage;
             
@@ -518,13 +594,13 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
             );
             
             // 分派计算任务
-            uint32_t workgroupCount = (pointCount + 255) / 256;
+            uint32_t workgroupCount = (paddedCount + 255) / 256;
             computeCommandBuffer_.dispatch(workgroupCount, 1, 1);
             
             // 添加内存屏障，确保当前dispatch完成后再执行下一个
             vk::MemoryBarrier memoryBarrier{};
             memoryBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
-                        .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+                        .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
             
             computeCommandBuffer_.pipelineBarrier(
                 vk::PipelineStageFlagBits::eComputeShader,
@@ -589,45 +665,42 @@ void GaussianRenderer::computeDistances(const glm::vec3& cameraPosition) {
         paddedCount *= 2;
     }
     
-    if (!gpuIndexBuffer_.getBuffer()) {
-        // 创建初始索引数组（使用paddedCount大小）
-        std::vector<uint32_t> initialIndices(paddedCount);
-        for (uint32_t i = 0; i < pointCount; ++i) {
-            initialIndices[i] = i;
-        }
-        // 填充剩余部分为无效值
-        for (uint32_t i = pointCount; i < paddedCount; ++i) {
-            initialIndices[i] = 0xFFFFFFFF;
-        }
-        
-        gpuIndexBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                              initialIndices.data(),
-                              initialIndices.size() * sizeof(uint32_t),
-                              vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
-                              vk::MemoryPropertyFlagBits::eDeviceLocal);
+    // 每次重排前重置索引和深度数据，避免沿用上一帧已排序的距离。
+    gpuIndexBuffer_.cleanup();
+    gpuDistanceBuffer_.cleanup();
+
+    std::vector<uint32_t> initialIndices(paddedCount);
+    for (uint32_t i = 0; i < pointCount; ++i) {
+        initialIndices[i] = i;
+    }
+    for (uint32_t i = pointCount; i < paddedCount; ++i) {
+        initialIndices[i] = 0xFFFFFFFF;
     }
     
-    // 计算并创建距离数组（只在首次创建时）
-    if (!gpuDistanceBuffer_.getBuffer()) {
-        std::vector<float> distances(paddedCount);
-        uint32_t idx = 0;
-        for (const auto& point : *current_model_) {
-            distances[idx++] = glm::length(point.position - cameraPosition);
-        }
-        // 填充剩余部分为最大值（确保排序到末尾）
-        for (uint32_t i = pointCount; i < paddedCount; ++i) {
-            distances[i] = std::numeric_limits<float>::max();
-        }
-        
-        gpuDistanceBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                                 distances.data(),
-                                 distances.size() * sizeof(float),
-                                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
-                                 vk::MemoryPropertyFlagBits::eDeviceLocal);
-        
-        // 更新 Descriptor Set（只在首次创建时）
-        updateDescriptorSets();
+    gpuIndexBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                          initialIndices.data(),
+                          initialIndices.size() * sizeof(uint32_t),
+                          vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+                          vk::MemoryPropertyFlagBits::eDeviceLocal);
+    
+    std::vector<float> distances(paddedCount);
+    uint32_t idx = 0;
+    glm::vec3 cameraForward = glm::normalize(camera_.get_front());
+    for (const auto& point : *current_model_) {
+        // 透明混合需要沿视线方向的深度，不是到相机的欧氏距离。
+        distances[idx++] = glm::dot(point.position - cameraPosition, cameraForward);
     }
+    for (uint32_t i = pointCount; i < paddedCount; ++i) {
+        distances[i] = -std::numeric_limits<float>::infinity();
+    }
+    
+    gpuDistanceBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                             distances.data(),
+                             distances.size() * sizeof(float),
+                             vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+                             vk::MemoryPropertyFlagBits::eDeviceLocal);
+    
+    updateDescriptorSets();
 }
 
 void GaussianRenderer::updateVertexBuffer() {
@@ -642,48 +715,65 @@ void GaussianRenderer::updateVertexBuffer() {
     uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().transferIndex.value_or(
         context.getDevice().getQueueFamilyIndices().graphicsIndex.value());
     
-    // 构建实例数据数组
-    std::vector<float> instanceData;
-    uint32_t pointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
-    instanceData.reserve(pointCount * 14); // 每个实例14个float
+    // 构建实例数据数组（SSBO格式 - 包含完整SH系数）
+    struct alignas(16) GaussianInstanceData {
+        glm::vec4 position;     // xyz: position
+        glm::vec4 scale;        // xyz: scale
+        glm::vec4 rotation;     // xyzw: quaternion
+        
+        // 球谐函数系数（完整3阶SH）
+        glm::vec4 sh0_alpha;    // xyz: DC项, w: alpha
+        glm::vec4 sh1[3];       // xyz: 1阶SH - 3个基函数
+        glm::vec4 sh2[5];       // xyz: 2阶SH - 5个基函数
+        glm::vec4 sh3[7];       // xyz: 3阶SH - 7个基函数
+    };
+    static_assert(sizeof(GaussianInstanceData) == sizeof(glm::vec4) * 19,
+                  "GaussianInstanceData must match the GLSL std430 vec4 layout");
     
+    uint32_t pointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
+    std::vector<GaussianInstanceData> instanceData(pointCount);
+    
+    size_t idx = 0;
     for (const auto& point : *current_model_) {
-        // position (3)
-        instanceData.push_back(point.position.x);
-        instanceData.push_back(point.position.y);
-        instanceData.push_back(point.position.z);
+        instanceData[idx].position = glm::vec4(point.position, 0.0f);
+        instanceData[idx].scale = glm::vec4(point.scale, 0.0f);
+        instanceData[idx].rotation = glm::vec4(
+            point.rotation.x,
+            point.rotation.y,
+            point.rotation.z,
+            point.rotation.w
+        );
         
-        // scale (3)
-        instanceData.push_back(point.scale.x);
-        instanceData.push_back(point.scale.y);
-        instanceData.push_back(point.scale.z);
-        
-        // rotation quaternion (4): x, y, z, w
-        instanceData.push_back(point.rotation.x);
-        instanceData.push_back(point.rotation.y);
-        instanceData.push_back(point.rotation.z);
-        instanceData.push_back(point.rotation.w);
-        
-        // color from SH0 (3)
-        instanceData.push_back(point.color.sh0.x);
-        instanceData.push_back(point.color.sh0.y);
-        instanceData.push_back(point.color.sh0.z);
-        
-        // alpha (1)
-        instanceData.push_back(point.alpha);
+        // 复制完整的SH系数
+        instanceData[idx].sh0_alpha = glm::vec4(point.color.sh0, point.alpha);
+        for (int i = 0; i < 3; ++i) {
+            instanceData[idx].sh1[i] = glm::vec4(point.color.sh1[i], 0.0f);
+        }
+        for (int i = 0; i < 5; ++i) {
+            instanceData[idx].sh2[i] = glm::vec4(point.color.sh2[i], 0.0f);
+        }
+        for (int i = 0; i < 7; ++i) {
+            instanceData[idx].sh3[i] = glm::vec4(point.color.sh3[i], 0.0f);
+        }
+        ++idx;
     }
     
-    // 创建或更新实例缓冲区
+    // 创建或更新实例缓冲区（SSBO）
     if (!instanceBuffer_.getBuffer()) {
+        size_t bufferSize = instanceData.size() * sizeof(GaussianInstanceData);
         instanceBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
                               instanceData.data(),
-                              instanceData.size() * sizeof(float),
-                              vk::BufferUsageFlagBits::eVertexBuffer,
+                              bufferSize,
+                              vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
                               vk::MemoryPropertyFlagBits::eDeviceLocal);
-        LOG_INFO("Created instance buffer with {} instances", pointCount);
+        LOG_INFO("Created instance SSBO with {} instances ({} bytes, {:.2f} MB)", 
+                 pointCount, bufferSize, bufferSize / (1024.0f * 1024.0f));
+        
+        // 首次创建后需要更新Descriptor Set
+        updateDescriptorSets();
     } else {
         // TODO: 实现动态更新逻辑（使用 staging buffer）
-        LOG_WARN("Instance buffer update not yet implemented, using initial data");
+        LOG_WARN("Instance SSBO update not yet implemented, using initial data");
     }
 }
 
@@ -691,24 +781,34 @@ void GaussianRenderer::updateUniformBuffer(const glm::mat4& view, const glm::mat
     auto device = getDevice();
     
     // 1. 更新主Uniform Buffer
-    ubo_.view = view;
-    ubo_.projection = projection;
-    ubo_.time = static_cast<float>(glfwGetTime());
+    ubo_[currentFrame_].view = view;
+    ubo_[currentFrame_].projection = projection;
+    ubo_[currentFrame_].cameraPositionTime = glm::vec4(
+        camera_.get_position(),
+        static_cast<float>(glfwGetTime())
+    );
     
-    // 更新屏幕分辨率
     auto extent = swapchain_->getExtent();
-    ubo_.screenSize = glm::vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+    ubo_[currentFrame_].focal = glm::vec4(
+        0.5f * static_cast<float>(extent.width) * projection[0][0],
+        0.5f * static_cast<float>(extent.height) * projection[1][1],
+        static_cast<float>(extent.width),
+        static_cast<float>(extent.height)
+    );
+    
+    LOG_DEBUG("Pixel focal lengths: fx={:.2f}, fy={:.2f}, screen={}x{}", 
+              ubo_[currentFrame_].focal.x, ubo_[currentFrame_].focal.y, extent.width, extent.height);
     
     void* data = device.mapMemory(uniformBuffer_.getMemory(), 0, sizeof(UniformBufferObject));
-    std::memcpy(data, &ubo_, sizeof(UniformBufferObject));
+    std::memcpy(data, &ubo_[currentFrame_], sizeof(UniformBufferObject));
     device.unmapMemory(uniformBuffer_.getMemory());
     
-    // 2. 更新屏幕信息Uniform Buffer
+    // 2. 更新屏幕信息Uniform Buffer（用于片段着色器）
     struct ScreenInfoUBO {
         glm::vec2 screenSize;
         float padding[2];
     } screenInfo{};
-    screenInfo.screenSize = ubo_.screenSize;
+    screenInfo.screenSize = glm::vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
     
     data = device.mapMemory(screenInfoBuffer_.getMemory(), 0, sizeof(ScreenInfoUBO));
     std::memcpy(data, &screenInfo, sizeof(ScreenInfoUBO));
@@ -723,6 +823,20 @@ void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
     commandBuffer.begin(beginInfo);{
+        if (gpuIndexBuffer_.getBuffer()) {
+            vk::MemoryBarrier sortedIndexBarrier{};
+            sortedIndexBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
+                              .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+
+            commandBuffer.pipelineBarrier(
+                vk::PipelineStageFlagBits::eComputeShader,
+                vk::PipelineStageFlagBits::eVertexShader,
+                vk::DependencyFlagBits{},
+                1, &sortedIndexBarrier,
+                0, nullptr,
+                0, nullptr
+            );
+        }
         
         // 开始渲染通道
         vk::ClearValue clearColor{ vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}) };
@@ -749,13 +863,10 @@ void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
             // 绑定图形管线
             commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_->getPipeline());
             
-            // 绑定顶点缓冲区（Binding 0: 四边形顶点，Binding 1: 实例数据）
-            std::array<vk::Buffer, 2> vertexBuffers = {
-                pipeline_->getQuadVertexBuffer(),
-                instanceBuffer_.getBuffer()
-            };
-            std::array<vk::DeviceSize, 2> offsets = {0, 0};
-            commandBuffer.bindVertexBuffers(0, 2, vertexBuffers.data(), offsets.data());
+            // 绑定顶点缓冲区（只绑定四边形顶点，实例数据通过SSBO访问）
+            vk::Buffer vertexBuffers[] = { pipeline_->getQuadVertexBuffer() };
+            vk::DeviceSize offsets[] = { 0 };
+            commandBuffer.bindVertexBuffers(0, 1, vertexBuffers, offsets);
             
             // 绑定索引缓冲区
             commandBuffer.bindIndexBuffer(pipeline_->getQuadIndexBuffer(), 0, vk::IndexType::eUint16);

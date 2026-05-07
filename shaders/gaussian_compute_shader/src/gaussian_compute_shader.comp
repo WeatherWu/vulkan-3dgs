@@ -28,14 +28,12 @@ void main() {
     if (globalIdx >= params.count) return;
     
     // 计算配对元素的索引
-    uint pairOffset = params.substage;
-    uint indexInPair = globalIdx & (pairOffset - 1);
-    uint partnerIdx = globalIdx ^ pairOffset;
+    uint partnerIdx = globalIdx ^ params.substage;
     
-    if (partnerIdx >= params.count) return;
+    if (partnerIdx >= params.count || partnerIdx <= globalIdx) return;
     
-    // 确定排序方向（升序或降序）
-    bool ascending = ((params.stage & params.substage) != 0);
+    // 双调排序阶段内交替方向，最终整体为按距离降序（远到近）。
+    bool descending = ((globalIdx & params.stage) == 0);
     
     // 获取当前元素和配对元素的距离
     float distA = distances[globalIdx];
@@ -43,11 +41,7 @@ void main() {
     
     // 比较并交换（如果需要）
     bool swap = false;
-    if (ascending) {
-        swap = (distA > distB);
-    } else {
-        swap = (distA < distB);
-    }
+    swap = descending ? (distA < distB) : (distA > distB);
     
     if (swap) {
         // 交换索引

@@ -14,7 +14,7 @@ public:
     // 位置和方向设置
     void set_position(const glm::vec3& position) { position_ = position; }
     void set_target(const glm::vec3& target);
-    void set_up(const glm::vec3& up) { up_ = up; }
+    void set_up(const glm::vec3& up);
     
     // 欧拉角设置
     void set_yaw(float yaw) { yaw_ = yaw; }
@@ -32,8 +32,8 @@ public:
     
     // 获取矩阵
     glm::mat4 get_view_matrix() const;
-    glm::mat4 get_projection_matrix(float aspect_ratio, float fov = 45.0f, 
-                                   float near_plane = 0.1f, float far_plane = 100.0f) const;
+    glm::mat4 get_projection_matrix(float aspect_ratio, float fov, 
+                                   float near_plane = 0.1f, float far_plane = 100.0f);
     
     // 获取属性
     const glm::vec3& get_position() const { return position_; }
@@ -42,6 +42,7 @@ public:
     const glm::vec3& get_up() const { return up_; }
     float get_yaw() const { return yaw_; }
     float get_pitch() const { return pitch_; }
+    float get_fov() const { return fov_; }
     
 private:
     void update_vectors();
@@ -57,6 +58,8 @@ private:
     
     float movement_speed_ = 2.5f;
     float mouse_sensitivity_ = 0.1f;
+
+    float fov_ = 45.0f;
 };
 
 } // namespace vk_gs

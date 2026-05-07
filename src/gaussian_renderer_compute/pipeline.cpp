@@ -117,48 +117,17 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
                  .setStride(sizeof(float) * 2)  // vec2 quadVertex
                  .setInputRate(vk::VertexInputRate::eVertex);
     
-    // Binding 1: 实例数据（每个高斯点一个实例）
-    vk::VertexInputBindingDescription instanceBinding{};
-    instanceBinding.setBinding(1)
-                   .setStride(sizeof(float) * 14) // position(3) + scale(3) + rotation(4) + color(3) + alpha(1)
-                   .setInputRate(vk::VertexInputRate::eInstance);
-
-    std::array<vk::VertexInputBindingDescription, 2> bindings = {vertexBinding, instanceBinding};
+    std::array<vk::VertexInputBindingDescription, 1> bindings = {vertexBinding};
     
     // === 顶点属性描述 ===
-    std::array<vk::VertexInputAttributeDescription, 6> attributes{};
+    // 只保留四边形顶点的属性，移除所有实例数据属性
+    std::array<vk::VertexInputAttributeDescription, 1> attributes{};
     
     // Binding 0 的属性（四边形顶点）
     attributes[0].setBinding(0)
                  .setLocation(0)
                  .setFormat(vk::Format::eR32G32Sfloat)  // vec2 quadVertex
                  .setOffset(0);
-    
-    // Binding 1 的属性（实例数据）
-    attributes[1].setBinding(1)
-                 .setLocation(1)
-                 .setFormat(vk::Format::eR32G32B32Sfloat) // vec3 instancePosition
-                 .setOffset(0);
-    
-    attributes[2].setBinding(1)
-                 .setLocation(2)
-                 .setFormat(vk::Format::eR32G32B32Sfloat) // vec3 instanceScale
-                 .setOffset(sizeof(float) * 3);
-    
-    attributes[3].setBinding(1)
-                 .setLocation(3)
-                 .setFormat(vk::Format::eR32G32B32A32Sfloat) // vec4 instanceRotation
-                 .setOffset(sizeof(float) * 6);
-    
-    attributes[4].setBinding(1)
-                 .setLocation(4)
-                 .setFormat(vk::Format::eR32G32B32Sfloat) // vec3 instanceColor
-                 .setOffset(sizeof(float) * 10);
-    
-    attributes[5].setBinding(1)
-                 .setLocation(5)
-                 .setFormat(vk::Format::eR32Sfloat) // float instanceAlpha
-                 .setOffset(sizeof(float) * 13);
     
     // 顶点输入状态
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
@@ -208,13 +177,13 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     multisampling.setSampleShadingEnable(false)
                  .setRasterizationSamples(vk::SampleCountFlagBits::e1);
     
-    // 深度模板状态（启用深度测试但禁用写入）
+    // 当前RenderPass没有深度附件，透明Gaussian也依赖远到近混合顺序。
     vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
-    depth_stencil.setDepthTestEnable(vk::True)
-                 .setDepthWriteEnable(vk::False) // 透明物体不写入深度缓冲
+    depth_stencil.setDepthTestEnable(vk::False)
+                 .setDepthWriteEnable(vk::False)
                  .setDepthCompareOp(vk::CompareOp::eLessOrEqual);
     
-    // 颜色混合状态（启用Alpha混合）
+    // 颜色混合状态（启用premultiplied alpha混合）
     vk::PipelineColorBlendAttachmentState color_blend_attachment{};
     color_blend_attachment.setColorWriteMask(
         vk::ColorComponentFlagBits::eR |
@@ -223,11 +192,11 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
         vk::ColorComponentFlagBits::eA
     );
     color_blend_attachment.setBlendEnable(vk::True);
-    color_blend_attachment.setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha);
+    color_blend_attachment.setSrcColorBlendFactor(vk::BlendFactor::eOne);
     color_blend_attachment.setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha);
     color_blend_attachment.setColorBlendOp(vk::BlendOp::eAdd);
     color_blend_attachment.setSrcAlphaBlendFactor(vk::BlendFactor::eOne);
-    color_blend_attachment.setDstAlphaBlendFactor(vk::BlendFactor::eZero);
+    color_blend_attachment.setDstAlphaBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha);
     color_blend_attachment.setAlphaBlendOp(vk::BlendOp::eAdd);
     
     vk::PipelineColorBlendStateCreateInfo color_blending{};
@@ -245,7 +214,7 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     dynamic_state.setDynamicStates(dynamic_states);
     
     // 管线布局（添加 Uniform Buffer Descriptor Set）
-    std::array<vk::DescriptorSetLayoutBinding, 2> descriptorBindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 4> descriptorBindings{};
     
     // Binding 0: 主Uniform Buffer (View/Projection等)
     descriptorBindings[0].setBinding(0)
@@ -258,6 +227,18 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
                .setDescriptorType(vk::DescriptorType::eUniformBuffer)
                .setDescriptorCount(1)
                .setStageFlags(vk::ShaderStageFlagBits::eFragment);
+    
+    // Binding 2: 高斯实例数据 SSBO
+    descriptorBindings[2].setBinding(2)
+               .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+               .setDescriptorCount(1)
+               .setStageFlags(vk::ShaderStageFlagBits::eVertex);
+
+    // Binding 3: GPU排序后的实例索引 SSBO
+    descriptorBindings[3].setBinding(3)
+               .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+               .setDescriptorCount(1)
+               .setStageFlags(vk::ShaderStageFlagBits::eVertex);
     
     vk::DescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.setBindingCount(static_cast<uint32_t>(descriptorBindings.size()))

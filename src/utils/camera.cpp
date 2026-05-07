@@ -21,6 +21,11 @@ void Camera::set_target(const glm::vec3& target) {
     update_vectors();
 }
 
+void Camera::set_up(const glm::vec3& up) {
+    world_up_ = glm::normalize(up);
+    update_vectors();
+}
+
 void Camera::move_forward(float distance) {
     position_ += front_ * distance * movement_speed_;
 }
@@ -50,8 +55,11 @@ glm::mat4 Camera::get_view_matrix() const {
 }
 
 glm::mat4 Camera::get_projection_matrix(float aspect_ratio, float fov, 
-                                       float near_plane, float far_plane) const {
-    return glm::perspective(glm::radians(fov), aspect_ratio, near_plane, far_plane);
+                                       float near_plane, float far_plane) {
+    fov_ = fov;
+    glm::mat4 projection = glm::perspective(glm::radians(fov_), aspect_ratio, near_plane, far_plane);
+    projection[1][1] *= -1.0f; // Vulkan framebuffer coordinates have inverted Y relative to GLM's OpenGL projection.
+    return projection;
 }
 
 void Camera::update_vectors() {

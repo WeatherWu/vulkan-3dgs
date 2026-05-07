@@ -11,6 +11,15 @@
 namespace vk_gs {
 
 // === SHColor实现 ===
+namespace {
+
+glm::vec3 restore3DGSColor(const glm::vec3& sh_color) {
+    // Match the standard 3DGS SH color restore: add 0.5 and clamp only the lower bound.
+    return glm::max(sh_color + glm::vec3(0.5f), glm::vec3(0.0f));
+}
+
+} // namespace
+
 glm::vec3 SHColor::getColor(const glm::vec3& view_direction) const {
     // 球谐函数评估（3阶SH，共16个基函数）
     // 参考: "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
@@ -37,7 +46,7 @@ glm::vec3 SHColor::getColor(const glm::vec3& view_direction) const {
     glm::vec3 result = sh0 * SH_C0;
     
     if (view_direction.x == 0.0f && view_direction.y == 0.0f && view_direction.z == 0.0f) {
-        return result;
+        return restore3DGSColor(result);
     }
     
     float x = view_direction.x;
@@ -67,7 +76,7 @@ glm::vec3 SHColor::getColor(const glm::vec3& view_direction) const {
         SH_C3[5] * z * (xx - yy) * sh3[5] +
         SH_C3[6] * x * (xx - 3.0f * yy) * sh3[6];
     
-    return result;
+    return restore3DGSColor(result);
 }
 
 // === 文件格式检测 ===
@@ -141,7 +150,10 @@ bool GaussianModel::loadFromPLY(const std::string& filename) {
     return true;
 }
 
-bool GaussianModel::parsePLYHeader(std::ifstream& file, uint32_t& vertex_count) const {
+bool GaussianModel::parsePLYHeader(std::ifstream& file, uint32_t& vertex_count) {
+    // 清空之前的属性列表
+    ply_properties_.clear();
+    
     // 读取并验证PLY魔术数字
     std::string line;
     std::getline(file, line);
@@ -191,8 +203,20 @@ bool GaussianModel::parsePLYHeader(std::ifstream& file, uint32_t& vertex_count) 
             if (element_name == "vertex" || element_name == "VERTEX") {
                 vertex_count = count;
             }
+        } else if (keyword == "property" || keyword == "PROPERTY") {
+            // 解析属性定义
+            std::string type, name;
+            iss >> type >> name;
+            
+            if (!name.empty()) {
+                PLYProperty prop;
+                prop.name = name;
+                prop.type = type;
+                ply_properties_.push_back(prop);
+                
+                LOG_DEBUG("Found property: {} ({})", name, type);
+            }
         }
-        // 可以添加更多属性解析逻辑
     }
     
     if (!header_end) {
@@ -205,66 +229,142 @@ bool GaussianModel::parsePLYHeader(std::ifstream& file, uint32_t& vertex_count) 
         return false;
     }
     
+    LOG_INFO("Parsed {} properties from PLY header", ply_properties_.size());
+    
     return true;
 }
 
 bool GaussianModel::parsePLYVertex(std::ifstream& file, GaussianPoint& point) const {
     // 3DGS PLY格式解析，包含完整的SH系数
-    // 属性顺序：
-    // x, y, z (位置)
-    // f_dc_0, f_dc_1, f_dc_2 (0阶SH系数)
-    // f_rest_0..f_rest_44 (1-3阶SH系数，45个系数)
-    // opacity (不透明度)
-    // scale_0, scale_1, scale_2 (缩放)
-    // rot_0, rot_1, rot_2, rot_3 (旋转四元数)
+    // 根据头部解析的属性列表动态读取和跳过数据
     
-    float x, y, z;
-    file.read(reinterpret_cast<char*>(&x), sizeof(float));
-    file.read(reinterpret_cast<char*>(&y), sizeof(float));
-    file.read(reinterpret_cast<char*>(&z), sizeof(float));
-    
-    point.position = glm::vec3(x, y, z);
-    
-    // 读取0阶SH系数 (DC项)
-    float f_dc[3];
-    file.read(reinterpret_cast<char*>(f_dc), 3 * sizeof(float));
-    point.color.sh0 = glm::vec3(f_dc[0], f_dc[1], f_dc[2]);
-    
-    // 读取1-3阶SH系数 (共45个系数: 3+5+7=15个基函数 × 3个颜色通道)
-    float f_rest[45];
-    file.read(reinterpret_cast<char*>(f_rest), 45 * sizeof(float));
-    
-    // 将SH系数按阶数和颜色通道组织
-    int idx = 0;
-    // 1阶SH (3个基函数 × 3通道)
-    for (int i = 0; i < 3; ++i) {
-        point.color.sh1[i] = glm::vec3(f_rest[idx++], f_rest[idx++], f_rest[idx++]);
-    }
-    // 2阶SH (5个基函数 × 3通道)
-    for (int i = 0; i < 5; ++i) {
-        point.color.sh2[i] = glm::vec3(f_rest[idx++], f_rest[idx++], f_rest[idx++]);
-    }
-    // 3阶SH (7个基函数 × 3通道)
-    for (int i = 0; i < 7; ++i) {
-        point.color.sh3[i] = glm::vec3(f_rest[idx++], f_rest[idx++], f_rest[idx++]);
+    if (ply_properties_.empty()) {
+        LOG_ERROR("No properties parsed from PLY header");
+        return false;
     }
     
-    // 读取不透明度并转换为alpha
-    float opacity;
-    file.read(reinterpret_cast<char*>(&opacity), sizeof(float));
-    point.alpha = 1.0f / (1.0f + std::exp(-opacity)); // sigmoid函数
-    
-    // 读取缩放（对数空间）
-    float scale[3];
-    file.read(reinterpret_cast<char*>(scale), 3 * sizeof(float));
-    point.scale.x = std::exp(scale[0]);
-    point.scale.y = std::exp(scale[1]);
-    point.scale.z = std::exp(scale[2]);
-    
-    // 读取旋转四元数
-    float rot[4];
-    file.read(reinterpret_cast<char*>(rot), 4 * sizeof(float));
-    point.rotation = glm::quat(rot[0], rot[1], rot[2], rot[3]);
+    // 遍历所有属性，只读取我们需要的，跳过不需要的
+    for (const auto& prop : ply_properties_) {
+        size_t prop_size = prop.getSize();
+        
+        // 位置坐标 (x, y, z)
+        if (prop.name == "x") {
+            float x;
+            file.read(reinterpret_cast<char*>(&x), prop_size);
+            point.position.x = x;
+        }
+        else if (prop.name == "y") {
+            float y;
+            file.read(reinterpret_cast<char*>(&y), prop_size);
+            point.position.y = y;
+        }
+        else if (prop.name == "z") {
+            float z;
+            file.read(reinterpret_cast<char*>(&z), prop_size);
+            point.position.z = z;
+        }
+        // 0阶SH系数 (DC项)
+        else if (prop.name == "f_dc_0") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.color.sh0.x = val;
+        }
+        else if (prop.name == "f_dc_1") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.color.sh0.y = val;
+        }
+        else if (prop.name == "f_dc_2") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.color.sh0.z = val;
+        }
+        // 1-3阶SH系数 (f_rest_0 到 f_rest_44)
+        else if (prop.name.find("f_rest_") == 0) {
+            // 提取索引号
+            int idx = std::stoi(prop.name.substr(7));
+            
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            
+            // 3DGS PLY 的 f_rest 通常按颜色通道优先展开：
+            // f_rest_0..14   -> R channel, SH bases 1..15
+            // f_rest_15..29  -> G channel, SH bases 1..15
+            // f_rest_30..44  -> B channel, SH bases 1..15
+            int channel = idx / 15;
+            int base_idx = idx % 15;
+            
+            if (base_idx < 3) {
+                // 1阶SH (3个基函数)
+                if (channel == 0) point.color.sh1[base_idx].x = val;
+                else if (channel == 1) point.color.sh1[base_idx].y = val;
+                else if (channel == 2) point.color.sh1[base_idx].z = val;
+            }
+            else if (base_idx < 8) {
+                // 2阶SH (5个基函数)
+                int sh2_idx = base_idx - 3;
+                if (channel == 0) point.color.sh2[sh2_idx].x = val;
+                else if (channel == 1) point.color.sh2[sh2_idx].y = val;
+                else if (channel == 2) point.color.sh2[sh2_idx].z = val;
+            }
+            else if (base_idx < 15) {
+                // 3阶SH (7个基函数)
+                int sh3_idx = base_idx - 8;
+                if (channel == 0) point.color.sh3[sh3_idx].x = val;
+                else if (channel == 1) point.color.sh3[sh3_idx].y = val;
+                else if (channel == 2) point.color.sh3[sh3_idx].z = val;
+            }
+        }
+        // 不透明度
+        else if (prop.name == "opacity") {
+            float opacity;
+            file.read(reinterpret_cast<char*>(&opacity), prop_size);
+            point.alpha = 1.0f / (1.0f + std::exp(-opacity)); // sigmoid函数
+        }
+        // 缩放（对数空间）
+        else if (prop.name == "scale_0") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.scale.x = std::exp(val);
+        }
+        else if (prop.name == "scale_1") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.scale.y = std::exp(val);
+        }
+        else if (prop.name == "scale_2") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.scale.z = std::exp(val);
+        }
+        // 旋转四元数
+        else if (prop.name == "rot_0" || prop.name == "q w") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.rotation.w = val;
+        }
+        else if (prop.name == "rot_1" || prop.name == "q x") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.rotation.x = val;
+        }
+        else if (prop.name == "rot_2" || prop.name == "q y") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.rotation.y = val;
+        }
+        else if (prop.name == "rot_3" || prop.name == "q z") {
+            float val;
+            file.read(reinterpret_cast<char*>(&val), prop_size);
+            point.rotation.z = val;
+        }
+        // 跳过不需要的属性（如法向量nx, ny, nz等）
+        else {
+            // 跳过该属性的数据
+            file.seekg(prop_size, std::ios::cur);
+            LOG_DEBUG("Skipping unused property: {}", prop.name);
+        }
+    }
     
     // 归一化四元数
     point.rotation = glm::normalize(point.rotation);
@@ -357,26 +457,19 @@ bool GaussianModel::exportToPLY(const std::string& filename) const {
         };
         file.write(reinterpret_cast<const char*>(f_dc), 3 * sizeof(float));
         
-        // 1-3阶SH系数 (45个系数)
+        // 1-3阶SH系数 (45个系数)，按3DGS通道优先顺序导出。
         float f_rest[45];
         int idx = 0;
-        // 1阶SH
-        for (int i = 0; i < 3; ++i) {
-            f_rest[idx++] = point.color.sh1[i].x;
-            f_rest[idx++] = point.color.sh1[i].y;
-            f_rest[idx++] = point.color.sh1[i].z;
-        }
-        // 2阶SH
-        for (int i = 0; i < 5; ++i) {
-            f_rest[idx++] = point.color.sh2[i].x;
-            f_rest[idx++] = point.color.sh2[i].y;
-            f_rest[idx++] = point.color.sh2[i].z;
-        }
-        // 3阶SH
-        for (int i = 0; i < 7; ++i) {
-            f_rest[idx++] = point.color.sh3[i].x;
-            f_rest[idx++] = point.color.sh3[i].y;
-            f_rest[idx++] = point.color.sh3[i].z;
+        for (int channel = 0; channel < 3; ++channel) {
+            for (int i = 0; i < 3; ++i) {
+                f_rest[idx++] = point.color.sh1[i][channel];
+            }
+            for (int i = 0; i < 5; ++i) {
+                f_rest[idx++] = point.color.sh2[i][channel];
+            }
+            for (int i = 0; i < 7; ++i) {
+                f_rest[idx++] = point.color.sh3[i][channel];
+            }
         }
         file.write(reinterpret_cast<const char*>(f_rest), 45 * sizeof(float));
         

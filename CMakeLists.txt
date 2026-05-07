@@ -30,10 +30,10 @@ include(FetchContent)
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
 
 # === 着色器编译配置 ===
-# 查找Vulkan GLSL编译器 (glslc)
-find_program(GLSLC_COMPILER glslc REQUIRED)
+# 查找Vulkan GLSL编译器 (glslangValidator)
+find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 
-# 定义着色器编译函数（无论是否找到glslc都定义）
+# 定义着色器编译函数（无论是否找到glslangValidator都定义）
 function(compile_shader SHADER_SRC SHADER_DST)
     get_filename_component(SHADER_NAME ${SHADER_SRC} NAME_WE)
     get_filename_component(SHADER_EXT ${SHADER_SRC} EXT)
@@ -59,7 +59,7 @@ function(compile_shader SHADER_SRC SHADER_DST)
     # 添加自定义命令编译着色器
     add_custom_command(
         OUTPUT ${SHADER_DST}
-        COMMAND ${GLSLC_COMPILER} ${SHADER_SRC} -o ${SHADER_DST} --target-env=vulkan1.2
+        COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER_SRC} -o ${SHADER_DST} --target-env vulkan1.2
         DEPENDS ${SHADER_SRC}
         COMMENT "Compiling shader ${SHADER_NAME}${SHADER_EXT} -> ${SHADER_NAME}.${SHADER_STAGE}.spv"
         VERBATIM
@@ -69,24 +69,14 @@ function(compile_shader SHADER_SRC SHADER_DST)
     set_source_files_properties(${SHADER_DST} PROPERTIES GENERATED TRUE)
 endfunction()
 
-if(NOT GLSLC_COMPILER)
-    message(WARNING "glslc not found! Shaders will not be compiled automatically.")
+if(NOT GLSLANG_VALIDATOR)
+    message(WARNING "glslangValidator not found! Shaders will not be compiled automatically.")
 else()
-    message(STATUS "Found glslc: ${GLSLC_COMPILER}")
+    message(STATUS "Found glslangValidator: ${GLSLANG_VALIDATOR}")
     
     # 编译图形着色器
     set(GRAPHICS_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/src")
     set(GRAPHICS_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/spv")
-    
-    # 根据构建类型设置着色器输出目录
-    if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        set(BUILD_SHADER_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE}/shaders")
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set(BUILD_SHADER_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG}/shaders")
-    else()
-        # 默认为Release
-        set(BUILD_SHADER_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE}/shaders")
-    endif()
     
     # 定义着色器文件列表（包含 Compute Shader）
     set(GRAPHICS_SHADERS
@@ -103,13 +93,10 @@ else()
         # 确定SPIR-V输出路径（源码目录）
         if(${SHADER_EXT} STREQUAL ".vert")
             set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${SHADER_NAME}.vert.spv")
-            set(BUILD_SPV "${BUILD_SHADER_DIR}/${SHADER_NAME}.vert.spv")
         elseif(${SHADER_EXT} STREQUAL ".frag")
             set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${SHADER_NAME}.frag.spv")
-            set(BUILD_SPV "${BUILD_SHADER_DIR}/${SHADER_NAME}.frag.spv")
         elseif(${SHADER_EXT} STREQUAL ".comp")
             set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${SHADER_NAME}.comp.spv")
-            set(BUILD_SPV "${BUILD_SHADER_DIR}/${SHADER_NAME}.comp.spv")
         else()
             continue()
         endif()
@@ -117,13 +104,15 @@ else()
         # 编译着色器到源码目录的spv文件夹
         compile_shader(${SHADER_SRC} ${SHADER_SPV})
         
-        # 添加自定义命令，在构建后复制SPV文件到构建目录
+        # 使用简化的生成器表达式动态确定目标目录（支持多配置生成器）
+        set(BUILD_SPV "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders/${SHADER_NAME}${SHADER_EXT}.spv")
+        
+        # 添加自定义命令，在构建后强制复制SPV文件到构建目录（确保使用最新版本）
         add_custom_command(
             OUTPUT ${BUILD_SPV}
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_SHADER_DIR}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SPV} ${BUILD_SPV}
             DEPENDS ${SHADER_SPV}
-            COMMENT "Copying shader ${SHADER_NAME}.spv to build directory"
             VERBATIM
         )
         
@@ -143,7 +132,7 @@ add_subdirectory(src)
 add_subdirectory(sandbox)
 
 # 确保在构建库之前编译着色器
-if(GLSLC_COMPILER)
+if(GLSLANG_VALIDATOR)
     # 注意：这里假设 src/CMakeLists.txt 中定义的目标名为 vk_gs_core
     # 如果目标名不同，请相应调整
     add_dependencies(vk_gs_core compile_shaders)
@@ -152,24 +141,11 @@ endif()
 # 安装配置
 install(DIRECTORY src/ DESTINATION include)
 
-# 安装着色器文件（根据构建类型）
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    install(DIRECTORY ${GRAPHICS_SHADER_SPV_DIR}/ 
-        DESTINATION bin/Release/shaders
-        FILES_MATCHING PATTERN "*.spv"
-    )
-elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    install(DIRECTORY ${GRAPHICS_SHADER_SPV_DIR}/ 
-        DESTINATION bin/Debug/shaders
-        FILES_MATCHING PATTERN "*.spv"
-    )
-else()
-    # 默认安装到Release
-    install(DIRECTORY ${GRAPHICS_SHADER_SPV_DIR}/ 
-        DESTINATION bin/Release/shaders
-        FILES_MATCHING PATTERN "*.spv"
-    )
-endif()
+# 安装着色器文件（使用生成器表达式支持多配置）
+install(DIRECTORY ${GRAPHICS_SHADER_SPV_DIR}/ 
+    DESTINATION bin/$<CONFIG>/shaders
+    FILES_MATCHING PATTERN "*.spv"
+)
 
 install(TARGETS vk_gs_core # vk_gs_demo
     RUNTIME DESTINATION bin

@@ -9,6 +9,20 @@
 
 namespace vk_gs {
 
+// PLY属性描述
+struct PLYProperty {
+    std::string name;
+    std::string type;  // "float", "int", "uchar" 等
+    
+    size_t getSize() const {
+        if (type == "float" || type == "double") return sizeof(float);
+        if (type == "int" || type == "uint") return sizeof(int32_t);
+        if (type == "uchar" || type == "char") return sizeof(uint8_t);
+        if (type == "short" || type == "ushort") return sizeof(int16_t);
+        return sizeof(float); // 默认
+    }
+};
+
 struct SHColor {
     glm::vec3 sh0;        // 0阶SH（基础颜色）
     glm::vec3 sh1[3];           // 1阶SH系数（3个方向）
@@ -193,8 +207,11 @@ private:
     }
     
     // 文件格式解析
-    bool parsePLYHeader(std::ifstream& file, uint32_t& vertex_count) const;
+    bool parsePLYHeader(std::ifstream& file, uint32_t& vertex_count);
     bool parsePLYVertex(std::ifstream& file, GaussianPoint& point) const;
+    
+    // PLY属性列表（在parsePLYHeader中填充）
+    std::vector<PLYProperty> ply_properties_;
 };
 
 } // namespace vk_gs

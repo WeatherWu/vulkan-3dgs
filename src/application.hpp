@@ -4,6 +4,8 @@
 #include <string>
 #include <glm/glm.hpp>
 
+#include "utils/camera.hpp"
+
 namespace vk_gs {
 
 class Window;
@@ -28,6 +30,9 @@ public:
     
     void run();
     
+    // 单帧更新（方便外部自由控制渲染循环）
+    void tick();
+    
     // 运行时切换渲染模式
     void switchRenderMode(RenderMode mode);
     RenderMode getCurrentRenderMode() const { return current_mode_; }
@@ -37,6 +42,8 @@ public:
     
     // 设置相机参数（由外部调用）
     void setCamera(const glm::mat4& view, const glm::mat4& projection);
+
+    void setTrueCamera(const vk_gs::Camera& camera);
     
 protected:
     virtual void initialize();
@@ -53,6 +60,8 @@ protected:
     const GaussianModel* current_model_ = nullptr;
     glm::mat4 view_matrix_ = glm::mat4(1.0f);
     glm::mat4 projection_matrix_ = glm::mat4(1.0f);
+
+    vk_gs::Camera camera_;
 
     RenderMode current_mode_;
     bool running_ = true;

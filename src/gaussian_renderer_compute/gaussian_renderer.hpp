@@ -11,6 +11,7 @@
 #include "vulkan/buffer.hpp"
 #include "vulkan/command_pool.hpp"
 #include "vulkan/compute_pipeline.hpp"
+#include "utils/camera.hpp"
 
 namespace vk_gs {
 
@@ -26,7 +27,7 @@ public:
     void onResize(uint32_t width, uint32_t height) override;
     
     // 设置当前要渲染的模型和相机参数
-    void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection);
+    void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera);
     
 private:
     void createBuffers();
@@ -55,7 +56,7 @@ private:
     std::unique_ptr<ComputePipeline> computePipeline_;
     
     // 高斯数据缓冲区
-    Buffer instanceBuffer_;    // 实例数据缓冲区（每个高斯点一个实例）
+    Buffer instanceBuffer_;    // 实例数据缓冲区（SSBO，存储所有高斯属性）
     Buffer uniformBuffer_;     // 主Uniform Buffer (View/Projection/Camera)
     Buffer screenInfoBuffer_;  // 屏幕信息Uniform Buffer (分辨率)
     Buffer gpuIndexBuffer_;    // GPU排序索引缓冲
@@ -84,17 +85,18 @@ private:
     // 同步对象配置（恢复为2以匹配Swapchain图像数）
     static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
     
-    // Uniform Buffer Object
+    // Uniform Buffer Object (必须与GLSL std140布局严格对齐)
     struct UniformBufferObject {
-        alignas(16) glm::mat4 view;
-        alignas(16) glm::mat4 projection;
-        alignas(16) glm::vec3 cameraPosition;
-        alignas(4) float time;
-        alignas(8) glm::vec2 screenSize; // 屏幕分辨率
-    } ubo_;
+        alignas(16) glm::mat4 view;              // offset 0, size 64
+        alignas(16) glm::mat4 projection;        // offset 64, size 64
+        alignas(16) glm::vec4 cameraPositionTime;// xyz: camera position, w: time
+        alignas(16) glm::vec4 focal;             // xy: pixel focal lengths, zw: screen size
+    } ubo_[MAX_FRAMES_IN_FLIGHT];
     
     // 当前渲染的高斯模型
     const GaussianModel* current_model_ = nullptr;
+
+    vk_gs::Camera camera_;
     
     // GPU排序缓存状态
     bool gpu_sort_completed_ = false;
