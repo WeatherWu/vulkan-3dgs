@@ -8,6 +8,21 @@
 
 namespace vk_gs {
 
+namespace {
+
+bool matrixChanged(const glm::mat4& lhs, const glm::mat4& rhs, float epsilon) {
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            if (std::abs(lhs[col][row] - rhs[col][row]) > epsilon) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 GaussianRenderer::GaussianRenderer() = default;
 
 GaussianRenderer::~GaussianRenderer() {
@@ -26,7 +41,10 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     // 初始化GPU排序缓存状态
     gpu_sort_completed_ = false;
     last_sorted_point_count_ = 0;
+    last_sorted_model_ = nullptr;
     last_camera_position_ = glm::vec3(0.0f);
+    last_view_matrix_ = glm::mat4(1.0f);
+    last_projection_matrix_ = glm::mat4(1.0f);
     
     // 1. 获取窗口尺寸
     int width, height;
@@ -44,7 +62,7 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     LOG_INFO("RenderPass created");
     
     // 4. 创建 Framebuffers（需要RenderPass）
-    swapchain_->createFramebuffers(device, renderPass_->getRenderPass());
+    swapchain_->createFramebuffers(device, renderPass_->getRenderPass(), RenderPass::DepthFormat);
     LOG_INFO("Framebuffers created");
     
     // 5. 创建 Pipeline
@@ -134,10 +152,12 @@ void GaussianRenderer::createComputePipeline() {
     // 创建 Descriptor Sets
     createDescriptorSets();
     
-    // 分配 Compute Command Buffer（优先使用专用计算队列）
+    // Keep sorting on the graphics queue. vkgs records its rank/sort/projection
+    // work in the graphics submission chain before drawing; using a separate
+    // compute queue here needs semaphore-based cross-queue memory dependencies,
+    // otherwise the sorted index buffer can be stale when the splat pass reads it.
     auto& context = Context::Instance();
-    uint32_t computeQueueFamily = context.getDevice().getQueueFamilyIndices().computeIndex.value_or(
-        context.getDevice().getQueueFamilyIndices().graphicsIndex.value());
+    uint32_t computeQueueFamily = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
     computeCommandPool_.create(device, computeQueueFamily, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     computeCommandBuffer_ = computeCommandPool_.allocateCommandBuffer();
     
@@ -178,16 +198,22 @@ void GaussianRenderer::render() {
     // 3. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
     uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
     
+    const float matrixEpsilon = 1e-5f;
     bool needResort = !gpu_sort_completed_ ||
+                      current_model_ != last_sorted_model_ ||
                       currentPointCount != last_sorted_point_count_ ||
-                      glm::length(camera_.get_position() - last_camera_position_) > 1e-4f;
+                      matrixChanged(ubo_[currentFrame_].view, last_view_matrix_, matrixEpsilon) ||
+                      matrixChanged(ubo_[currentFrame_].projection, last_projection_matrix_, matrixEpsilon);
     
     if (needResort) {
         sortGaussiansByDepthGPU();
         
         gpu_sort_completed_ = true;
         last_sorted_point_count_ = currentPointCount;
+        last_sorted_model_ = current_model_;
         last_camera_position_ = camera_.get_position();
+        last_view_matrix_ = ubo_[currentFrame_].view;
+        last_projection_matrix_ = ubo_[currentFrame_].projection;
     }
     LOG_INFO("GPU sorting  successfully");
     
@@ -264,12 +290,17 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     
     renderPass_->cleanup();
     renderPass_->initialize(swapchain_->getImageFormat());
+    swapchain_->createFramebuffers(device, renderPass_->getRenderPass(), RenderPass::DepthFormat);
     
     pipeline_->cleanup();
     pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
 }
 
 void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera) {
+    if (model != current_model_) {
+        gpu_sort_completed_ = false;
+    }
+
     current_model_ = model;
     camera_ = camera;
     for (uint32_t i = 0u; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -294,9 +325,11 @@ void GaussianRenderer::createBuffers() {
     auto& context = Context::Instance();
     auto device = getDevice();
     auto physicalDevice = context.PhysicalDevice();
-    auto transferQueue = context.getTransferQueue();
-    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().transferIndex.value_or(
-        context.getDevice().getQueueFamilyIndices().graphicsIndex.value());
+    // Keep Gaussian resource uploads on the graphics queue. vkgs uses explicit
+    // transfer semaphores/barriers; this renderer currently does not, so using
+    // the same queue avoids cross-queue visibility issues for SSBO contents.
+    auto transferQueue = context.getDevice().getGraphicsQueue();
+    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
     
     // 1. 创建主 Uniform Buffer（每个帧一个）
     if (!uniformBuffer_.getBuffer()) {
@@ -630,7 +663,7 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     
     LOG_INFO("Submitting {} dispatches in single batch", totalDispatches);
     auto sortStart = std::chrono::high_resolution_clock::now();
-    context.getDevice().getComputeQueue().submit(submitInfo, sortFence);
+    context.getDevice().getGraphicsQueue().submit(submitInfo, sortFence);
     
     // 只等待一次
     (void)device.waitForFences(sortFence, VK_TRUE, UINT64_MAX);
@@ -652,9 +685,8 @@ void GaussianRenderer::computeDistances(const glm::vec3& cameraPosition) {
     auto device = getDevice();
     auto& context = Context::Instance();
     auto physicalDevice = context.PhysicalDevice();
-    auto transferQueue = context.getTransferQueue();
-    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().transferIndex.value_or(
-        context.getDevice().getQueueFamilyIndices().graphicsIndex.value());
+    auto transferQueue = context.getDevice().getGraphicsQueue();
+    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
     
     // 初始化索引和距离缓冲区（如果尚未创建）
     uint32_t pointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
@@ -685,10 +717,24 @@ void GaussianRenderer::computeDistances(const glm::vec3& cameraPosition) {
     
     std::vector<float> distances(paddedCount);
     uint32_t idx = 0;
-    glm::vec3 cameraForward = glm::normalize(camera_.get_front());
     for (const auto& point : *current_model_) {
-        // 透明混合需要沿视线方向的深度，不是到相机的欧氏距离。
-        distances[idx++] = glm::dot(point.position - cameraPosition, cameraForward);
+        glm::vec4 clip = ubo_[currentFrame_].projection * ubo_[currentFrame_].view * glm::vec4(point.position, 1.0f);
+        if (clip.w <= 1e-6f) {
+            distances[idx++] = -std::numeric_limits<float>::infinity();
+            continue;
+        }
+
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f || ndc.z < 0.0f || ndc.z > 1.0f) {
+            distances[idx++] = -std::numeric_limits<float>::infinity();
+            continue;
+        }
+
+        // The local bitonic sorter orders keys descending. Vulkan NDC depth is
+        // larger for farther points, so this yields the required back-to-front
+        // blending order. vkgs uses 1-depth with its radix-sort order; copying
+        // that key here would invert the local draw order.
+        distances[idx++] = ndc.z;
     }
     for (uint32_t i = pointCount; i < paddedCount; ++i) {
         distances[i] = -std::numeric_limits<float>::infinity();
@@ -711,9 +757,8 @@ void GaussianRenderer::updateVertexBuffer() {
     auto device = getDevice();
     auto& context = Context::Instance();
     auto physicalDevice = context.PhysicalDevice();
-    auto transferQueue = context.getTransferQueue();
-    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().transferIndex.value_or(
-        context.getDevice().getQueueFamilyIndices().graphicsIndex.value());
+    auto transferQueue = context.getDevice().getGraphicsQueue();
+    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
     
     // 构建实例数据数组（SSBO格式 - 包含完整SH系数）
     struct alignas(16) GaussianInstanceData {
@@ -839,14 +884,16 @@ void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
         }
         
         // 开始渲染通道
-        vk::ClearValue clearColor{ vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}) };
+        std::array<vk::ClearValue, 2> clearValues{};
+        clearValues[0].setColor(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}));
+        clearValues[1].setDepthStencil(vk::ClearDepthStencilValue(1.0f, 0));
         
         vk::RenderPassBeginInfo renderPassInfo{};
         renderPassInfo.setRenderPass(renderPass_->getRenderPass())
                     .setFramebuffer(swapchain_->getFramebuffer(image_index))
                     .setRenderArea(vk::Rect2D({0, 0}, swapchain_->getExtent()))
-                    .setClearValueCount(1)
-                    .setPClearValues(&clearColor);
+                    .setClearValueCount(static_cast<uint32_t>(clearValues.size()))
+                    .setPClearValues(clearValues.data());
         
         commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);{
             

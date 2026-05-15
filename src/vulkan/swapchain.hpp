@@ -18,7 +18,7 @@ public:
     ~Swapchain();
 
     void createSwapchain(uint32_t width, uint32_t height);
-    void createFramebuffers(vk::Device device, vk::RenderPass renderPass);
+    void createFramebuffers(vk::Device device, vk::RenderPass renderPass, vk::Format depthFormat);
     void cleanup();
 
     void recreateSwapchain(uint32_t width, uint32_t height);
@@ -49,6 +49,13 @@ private:
     
     vk::Format imageFormat_;
     vk::Extent2D extent_;
+
+    vk::Image depthImage_ = nullptr;
+    vk::DeviceMemory depthImageMemory_ = nullptr;
+    vk::ImageView depthImageView_ = nullptr;
+
+    void createDepthResources(vk::Device device, vk::Format depthFormat);
+    uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const;
 };
 
 } // namespace vk_gs

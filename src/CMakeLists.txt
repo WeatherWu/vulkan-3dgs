@@ -98,6 +98,7 @@ endif()
 # 编译器定义
 target_compile_definitions(vk_gs_core PRIVATE
     GLFW_INCLUDE_VULKAN
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
     NOMINMAX
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
 )

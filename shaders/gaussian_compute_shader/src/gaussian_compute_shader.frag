@@ -9,43 +9,9 @@ layout(location = 6) in vec2 fragGaussianUV;      // 椭圆局部坐标
 
 layout(location = 0) out vec4 outColor;
 
-// Uniform: 屏幕分辨率
-layout(binding = 1) uniform ScreenInfo {
-    vec2 screenSize; // width, height
-} screenInfo;
-
-vec3 srgbToLinear(vec3 color) {
-    color = max(color, vec3(0.0));
-    bvec3 cutoff = lessThanEqual(color, vec3(0.04045));
-    vec3 lower = color / 12.92;
-    vec3 higher = pow((color + vec3(0.055)) / 1.055, vec3(2.4));
-    return mix(higher, lower, cutoff);
-}
-
-float gaussianAlphaWeight(vec2 uv) {
-    float A = dot(uv, uv);
-    if (A > 8.0) {
-        return 0.0;
-    }
-
-    return exp(-0.5 * A);
-}
-
 void main() {
-    const float MIN_ALPHA = 1.0 / 255.0;
-
-    float weight = gaussianAlphaWeight(fragGaussianUV);
-    if (weight <= 0.0) {
-        discard;
-    }
+    float gaussianAlpha = exp(-0.5 * dot(fragGaussianUV, fragGaussianUV));
+    float finalAlpha = clamp(fragAlpha, 0.0, 1.0) * gaussianAlpha;
     
-    // Alpha混合：原始alpha × SuperSplat式归一化高斯权重。
-    float finalAlpha = clamp(fragAlpha, 0.0, 1.0) * weight;
-    
-    if (finalAlpha < MIN_ALPHA) {
-        discard;
-    }
-    
-    vec3 linearColor = srgbToLinear(fragColor);
-    outColor = vec4(linearColor * finalAlpha, finalAlpha);
+    outColor = vec4(fragColor, finalAlpha);
 }

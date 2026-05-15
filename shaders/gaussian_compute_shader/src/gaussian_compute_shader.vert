@@ -159,51 +159,56 @@ void main() {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // 剔除近裁剪面内的点
         return;
     }
-    
-    // 3. Project world covariance to screen-space pixels. This is the same
-    // 3DGS Jacobian path as PlayCanvas, written explicitly for GLSL's
-    // column-vector convention to avoid row/column transposition mistakes.
-    mat3 covarianceCamera = viewMatrix3x3 * covariance3D * transpose(viewMatrix3x3);
-    float z = max(depth, 1e-6);
-    float fx = ubo.focal.x;
-    float fy = ubo.focal.y;
 
-    mat3x2 J = mat3x2(
-        fx / z,                         0.0,
-        0.0,                            fy / z,
-        fx * centerCamera.x / (z * z),  fy * centerCamera.y / (z * z)
+    vec3 ndcCenter3 = centerClip.xyz / centerClip.w;
+    if (abs(ndcCenter3.x) > 1.0 || abs(ndcCenter3.y) > 1.0 ||
+        ndcCenter3.z < 0.0 || ndcCenter3.z > 1.0) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+    
+    vec2 screenSize = max(ubo.focal.zw, vec2(1.0));
+
+    // 3. Project world covariance to NDC space using the same path as vkgs
+    // projection.comp.
+    mat3 covarianceCamera = viewMatrix3x3 * covariance3D * transpose(viewMatrix3x3);
+    float cameraZ = centerCamera.z;
+    float cameraZ2 = max(cameraZ * cameraZ, 1e-12);
+    float cameraRadius = max(length(centerCamera.xyz), 1e-6);
+    mat3 J = mat3(
+        -1.0 / cameraZ,            0.0,                      -2.0 * centerCamera.x / cameraRadius,
+         0.0,                     -1.0 / cameraZ,            -2.0 * centerCamera.y / cameraRadius,
+         centerCamera.x / cameraZ2, centerCamera.y / cameraZ2, -2.0 * centerCamera.z / cameraRadius
     );
 
-    mat2 cov = J * covarianceCamera * transpose(J);
-    float covA = cov[0][0];
-    float covB = 0.5 * (cov[0][1] + cov[1][0]);
-    float covC = cov[1][1];
+    mat3 projectedCovariance = J * covarianceCamera * transpose(J);
+    mat2 projectionScale = mat2(ubo.projection);
+    mat2 covNdc = projectionScale * mat2(projectedCovariance) * projectionScale;
+    covNdc[0][0] += 1.0 / (screenSize.x * screenSize.x);
+    covNdc[1][1] += 1.0 / (screenSize.y * screenSize.y);
 
-    // Low-pass blur from the 3DGS rasterization reference path.
-    float detOrig = max(covA * covC - covB * covB, 0.0);
-    float diagonal1 = covA + 0.3;
+    float covA = covNdc[0][0];
+    float covB = covNdc[1][0];
+    float covC = covNdc[1][1];
+
+    float diagonal1 = covA;
     float offDiagonal = covB;
-    float diagonal2 = covC + 0.3;
-    float detBlur = max(diagonal1 * diagonal2 - offDiagonal * offDiagonal, 1e-12);
+    float diagonal2 = covC;
     mat2 covariance2D = mat2(diagonal1, offDiagonal, offDiagonal, diagonal2);
     
-    // 6. 特征分解获取椭圆的轴和方向
-    float mid = 0.5 * (diagonal1 + diagonal2);
-    float radius = length(vec2((diagonal1 - diagonal2) * 0.5, offDiagonal));
-    float lambda1 = mid + radius;
-    float lambda2 = mid - radius;
-    if (lambda2 <= 0.0) {
+    // 6. Eigendecomposition, matching vkgs projection.comp.
+    float D = sqrt((diagonal1 - diagonal2) * (diagonal1 - diagonal2) + 4.0 * offDiagonal * offDiagonal);
+    float lambda1 = 0.5 * (diagonal1 + diagonal2 + D);
+    float lambda2 = 0.5 * (diagonal1 + diagonal2 - D);
+    if (lambda2 <= 0.0 || D <= 1e-12) {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         return;
     }
 
-    vec2 screenSize = max(ubo.focal.zw, vec2(1.0));
-    const float SQRT8 = 2.8284271247461903;
-    float vmin = min(1024.0, min(screenSize.x, screenSize.y));
-    float l1 = min(SQRT8 * sqrt(lambda1), vmin);
-    float l2 = min(SQRT8 * sqrt(lambda2), vmin);
+    float s0 = sqrt(lambda1);
+    float s1 = sqrt(lambda2);
 
-    float maxAxis = max(l1, l2);
+    float maxAxis = max(s0, s1);
 
     // SuperSplat keeps sub-2px splats and relies on AA compensation plus the
     // alpha contribution cutoff. A hard 2px cull removes fine fur/hair splats.
@@ -212,12 +217,15 @@ void main() {
         return;
     }
 
-    vec2 diagonalVector = vec2(offDiagonal, lambda1 - diagonal1);
-    diagonalVector = dot(diagonalVector, diagonalVector) > 1e-8
-        ? normalize(diagonalVector)
-        : vec2(1.0, 0.0);
-    vec2 majorAxis = l1 * diagonalVector;
-    vec2 minorAxis = l2 * vec2(diagonalVector.y, -diagonalVector.x);
+    float sin2t = 2.0 * offDiagonal / D;
+    float cos2t = (diagonal1 - diagonal2) / D;
+    float theta = 0.5 * atan(sin2t, cos2t);
+    float cosTheta = cos(theta);
+    float sinTheta = sin(theta);
+    mat2 rotScale = mat2(
+        s0 * cosTheta, s0 * sinTheta,
+        -s1 * sinTheta, s1 * cosTheta
+    );
 
     float alpha = clamp(instance.sh0_alpha.w, 0.0, 1.0);
     if (255.0 * alpha <= 1.0) {
@@ -225,14 +233,13 @@ void main() {
         return;
     }
 
-    vec2 gaussianUV = quadVertex * SQRT8;
-    vec2 clipOffset = (quadVertex.x * majorAxis + quadVertex.y * minorAxis) * (2.0 * centerClip.ww) / screenSize;
+    const float CONFIDENCE_RADIUS = 3.0;
+    vec2 gaussianUV = quadVertex * CONFIDENCE_RADIUS;
+    vec2 ndcOffset = rotScale * quadVertex * CONFIDENCE_RADIUS;
     
-    // 9. 计算最终位置（保持在裁剪空间）
-    // 将NDC空间的偏移量转换回裁剪空间
-    vec2 ndcCenter = centerClip.xy / centerClip.w;
-    gl_Position = centerClip + vec4(clipOffset, 0.0, 0.0);
-    vec2 pixelCenter = (ndcCenter * 0.5 + 0.5) * screenSize;
+    // 9. Match vkgs splat.vert: expand directly in NDC space and use w = 1.
+    gl_Position = vec4(ndcCenter3 + vec3(ndcOffset, 0.0), 1.0);
+    vec2 pixelCenter = (ndcCenter3.xy * 0.5 + 0.5) * screenSize;
     
     // 10. 计算视角相关的颜色（使用完整SH评估）
     // 标准3DGS使用世界空间中从相机指向高斯中心的方向。
@@ -244,6 +251,6 @@ void main() {
     fragAlpha = alpha;
     fragScreenPos = pixelCenter;
     fragCovariance2D = covariance2D;
-    fragMaxAxis = 0.5 * max(l1, l2);
+    fragMaxAxis = maxAxis;
     fragGaussianUV = gaussianUV;
 }

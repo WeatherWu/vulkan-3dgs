@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <limits>
+#include <array>
 
 #include "swapchain.hpp"
 #include "utils/logger.hpp"
@@ -36,6 +37,9 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
     }
     vk::SurfaceFormatKHR surface_format = chooseSwapSurfaceFormat(available_formats);
     imageFormat_ = surface_format.format;
+    LOG_INFO("Selected swapchain format: {}, color space: {}",
+             vk::to_string(surface_format.format),
+             vk::to_string(surface_format.colorSpace));
     
     // 选择呈现模式
     std::vector<vk::PresentModeKHR> available_present_modes = phyDevice.getSurfacePresentModesKHR(surface_);
@@ -127,14 +131,20 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
     LOG_INFO("Created {} swapchain images", images_.size());
 }
 
-void Swapchain::createFramebuffers(vk::Device device, vk::RenderPass renderPass) {
+void Swapchain::createFramebuffers(vk::Device device, vk::RenderPass renderPass, vk::Format depthFormat) {
     LOG_INFO("Creating framebuffers with render pass");
+    createDepthResources(device, depthFormat);
     
     for (size_t i = 0; i < images_.size(); ++i) {
+        std::array<vk::ImageView, 2> attachments = {
+            images_[i].imageView,
+            depthImageView_
+        };
+
         vk::FramebufferCreateInfo framebufferInfo{};
         framebufferInfo.setRenderPass(renderPass)
-                       .setAttachmentCount(1)
-                       .setPAttachments(&images_[i].imageView)
+                       .setAttachmentCount(static_cast<uint32_t>(attachments.size()))
+                       .setPAttachments(attachments.data())
                        .setWidth(extent_.width)
                        .setHeight(extent_.height)
                        .setLayers(1);
@@ -147,6 +157,53 @@ void Swapchain::createFramebuffers(vk::Device device, vk::RenderPass renderPass)
     }
     
     LOG_INFO("Created {} framebuffers", images_.size());
+}
+
+void Swapchain::createDepthResources(vk::Device device, vk::Format depthFormat) {
+    if (depthImageView_) {
+        device.destroyImageView(depthImageView_);
+        depthImageView_ = nullptr;
+    }
+    if (depthImage_) {
+        device.destroyImage(depthImage_);
+        depthImage_ = nullptr;
+    }
+    if (depthImageMemory_) {
+        device.freeMemory(depthImageMemory_);
+        depthImageMemory_ = nullptr;
+    }
+
+    vk::ImageCreateInfo imageInfo{};
+    imageInfo.setImageType(vk::ImageType::e2D)
+             .setExtent(vk::Extent3D(extent_.width, extent_.height, 1))
+             .setMipLevels(1)
+             .setArrayLayers(1)
+             .setFormat(depthFormat)
+             .setTiling(vk::ImageTiling::eOptimal)
+             .setInitialLayout(vk::ImageLayout::eUndefined)
+             .setUsage(vk::ImageUsageFlagBits::eDepthStencilAttachment)
+             .setSamples(vk::SampleCountFlagBits::e1)
+             .setSharingMode(vk::SharingMode::eExclusive);
+
+    depthImage_ = device.createImage(imageInfo);
+    vk::MemoryRequirements memRequirements = device.getImageMemoryRequirements(depthImage_);
+
+    vk::MemoryAllocateInfo allocInfo{};
+    allocInfo.setAllocationSize(memRequirements.size)
+             .setMemoryTypeIndex(findMemoryType(memRequirements.memoryTypeBits,
+                                                vk::MemoryPropertyFlagBits::eDeviceLocal));
+    depthImageMemory_ = device.allocateMemory(allocInfo);
+    device.bindImageMemory(depthImage_, depthImageMemory_, 0);
+
+    vk::ImageViewCreateInfo viewInfo{};
+    viewInfo.setImage(depthImage_)
+            .setViewType(vk::ImageViewType::e2D)
+            .setFormat(depthFormat)
+            .setSubresourceRange(vk::ImageSubresourceRange(
+                vk::ImageAspectFlagBits::eDepth,
+                0, 1, 0, 1
+            ));
+    depthImageView_ = device.createImageView(viewInfo);
 }
 
 void Swapchain::cleanup() {
@@ -163,12 +220,39 @@ void Swapchain::cleanup() {
             }
         }
         images_.clear();
+
+        if (depthImageView_) {
+            device.destroyImageView(depthImageView_);
+            depthImageView_ = nullptr;
+        }
+        if (depthImage_) {
+            device.destroyImage(depthImage_);
+            depthImage_ = nullptr;
+        }
+        if (depthImageMemory_) {
+            device.freeMemory(depthImageMemory_);
+            depthImageMemory_ = nullptr;
+        }
         
         device.destroySwapchainKHR(swapchain_);
         swapchain_ = nullptr;
         
         LOG_INFO("Swapchain cleaned up");
     }
+}
+
+uint32_t Swapchain::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const {
+    vk::PhysicalDeviceMemoryProperties memProperties =
+        Context::Instance().PhysicalDevice().getMemoryProperties();
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+
+    throw std::runtime_error("Failed to find suitable memory type for depth image");
 }
 
 void Swapchain::recreateSwapchain(uint32_t width, uint32_t height) {
@@ -186,9 +270,18 @@ void Swapchain::recreateSwapchain(uint32_t width, uint32_t height) {
 }
 
 vk::SurfaceFormatKHR Swapchain::chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats) {
-    // 优先选择 SRGB 颜色空间和非线性色彩空间
+    // Match vkgs: keep the swapchain image UNORM and use SRGB_NONLINEAR only
+    // as the presentation color space. Using an SRGB image format applies
+    // hardware encode/decode around blending and makes 3DGS colors look too bright.
     for (const auto& available_format : available_formats) {
-        if (available_format.format == vk::Format::eB8G8R8A8Srgb &&
+        if (available_format.format == vk::Format::eB8G8R8A8Unorm &&
+            available_format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+            return available_format;
+        }
+    }
+
+    for (const auto& available_format : available_formats) {
+        if (available_format.format == vk::Format::eR8G8B8A8Unorm &&
             available_format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
             return available_format;
         }

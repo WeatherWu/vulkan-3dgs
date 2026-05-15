@@ -101,7 +101,10 @@ private:
     // GPU排序缓存状态
     bool gpu_sort_completed_ = false;
     uint32_t last_sorted_point_count_ = 0;
+    const GaussianModel* last_sorted_model_ = nullptr;
     glm::vec3 last_camera_position_;
+    glm::mat4 last_view_matrix_{1.0f};
+    glm::mat4 last_projection_matrix_{1.0f};
     
 };
 

@@ -6,6 +6,8 @@ namespace vk_gs {
 
 class RenderPass {
 public:
+    static constexpr vk::Format DepthFormat = vk::Format::eD32Sfloat;
+
     RenderPass();
     ~RenderPass();
     

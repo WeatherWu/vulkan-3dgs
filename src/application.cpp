@@ -36,6 +36,22 @@ Application::Application(const std::string& title, int width, int height, Render
     // 使用工厂方法创建具体的渲染器实例
     renderer_ = createRenderer(current_mode_);
     renderer_->initialize(window_->get_handle());
+
+    window_->set_resize_callback([this](int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        if (renderer_) {
+            renderer_->onResize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        }
+
+        if (has_true_camera_) {
+            float aspect = static_cast<float>(width) / static_cast<float>(height);
+            view_matrix_ = camera_.get_view_matrix();
+            projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
+        }
+    });
     
     initialize();
 }
@@ -134,6 +150,16 @@ void Application::render() {
     // 调用具体渲染器的渲染逻辑
     if (renderer_ && current_model_) {
         LOG_INFO("Starting render frame");
+        if (has_true_camera_ && window_) {
+            int framebufferWidth = 0;
+            int framebufferHeight = 0;
+            glfwGetFramebufferSize(window_->get_handle(), &framebufferWidth, &framebufferHeight);
+            if (framebufferWidth > 0 && framebufferHeight > 0) {
+                float aspect = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
+                view_matrix_ = camera_.get_view_matrix();
+                projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
+            }
+        }
         
         // 传递模型数据和相机参数
         auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get());
@@ -167,6 +193,7 @@ void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) 
 
 void Application::setTrueCamera(const vk_gs::Camera& camera) {
     camera_ = camera;
+    has_true_camera_ = true;
 }
 
 void Application::cleanup() {

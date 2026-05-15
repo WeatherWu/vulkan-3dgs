@@ -62,6 +62,7 @@ protected:
     glm::mat4 projection_matrix_ = glm::mat4(1.0f);
 
     vk_gs::Camera camera_;
+    bool has_true_camera_ = false;
 
     RenderMode current_mode_;
     bool running_ = true;

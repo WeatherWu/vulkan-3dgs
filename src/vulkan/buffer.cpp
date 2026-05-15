@@ -1,8 +1,11 @@
 #include "buffer.hpp"
+#include "context/context.hpp"
 #include "vulkan/command_pool.hpp"
 #include "utils/logger.hpp"
 #include <cstring>
 #include <stdexcept>
+#include <array>
+#include <algorithm>
 
 namespace vk_gs {
 
@@ -62,10 +65,22 @@ void Buffer::create(vk::Device device,
 
     // 1. 创建目标缓冲区
     LOG_DEBUG("Buffer::create - Creating Vulkan buffer");
+    std::array<uint32_t, 3> queueFamilies = {
+        transferQueueFamilyIndex_,
+        Context::Instance().getDevice().getQueueFamilyIndices().graphicsIndex.value(),
+        Context::Instance().getDevice().getQueueFamilyIndices().computeIndex.value_or(
+            Context::Instance().getDevice().getQueueFamilyIndices().graphicsIndex.value())
+    };
+    std::sort(queueFamilies.begin(), queueFamilies.end());
+    auto uniqueEnd = std::unique(queueFamilies.begin(), queueFamilies.end());
+    uint32_t queueFamilyCount = static_cast<uint32_t>(std::distance(queueFamilies.begin(), uniqueEnd));
+
     vk::BufferCreateInfo bufferInfo{};
     bufferInfo.setSize(size)
                 .setUsage(usage | vk::BufferUsageFlagBits::eTransferDst)
-                .setSharingMode(vk::SharingMode::eExclusive);
+                .setSharingMode(queueFamilyCount > 1 ? vk::SharingMode::eConcurrent : vk::SharingMode::eExclusive)
+                .setQueueFamilyIndexCount(queueFamilyCount > 1 ? queueFamilyCount : 0)
+                .setPQueueFamilyIndices(queueFamilyCount > 1 ? queueFamilies.data() : nullptr);
 
     buffer_ = device_.createBuffer(bufferInfo);
     LOG_DEBUG("Buffer::create - Vulkan buffer created");

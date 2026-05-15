@@ -177,13 +177,14 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     multisampling.setSampleShadingEnable(false)
                  .setRasterizationSamples(vk::SampleCountFlagBits::e1);
     
-    // 当前RenderPass没有深度附件，透明Gaussian也依赖远到近混合顺序。
+    // Match vkgs: splats depth-test against the pass depth attachment but do
+    // not write depth, so blending still follows the sorted back-to-front order.
     vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
-    depth_stencil.setDepthTestEnable(vk::False)
+    depth_stencil.setDepthTestEnable(vk::True)
                  .setDepthWriteEnable(vk::False)
-                 .setDepthCompareOp(vk::CompareOp::eLessOrEqual);
+                 .setDepthCompareOp(vk::CompareOp::eLess);
     
-    // 颜色混合状态（启用premultiplied alpha混合）
+    // 颜色混合状态（vkgs-style non-premultiplied alpha blending）
     vk::PipelineColorBlendAttachmentState color_blend_attachment{};
     color_blend_attachment.setColorWriteMask(
         vk::ColorComponentFlagBits::eR |
@@ -192,10 +193,10 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
         vk::ColorComponentFlagBits::eA
     );
     color_blend_attachment.setBlendEnable(vk::True);
-    color_blend_attachment.setSrcColorBlendFactor(vk::BlendFactor::eOne);
+    color_blend_attachment.setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha);
     color_blend_attachment.setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha);
     color_blend_attachment.setColorBlendOp(vk::BlendOp::eAdd);
-    color_blend_attachment.setSrcAlphaBlendFactor(vk::BlendFactor::eOne);
+    color_blend_attachment.setSrcAlphaBlendFactor(vk::BlendFactor::eSrcAlpha);
     color_blend_attachment.setDstAlphaBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha);
     color_blend_attachment.setAlphaBlendOp(vk::BlendOp::eAdd);
     
