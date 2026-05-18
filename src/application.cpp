@@ -105,7 +105,6 @@ void Application::switchRenderMode(RenderMode mode) {
 std::unique_ptr<Renderer> Application::createRenderer(RenderMode mode) {
     switch (mode) {
         case RenderMode::GaussianGraphics:
-            LOG_INFO("Creating Gaussian Graphics Renderer");
             return std::make_unique<GaussianRenderer>();
             
         // 未来可以添加其他渲染模式
@@ -121,7 +120,6 @@ std::unique_ptr<Renderer> Application::createRenderer(RenderMode mode) {
 
 void Application::initialize() {
     // Context已经在构造函数中初始化过了，这里不需要再次初始化
-    LOG_INFO("Application initialization completed");
 }
 
 void Application::update(float delta_time) {
@@ -149,7 +147,6 @@ void Application::update(float delta_time) {
 void Application::render() {
     // 调用具体渲染器的渲染逻辑
     if (renderer_ && current_model_) {
-        LOG_INFO("Starting render frame");
         if (has_true_camera_ && window_) {
             int framebufferWidth = 0;
             int framebufferHeight = 0;
@@ -164,16 +161,12 @@ void Application::render() {
         // 传递模型数据和相机参数
         auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get());
         if (gsRenderer) {
-            LOG_INFO("Setting render data with {} points", 
-                     std::distance(current_model_->begin(), current_model_->end()));
             gsRenderer->setRenderData(current_model_, view_matrix_, projection_matrix_, camera_);
         } else {
             LOG_WARN("Renderer is not a GaussianRenderer, skipping data setup");
         }
         
-        LOG_INFO("Calling renderer_->render()");
         renderer_->render();
-        LOG_INFO("Frame rendered successfully");
     } else {
         LOG_WARN("Skipping render: renderer={} model={}", 
                 renderer_ ? "valid" : "null", 
@@ -183,7 +176,6 @@ void Application::render() {
 
 void Application::setModel(const GaussianModel* model) {
     current_model_ = model;
-    LOG_INFO("Model set for rendering");
 }
 
 void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) {
@@ -197,7 +189,6 @@ void Application::setTrueCamera(const vk_gs::Camera& camera) {
 }
 
 void Application::cleanup() {
-    LOG_INFO("Cleaning up application");
     if (renderer_) {
         renderer_->cleanup();
     }

@@ -27,7 +27,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
             LOG_DEBUG("Validation layer: {}", pCallbackData->pMessage);
             break;
         case vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo:
-            LOG_INFO("Validation layer: {}", pCallbackData->pMessage);
+            LOG_DEBUG("Validation layer: {}", pCallbackData->pMessage);
             break;
         case vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning:
             LOG_WARN("Validation layer: {}", pCallbackData->pMessage);
@@ -36,7 +36,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
             LOG_ERROR("Validation layer: {}", pCallbackData->pMessage);
             break;
         default:
-            LOG_INFO("Validation layer: {}", pCallbackData->pMessage);
+            LOG_DEBUG("Validation layer: {}", pCallbackData->pMessage);
             break;
     }
     
@@ -44,7 +44,6 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 }
 
 Context::Context(GLFWwindow* window) : window_(window) {
-    LOG_INFO("Creating Vulkan context");
 }
 
 Context::~Context() {
@@ -58,22 +57,16 @@ void Context::initialize(GLFWwindow* window) {
         return;
     }
     
-    LOG_INFO("Starting Context initialization");
-    
     window_ = window;
     
-    LOG_INFO("Creating Vulkan instance");
     createInstance();
     
-    LOG_INFO("Creating surface");
     createSurface();
     
     if (enableValidationLayers_) {
-        LOG_INFO("Setting up debug messenger");
         setupDebugMessenger();
     }
 
-    LOG_INFO("Creating logical device");
     device_ = std::make_unique<vk_gs::Device>(surface_);
     device_->createDevice();
     
@@ -96,27 +89,22 @@ void Context::cleanup() {
     if (instance_) {
         instance_.destroy();
     }
-    
-    LOG_INFO("Vulkan context cleaned up");
 }
 
 void Context::createInstance() {
-    LOG_INFO("Initializing Vulkan dynamic loader");
     // 第一步：初始化动态加载器（必须在任何Vulkan API调用之前）
     static bool dispatcher_initialized = false;
     if (!dispatcher_initialized) {
         VULKAN_HPP_DEFAULT_DISPATCHER.init();
         dispatcher_initialized = true;
-        LOG_INFO("Vulkan dynamic loader initialized");
+        LOG_DEBUG("Vulkan dynamic loader initialized");
     }
     
-    LOG_INFO("Checking validation layers");
     if (enableValidationLayers_ && !checkValidationLayerSupport()) {
         LOG_WARN("Validation layers requested, but not available!");
         enableValidationLayers_ = false;
     }
     
-    LOG_INFO("Setting up application info");
     vk::ApplicationInfo appInfo{};
     appInfo.setPApplicationName("Vulkan 3DGS")
            .setApplicationVersion(vk::makeVersion(1, 0, 0))
@@ -124,14 +112,13 @@ void Context::createInstance() {
            .setEngineVersion(vk::makeVersion(1, 0, 0))
            .setApiVersion(vk::ApiVersion12);  // 使用Vulkan 1.2以支持SPIR-V 1.5
     
-    LOG_INFO("Getting required extensions");
     vk::InstanceCreateInfo createInfo{};
     createInfo.setPApplicationInfo(&appInfo);
     
     auto extensions = getRequiredExtensions();
-    LOG_INFO("Got {} extensions", extensions.size());
+    LOG_DEBUG("Got {} extensions", extensions.size());
     for (size_t i = 0; i < extensions.size(); ++i) {
-        LOG_INFO("  Extension {}: {}", i, extensions[i]);
+        LOG_DEBUG("  Extension {}: {}", i, extensions[i]);
     }
     
     createInfo.setEnabledExtensionCount(static_cast<uint32_t>(extensions.size()))
@@ -139,7 +126,7 @@ void Context::createInstance() {
     
     vk::DebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
     if (enableValidationLayers_) {
-        LOG_INFO("Enabling validation layers");
+        LOG_DEBUG("Enabling validation layers");
         createInfo.setEnabledLayerCount(static_cast<uint32_t>(validationLayers_.size()))
                   .setPEnabledLayerNames(validationLayers_);
 
@@ -153,18 +140,17 @@ void Context::createInstance() {
         
         createInfo.setPNext(&debugCreateInfo);
     } else {
-        LOG_INFO("Validation layers disabled");
+        LOG_DEBUG("Validation layers disabled");
         createInfo.setEnabledLayerCount(0);
     }
     
-    LOG_INFO("Calling vk::createInstance");
     try {
         instance_ = vk::createInstance(createInfo, nullptr);
-        LOG_INFO("Vulkan instance created successfully");
+        LOG_DEBUG("Vulkan instance created successfully");
         
         // 第二步：使用Instance更新调度器以获取Instance级别的函数
         VULKAN_HPP_DEFAULT_DISPATCHER.init(instance_);
-        LOG_INFO("Vulkan dispatcher updated with instance");
+        LOG_DEBUG("Vulkan dispatcher updated with instance");
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to create Vulkan instance: {}", e.what());
         throw std::runtime_error("Failed to create Vulkan instance");
@@ -179,7 +165,7 @@ void Context::createSurface() {
         throw std::runtime_error("Failed to create window surface");
     }
     surface_ = surface;
-    LOG_INFO("Window surface created successfully");
+    LOG_DEBUG("Window surface created successfully");
 }
 
 void Context::setupDebugMessenger() {
@@ -197,7 +183,7 @@ void Context::setupDebugMessenger() {
         LOG_ERROR("Failed to create debug messenger");
         throw std::runtime_error("Failed to create debug messenger");
     }
-    LOG_INFO("Debug messenger created successfully");
+    LOG_DEBUG("Debug messenger created successfully");
 }
 
 bool Context::checkValidationLayerSupport() {

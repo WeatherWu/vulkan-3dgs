@@ -1,244 +1,167 @@
-# Vulkan + 3D Gaussian Splatting 项目框架
+# vk-gs
 
-这是一个基于 Vulkan 图形 API 和 3D 高斯散射（3DGS）技术的现代渲染框架，专为实时 3D 场景渲染和点云可视化设计。
+Vulkan + 3D Gaussian Splatting 实验项目。当前仓库主要包含一个核心静态库、一个最小应用入口，以及一个用于加载 `insect.ply` 的 Debug 沙盒程序。
 
-##  项目结构
+## 当前目标
 
-```
+- `vk_gs_core`: 核心静态库，包含 Vulkan 上下文、资源封装、相机、PLY 读取和 Gaussian 渲染器。
+- `vk_gs_windows`: `apps/main.cpp` 的最小应用模板，只保留 `main()` 入口。
+- `vk_gs_sandbox`: `sandbox/sandbox.cpp` 的调试入口，加载根目录下的 `insect.ply` 并启动 Gaussian 渲染窗口。
+
+Release 默认只构建 `vk_gs_windows` 和核心库。`vk_gs_sandbox` 只用于 Debug 默认构建，也可以手动指定目标构建。
+
+## 目录结构
+
+```text
 vk-gs/
-├── CMakeLists.txt              # 根项目配置
-├── README.md                   # 项目说明
-├── sandbox/                    # 沙盒测试环境
+├── CMakeLists.txt
+├── README.md
+├── insect.ply
+├── apps/
 │   ├── CMakeLists.txt
-│   └── sandbox.cpp            # 快速测试入口
-└── src/                       # 核心源代码
-    ├── CMakeLists.txt         # 核心库配置
-    │
-    ├── vulkan/                # 通用 Vulkan 资源封装层
-    │   ├── buffer.hpp/cpp     # 缓冲区管理（支持 Staging 上传）
-    │   ├── shader.hpp/cpp     # 着色器模块加载
-    │   ├── swapchain.hpp/cpp  # 交换链管理
-    │   └── command_pool.hpp/cpp # 命令池与命令缓冲区管理
-    │
-    ├── context/               # Vulkan 基础环境
-    │   ├── context.hpp/cpp    # Instance, Surface, Device 管理
-    │   └── device.hpp/cpp     # 物理/逻辑设备、队列家族选择
-    │
-    ├── gaussian_render_compute/ # 高斯渲染特定实现
-    │   ├── gaussian_model.hpp/cpp      # 高斯点云数据模型
-    │   ├── gaussian_renderer.hpp/cpp   # 高斯渲染器
-    │   ├── renderpass.hpp/cpp          # 渲染通道配置
-    │   └── pipeline.hpp/cpp            # 图形管线状态
-    │
-    ├── utils/                 # 工具类
-    │   ├── camera.hpp/cpp     # 相机控制（View/Projection 矩阵）
-    │   ├── file_utils.hpp     # 文件 I/O 操作
-    │   └── logger.hpp         # 分级日志系统
-    │
-    ├── application.hpp/cpp    # 应用框架（主循环、事件处理）
-    ├── window.hpp/cpp         # GLFW 窗口封装
-    └── renderer.hpp/cpp       # 渲染器基类接口
+│   └── main.cpp
+├── sandbox/
+│   ├── CMakeLists.txt
+│   └── sandbox.cpp
+├── shaders/
+│   └── gaussian_compute_shader/
+│       └── src/
+│           ├── gaussian_compute_shader.vert
+│           ├── gaussian_compute_shader.frag
+│           └── gaussian_compute_shader.comp
+└── src/
+    ├── application.hpp/cpp
+    ├── window.hpp/cpp
+    ├── renderer.hpp/cpp
+    ├── context/
+    │   ├── context.hpp/cpp
+    │   └── device.hpp/cpp
+    ├── vulkan/
+    │   ├── buffer.hpp/cpp
+    │   ├── command_pool.hpp/cpp
+    │   ├── compute_pipeline.hpp/cpp
+    │   ├── shader.hpp/cpp
+    │   └── swapchain.hpp/cpp
+    ├── gaussian_renderer_compute/
+    │   ├── gaussian_model.hpp/cpp
+    │   ├── gaussian_renderer.hpp/cpp
+    │   ├── pipeline.hpp/cpp
+    │   └── renderpass.hpp/cpp
+    └── utils/
+        ├── camera.hpp/cpp
+        ├── file_utils.hpp
+        └── logger.hpp
 ```
 
-##  架构设计
+## 架构概览
 
-### 分层架构
-1. **Utils 层**: 基础工具（日志、文件、数学、相机）
-2. **Vulkan 层**: 封装 Vulkan API 底层对象（Buffer, Shader, Swapchain, CommandPool）
-3. **Context 层**: Vulkan 实例/设备/队列管理
-4. **GS 渲染层**: 业务逻辑层，处理高斯模型数据与渲染逻辑
-5. **Application 层**: 应用框架层，整合窗口、输入、渲染循环
+`Application` 负责 GLFW 窗口、Vulkan `Context` 初始化和主循环。`Context` 是 Vulkan instance、surface、device 和队列的全局入口。`GaussianRenderer` 继承自 `Renderer`，负责 swapchain、render pass、graphics pipeline、compute pipeline、descriptor set、GPU 深度排序和每帧提交。
 
-### 核心设计原则
-- **职责分离**: Context 仅负责基础环境，渲染资源由 Renderer 管理
-- **模块化隔离**: 通用资源（vulkan/）与特定实现（gaussian_render_grapics/）物理隔离
-- **RAII 管理**: 所有 Vulkan 资源通过 C++ 对象生命周期自动管理
-- **可扩展性**: 通过替换 Renderer 子类实现不同渲染方法切换
+渲染路径大致如下：
 
-##  核心模块
-
-### 1. 应用程序框架 (Application)
-- 基于 GLFW 的窗口管理与事件处理
-- Vulkan 上下文初始化与管理
-- 模板方法模式：子类重写 `initialize()` 和 `render()`
-- 支持运行时渲染器动态切换
-
-### 2. Vulkan 基础环境 (Context)
-- **Context**: 单例模式，管理 Instance、Surface、Device
-- **Device**: 
-  - 物理设备选择与特性检查
-  - 逻辑设备创建与队列家族管理
-  - **专用传输队列支持**（自动回退到图形队列）
-- **Queue Management**: 支持 Graphics、Compute、Transfer 多队列架构
-
-### 3. Vulkan 资源封装 (vulkan/)
-- **Buffer**: 
-  - 支持 Staging Buffer 异步数据传输
-  - RAII 内存管理与移动语义
-  - 自动查找最优内存类型
-- **Shader**: SPIR-V 着色器模块加载与管理
-- **Swapchain**: 
-  - 自适应表面格式与呈现模式选择
-  - 帧缓冲与图像视图管理
-  - 支持窗口 resize 重建
-- **CommandPool**: 
-  - 命令缓冲区分配与回收
-  - 支持临时与重置标志
-  - 线程安全扩展预留
-
-### 4. 3D 高斯散射核心 (gaussian_render_grapics/)
-- **GaussianModel**: 高斯点云数据结构与加载
-- **GaussianRenderer**: 
-  - 继承自 Renderer 基类
-  - 管理 RenderPass、Pipeline、DescriptorSet
-  - 深度排序与混合渲染
-- **RenderPass**: 渲染通道附件配置
-- **Pipeline**: 图形管线状态对象（顶点输入、混合、深度测试）
-
-### 5. 工具模块 (utils/)
-- **Camera**: 第一人称相机控制，提供 View/Projection 矩阵
-- **FileUtils**: 跨平台文件路径解析（支持相对路径）
-- **Logger**: 分级日志系统（INFO/WARN/ERROR），支持格式化输出
-
-##  依赖项
-
-- **Vulkan SDK**: 图形 API（需支持 Vulkan 1.0+）
-- **GLFW3**: 窗口与输入管理
-- **GLM**: OpenGL Mathematics 数学库
-- **STB**: 图像加载库（stb_image）
-- **CMake**: 3.26+ 构建系统
-
-##  构建说明
-
-### 环境要求
-- **编译器**: 支持 C++20 标准（MSVC 2019+, GCC 10+, Clang 10+）
-- **CMake**: >= 3.26
-- **Vulkan SDK**: 已配置环境变量或系统路径
-- **依赖库**: GLFW3、GLM、STB（可通过 vcpkg 或系统包管理器安装）
-
-### 构建步骤
-```bash
-# 1. 克隆项目
-git clone <repository-url>
-cd vk-gs
-
-# 2. 创建构建目录
-mkdir build && cd build
-
-# 3. 配置项目（可选指定生成器）
-cmake .. 
-# Windows MSVC: cmake .. -G "Visual Studio 17 2022"
-# Linux: cmake .. -G "Unix Makefiles"
-
-# 4. 编译（Release 模式）
-cmake --build . --config Release
-
-# 5. 运行沙盒测试
-./bin/Release/vk_gs_sandbox.exe  # Windows
-./bin/vk_gs_sandbox              # Linux
+```text
+sandbox.cpp
+  -> GaussianModel::loadFromFile("insect.ply")
+  -> Application
+  -> GaussianRenderer::setRenderData(...)
+  -> GPU depth sort compute shader
+  -> instanced quad graphics pipeline
+  -> swapchain present
 ```
 
-### 着色器编译
-项目自动编译 GLSL 着色器为 SPIR-V：
-- 使用 **glslc** 编译器（性能更优，错误信息友好）
-- 着色器源码位于 `src/shaders/` 目录
-- 编译后的 `.spv` 文件自动复制到构建目录
+## Gaussian 数据
 
-## 使用示例
+`GaussianModel` 当前支持 3DGS 风格的 binary little endian `.ply`：
 
-### 创建自定义应用
-```cpp
-#include "application.hpp"
-#include "gaussian_render_grapics/gaussian_renderer.hpp"
-#include "utils/camera.hpp"
+- 位置：`x`, `y`, `z`
+- 颜色：`f_dc_0..2`, `f_rest_0..44`
+- 不透明度：`opacity`
+- 尺度：`scale_0..2`
+- 旋转：`rot_0..3`
 
-class MyGaussianApp : public vk_gs::Application {
-public:
-    MyGaussianApp() : Application("3DGS Viewer", 1920, 1080) {}
-    
-protected:
-    void initialize() override {
-        // 1. 创建高斯渲染器
-        auto& context = vk_gs::Context::Instance();
-        renderer_ = std::make_unique<vk_gs::GaussianRenderer>(
-            context.getDevice(), 
-            context.getSurface()
-        );
-        
-        // 2. 加载高斯模型
-        gaussian_model_ = std::make_unique<vk_gs::GaussianModel>();
-        gaussian_model_->load_from_ply("data/splat.ply");
-        
-        // 3. 初始化相机
-        camera_ = std::make_unique<vk_gs::Camera>();
-        camera_->setPosition(glm::vec3(0.0f, 0.0f, 5.0f));
-    }
-    
-    void render() override {
-        // 渲染高斯点云
-        if (renderer_ && gaussian_model_) {
-            renderer_->render(
-                *gaussian_model_,
-                camera_->getViewMatrix(),
-                camera_->getProjectionMatrix()
-            );
-        }
-    }
-    
-    void onResize(uint32_t width, uint32_t height) override {
-        Application::onResize(width, height);
-        if (camera_) {
-            camera_->setAspectRatio(static_cast<float>(width) / height);
-        }
-    }
-    
-private:
-    std::unique_ptr<vk_gs::GaussianRenderer> renderer_;
-    std::unique_ptr<vk_gs::GaussianModel> gaussian_model_;
-    std::unique_ptr<vk_gs::Camera> camera_;
-};
+读取时会恢复 alpha、scale，并根据 scale + quaternion 构建协方差矩阵。`.splat`、`.gs`、`.json` 目前只是预留，尚未实现。
 
-int main() {
-    try {
-        MyGaussianApp app;
-        app.run();
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return -1;
-    }
-    return 0;
-}
+## Shader
+
+GLSL 源码在：
+
+```text
+shaders/gaussian_compute_shader/src/
 ```
 
-## 特性
+CMake 使用 `glslangValidator` 编译为 SPIR-V，并复制到运行目录：
 
-### 已实现功能
-- [x] **Vulkan 基础框架**: Instance/Device/Surface 完整初始化流程
-- [x] **多队列架构**: 支持专用 Transfer Queue（自动回退机制）
-- [x] **资源 RAII 管理**: Buffer/Shader/Swapchain/CommandPool 自动化生命周期
-- [x] **Staging Buffer**: 高效的 GPU 数据传输机制
-- [x] **模块化架构**: 通用资源与特定渲染逻辑物理隔离
-- [x] **相机系统**: 第一人称相机控制与矩阵计算
-- [x] **日志系统**: 分级日志与格式化输出
-- [x] **跨平台路径**: 自动解析相对路径为可执行文件目录基准
-- [x] **CMake 构建**: 自动着色器编译与资源部署
+```text
+build/bin/<Config>/shaders/
+```
 
-### TODO
-- [ ] **完整渲染管线**: 深度预传递、透明混合优化
-- [ ] **高斯着色器**: 顶点/片段着色器实现球体光栅化
-- [ ] **文件格式支持**: 原生 .ply/.splat 格式解析器
-- [ ] **GPU 加速排序**: Compute Shader 实现深度排序
-- [ ] **性能优化**: 视锥剔除、LOD、批处理渲染
-- [ ] **VMA 内存管理**: 优化资源分配与释放，避免内存泄漏
+当前 shader 包含：
 
-## 许可证
+- `gaussian_compute_shader.vert`: 按排序索引读取高斯实例，投影协方差，计算屏幕椭圆和 SH 颜色。
+- `gaussian_compute_shader.frag`: 计算高斯 alpha 衰减并输出颜色。
+- `gaussian_compute_shader.comp`: bitonic sort，用于按深度排序高斯索引。
 
-MIT License
+## 构建依赖
 
-## 联系方式
+- CMake 3.26+
+- C++20 编译器
+- Vulkan headers/library
+- `glslangValidator`
+- GLFW3
+- GLM
+- STB headers
 
-如有问题或建议，请通过 GitHub Issues 联系。
+项目会优先 `find_package()` 查找依赖；找不到 GLFW/GLM/STB 时，`src/CMakeLists.txt` 里有 FetchContent 回退逻辑。离线环境建议提前通过 vcpkg 或系统包安装依赖，避免配置阶段尝试访问 GitHub。
 
----
+## 构建
 
-*这是一个活跃开发中的项目，欢迎参与贡献！* 
+Visual Studio 生成器示例：
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022"
+cmake --build build --config Release
+```
+
+如果 Vulkan 或 vcpkg 依赖没有被自动找到，可以显式传入路径，例如：
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" `
+  -DCMAKE_TOOLCHAIN_FILE=C:/Users/weath/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DVulkan_INCLUDE_DIR=C:/Users/weath/vcpkg/installed/x64-windows/include `
+  -DVulkan_LIBRARY=C:/Users/weath/vcpkg/installed/x64-windows/lib/vulkan-1.lib
+```
+
+Release 默认构建：
+
+```powershell
+cmake --build build --config Release
+```
+
+Debug 构建沙盒：
+
+```powershell
+cmake --build build --config Debug --target vk_gs_sandbox
+```
+
+运行位置示例：
+
+```powershell
+.\build\bin\Release\vk_gs_windows.exe
+.\build\bin\Debug\vk_gs_sandbox.exe
+```
+
+## 当前限制
+
+- `apps/main.cpp` 只是最小模板入口，还没有应用逻辑。
+- `sandbox` 依赖根目录的 `insect.ply`，路径当前按构建输出目录相对路径解析。
+- `Application::initialize()` 当前在构造函数中调用，不适合依赖派生类虚函数分发。
+- `.splat`、`.gs`、`.json` 加载尚未实现。
+- GPU 排序和 descriptor 资源重建仍是项目重点维护区域。
+- 没有引入 VMA，buffer/image memory 仍为手写分配。
+
+## 日志
+
+日志使用 `utils/logger.hpp`，默认输出 INFO 及以上级别。Debug 构建会把日志级别调到 `DEBUG_VKGS`。
+
+热路径上的每帧 INFO 已经尽量移除，INFO 主要保留启动、设备选择、模型加载、swapchain 初始化和 resize 重建等状态信息。
+

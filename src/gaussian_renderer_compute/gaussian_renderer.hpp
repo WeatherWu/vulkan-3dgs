@@ -34,6 +34,7 @@ private:
     void createSyncObjects();
     void createComputePipeline();
     void createDescriptorSets();
+    void destroyDescriptorPool();
     void updateDescriptorSets();
     void updateUniformBuffer(const glm::mat4& view, const glm::mat4& projection);
 

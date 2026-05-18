@@ -16,10 +16,7 @@ Pipeline::~Pipeline() {
 void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Extent2D extent) {
     device_ = device;
     
-    LOG_INFO("Creating graphics pipeline with instanced quad rendering");
-    
     // 创建四边形顶点缓冲区（4个顶点：-1,-1 / 1,-1 / -1,1 / 1,1）
-    LOG_INFO("Creating quad vertex buffer");
     std::array<float, 8> quadVertices = {
         -1.0f, -1.0f,  // 左下
          1.0f, -1.0f,  // 右下
@@ -32,7 +29,6 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
                       .setUsage(vk::BufferUsageFlagBits::eVertexBuffer);
     quadVertexBuffer_ = device_.createBuffer(vertexBufferInfo);
     
-    LOG_INFO("Allocating vertex buffer memory");
     vk::MemoryRequirements vertexMemReqs = device_.getBufferMemoryRequirements(quadVertexBuffer_);
     
     // 查找合适的内存类型（需要主机可见且可写）
@@ -58,10 +54,7 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     void* vertexData = device_.mapMemory(quadVertexBufferMemory_, 0, sizeof(quadVertices));
     std::memcpy(vertexData, quadVertices.data(), sizeof(quadVertices));
     device_.unmapMemory(quadVertexBufferMemory_);
-    LOG_INFO("Quad vertex buffer created");
-    
     // 创建索引缓冲区（三角形带顺序：0, 1, 2, 3）
-    LOG_INFO("Creating quad index buffer");
     std::array<uint16_t, 4> quadIndices = {0, 1, 2, 3};
     
     vk::BufferCreateInfo indexBufferInfo{};
@@ -92,8 +85,6 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     void* indexData = device_.mapMemory(quadIndexBufferMemory_, 0, sizeof(quadIndices));
     std::memcpy(indexData, quadIndices.data(), sizeof(quadIndices));
     device_.unmapMemory(quadIndexBufferMemory_);
-    LOG_INFO("Quad index buffer created");
-    
     // 创建顶点着色器
     Shader vertShader;
     vertShader.createFromSpv(device_, "shaders/gaussian_compute_shader.vert.spv", vk::ShaderStageFlagBits::eVertex);
@@ -160,8 +151,6 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
                   .setScissorCount(1)
                   .setPScissors(&scissor);
     
-    LOG_INFO("Configuring pipeline state");
-
     // 光栅化状态
     vk::PipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.setDepthClampEnable(false)
@@ -255,7 +244,6 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     pipelineLayout_ = device_.createPipelineLayout(pipeline_layout_info);
     
     // 创建图形管线
-    LOG_INFO("Creating graphics pipeline");
     vk::GraphicsPipelineCreateInfo pipeline_info{};
     pipeline_info.setStageCount(static_cast<uint32_t>(shader_stages.size()))
                  .setPStages(shader_stages.data())
@@ -273,7 +261,7 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     
     try {
         pipeline_ = device_.createGraphicsPipeline(nullptr, pipeline_info).value;
-        LOG_INFO("Graphics pipeline created successfully");
+        LOG_DEBUG("Graphics pipeline created successfully");
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to create graphics pipeline: {}", e.what());
         throw;
@@ -282,7 +270,7 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
     // 保存 Descriptor Set Layout 供后续使用
     descriptorSetLayout_ = descriptorSetLayout;
     
-    LOG_INFO("Graphics pipeline with instancing created successfully");
+    LOG_INFO("Graphics pipeline initialized");
 }
 
 void Pipeline::cleanup() {
@@ -321,8 +309,6 @@ void Pipeline::cleanup() {
         device_.freeMemory(quadIndexBufferMemory_);
         quadIndexBufferMemory_ = nullptr;
     }
-    
-    LOG_INFO("Pipeline cleaned up");
 }
 
 } // namespace vk_gs

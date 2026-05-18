@@ -15,7 +15,7 @@ ComputePipeline::~ComputePipeline() {
 void ComputePipeline::initialize(vk::Device device, const std::string& shaderPath) {
     device_ = device;
     
-    LOG_INFO("Creating compute pipeline: {}", shaderPath);
+    LOG_DEBUG("Creating compute pipeline: {}", shaderPath);
     
     // 加载 Compute Shader
     computeShader_ = std::make_unique<Shader>();
@@ -70,7 +70,7 @@ void ComputePipeline::initialize(vk::Device device, const std::string& shaderPat
     
     pipeline_ = result.value;
     
-    LOG_INFO("Compute pipeline created successfully");
+    LOG_DEBUG("Compute pipeline created successfully");
 }
 
 void ComputePipeline::cleanup() {
@@ -90,8 +90,6 @@ void ComputePipeline::cleanup() {
     }
     
     computeShader_.reset();
-    
-    LOG_INFO("Compute pipeline cleaned up");
 }
 
 } // namespace vk_gs

@@ -7,19 +7,15 @@
 
 namespace vk_gs {
 
-Device::Device(vk::SurfaceKHR surface) : surface_(surface) {
-    LOG_INFO("Device object created, waiting for explicit initialization");
-}
+Device::Device(vk::SurfaceKHR surface) : surface_(surface) {}
 
 Device::~Device() {
     cleanup();
 }
     
 void Device::createDevice() {
-    LOG_INFO("Picking physical device");
     pickPhysicalDevice(surface_);
     
-    LOG_INFO("Creating logical device");
     vk::DeviceCreateInfo createInfo;
     createInfo.setPEnabledExtensionNames(deviceExtensions_);
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
@@ -69,42 +65,39 @@ void Device::createDevice() {
     
     // 第三步：使用Device更新调度器以获取Device级别的函数
     VULKAN_HPP_DEFAULT_DISPATCHER.init(device_);
-    LOG_INFO("Vulkan dispatcher updated with device");
+    LOG_DEBUG("Vulkan dispatcher updated with device");
     
     // 第四步：获取队列句柄
-    LOG_INFO("Retrieving queue handles");
     graphicsQueue_ = device_.getQueue(queueFamilyIndices_.graphicsIndex.value(), 0);
     presentQueue_ = device_.getQueue(queueFamilyIndices_.presentIndex.value(), 0);
     
     if (queueFamilyIndices_.transferIndex.has_value()) {
         transferQueue_ = device_.getQueue(queueFamilyIndices_.transferIndex.value(), 0);
-        LOG_INFO("Dedicated transfer queue retrieved (family {})", queueFamilyIndices_.transferIndex.value());
+        LOG_DEBUG("Dedicated transfer queue retrieved (family {})", queueFamilyIndices_.transferIndex.value());
     } else {
         // 如果没有专用传输队列，回退到图形队列
         transferQueue_ = graphicsQueue_;
-        LOG_INFO("Using graphics queue as transfer queue");
+        LOG_DEBUG("Using graphics queue as transfer queue");
     }
     
     if (queueFamilyIndices_.computeIndex.has_value()) {
         computeQueue_ = device_.getQueue(queueFamilyIndices_.computeIndex.value(), 0);
-        LOG_INFO("Dedicated compute queue retrieved (family {})", queueFamilyIndices_.computeIndex.value());
+        LOG_DEBUG("Dedicated compute queue retrieved (family {})", queueFamilyIndices_.computeIndex.value());
     } else {
         // 如果没有专用计算队列，回退到图形队列
         computeQueue_ = graphicsQueue_;
-        LOG_INFO("Using graphics queue as compute queue");
+        LOG_DEBUG("Using graphics queue as compute queue");
     }
     
-    LOG_INFO("All queue handles retrieved successfully");
     LOG_INFO("Vulkan device created successfully");
 }
 
 
 void Device::pickPhysicalDevice(vk::SurfaceKHR& surface) {
-    LOG_INFO("Enumerating physical devices");
     auto& context = Context::Instance();
     auto devices = context.getInstance().enumeratePhysicalDevices();
     
-    LOG_INFO("Found {} physical device(s)", devices.size());
+    LOG_DEBUG("Found {} physical device(s)", devices.size());
     
     if (devices.empty()) {
         LOG_ERROR("Failed to find GPUs with Vulkan support");
@@ -112,10 +105,9 @@ void Device::pickPhysicalDevice(vk::SurfaceKHR& surface) {
     }
     
     for (size_t i = 0; i < devices.size(); ++i) {
-        LOG_INFO("Checking device {}", i);
         if (isDeviceSuitable(devices[i], surface)) {
             phyDevice_ = devices[i];
-            LOG_INFO("Selected device {}", i);
+            LOG_DEBUG("Selected device {}", i);
             break;
         }
     }
@@ -157,7 +149,7 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
             // 优先选择专用计算队列
             if (!queueFamilyIndices_.computeIndex.has_value()) {
                 queueFamilyIndices_.computeIndex = i;
-                LOG_INFO("Found dedicated compute queue family: {}", i);
+                LOG_DEBUG("Found dedicated compute queue family: {}", i);
             }
         }
         

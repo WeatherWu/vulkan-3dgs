@@ -42,7 +42,7 @@ void Shader::createFromSpv(vk::Device device, const std::string& filepath, vk::S
     device_ = device;
     stage_ = stage;
     
-    LOG_INFO("Loading shader module: {}", filepath);
+    LOG_DEBUG("Loading shader module: {}", filepath);
     
     // 加载SPIR-V文件
     auto shaderCode = FileUtils::loadBinaryFile(filepath);
@@ -59,14 +59,13 @@ void Shader::createFromSpv(vk::Device device, const std::string& filepath, vk::S
         throw std::runtime_error("Failed to create shader module: " + filepath);
     }
     
-    LOG_INFO("Shader module created successfully: {}", filepath);
+    LOG_DEBUG("Shader module created successfully: {}", filepath);
 }
 
 void Shader::cleanup() {
     if (shaderModule_) {
         device_.destroyShaderModule(shaderModule_);
         shaderModule_ = nullptr;
-        LOG_INFO("Shader module cleaned up");
     }
 }
 

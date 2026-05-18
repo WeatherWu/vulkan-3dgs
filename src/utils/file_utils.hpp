@@ -78,7 +78,7 @@ public:
         file.read(buffer.data(), static_cast<std::streamsize>(file_size));
         file.close();
         
-        LOG_INFO("Loaded shader file: {} ({} bytes)", filename, file_size);
+        LOG_DEBUG("Loaded shader file: {} ({} bytes)", filename, file_size);
         return buffer;
     }
 };

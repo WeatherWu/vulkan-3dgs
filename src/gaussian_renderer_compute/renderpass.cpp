@@ -17,8 +17,6 @@ RenderPass::~RenderPass() {
 void RenderPass::initialize(vk::Format swapchain_format) {
     auto device = Context::Instance().Device();
     
-    LOG_INFO("Creating render pass");
-    
     // 颜色附件描述
     vk::AttachmentDescription color_attachment{};
     color_attachment.setFormat(swapchain_format)
@@ -90,15 +88,13 @@ void RenderPass::initialize(vk::Format swapchain_format) {
         LOG_ERROR("Failed to create render pass");
         throw std::runtime_error("Failed to create render pass");
     }
-    
-    LOG_INFO("Render pass created successfully");
+    LOG_DEBUG("Render pass created successfully");
 }
 
 void RenderPass::cleanup() {
     if (renderPass_) {
         Context::Instance().Device().destroyRenderPass(renderPass_);
         renderPass_ = nullptr;
-        LOG_INFO("Render pass cleaned up");
     }
 }
 

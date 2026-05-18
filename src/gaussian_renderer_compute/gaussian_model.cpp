@@ -229,7 +229,7 @@ bool GaussianModel::parsePLYHeader(std::ifstream& file, uint32_t& vertex_count) 
         return false;
     }
     
-    LOG_INFO("Parsed {} properties from PLY header", ply_properties_.size());
+    LOG_DEBUG("Parsed {} properties from PLY header", ply_properties_.size());
     
     return true;
 }
@@ -386,7 +386,7 @@ bool GaussianModel::parsePLYVertex(std::ifstream& file, GaussianPoint& point) co
 bool GaussianModel::loadFromFile(const std::string& filename) {
     std::string format = detectFileFormat(filename);
     
-    LOG_INFO("Detected file format: {}", format);
+    LOG_DEBUG("Detected file format: {}", format);
     
     if (format == "ply") {
         return loadFromPLY(filename);
@@ -537,7 +537,7 @@ void GaussianModel::updateBoundingBoxVolume() {
 void GaussianModel::buildSpatialIndex() {
     // TODO: 实现空间索引结构（如八叉树、BVH等）
     updateBoundingBoxVolume();
-    LOG_INFO("Spatial index built (simplified implementation)");
+    LOG_DEBUG("Spatial index built (simplified implementation)");
 }
 
 void GaussianModel::translate(const glm::vec3& translation) {

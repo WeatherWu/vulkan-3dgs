@@ -36,8 +36,6 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     auto device = getDevice();
     auto surface = context.getSurface();
     
-    LOG_INFO("Got Vulkan device and surface");
-    
     // 初始化GPU排序缓存状态
     gpu_sort_completed_ = false;
     last_sorted_point_count_ = 0;
@@ -49,44 +47,34 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     // 1. 获取窗口尺寸
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
-    LOG_INFO("Window size: {}x{}", width, height);
     
     // 2. 创建 Swapchain（只创建图像和ImageView）
     swapchain_ = std::make_unique<Swapchain>(surface);
     swapchain_->createSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-    LOG_INFO("Swapchain created with {} images", swapchain_->getImageCount());
     
     // 3. 创建 RenderPass
     renderPass_ = std::make_unique<RenderPass>();
     renderPass_->initialize(swapchain_->getImageFormat());
-    LOG_INFO("RenderPass created");
     
     // 4. 创建 Framebuffers（需要RenderPass）
     swapchain_->createFramebuffers(device, renderPass_->getRenderPass(), RenderPass::DepthFormat);
-    LOG_INFO("Framebuffers created");
     
     // 5. 创建 Pipeline
     pipeline_ = std::make_unique<Pipeline>();
     pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
-    LOG_INFO("Graphics Pipeline created");
     
     // 6. 创建 Compute Pipeline
     createComputePipeline();
-    LOG_INFO("Compute Pipeline created");
     
     // 7. 创建高斯特有资源
     createBuffers();
-    LOG_INFO("Buffers created");
     
     createSyncObjects();
-    LOG_INFO("Sync objects created");
     
     LOG_INFO("Gaussian Renderer initialized successfully");
 }
 
 void GaussianRenderer::cleanup() {
-    LOG_INFO("Cleaning up Gaussian-specific resources");
-    
     auto device = getDevice();
     
     // 等待设备空闲
@@ -112,22 +100,19 @@ void GaussianRenderer::cleanup() {
     renderFinishedSemaphores_.clear();
     inFlightFences_.clear();
     
-    // 2. 清理缓冲区（释放Descriptor Set引用的资源）
+    // 2. 清理Descriptor Pool（会自动销毁所有Descriptor Sets）
+    destroyDescriptorPool();
+    
+    // 3. 清理缓冲区
     instanceBuffer_.cleanup();
     uniformBuffer_.cleanup();
     screenInfoBuffer_.cleanup();
     gpuIndexBuffer_.cleanup();
     gpuDistanceBuffer_.cleanup();
     
-    // 3. 清理Pipelines
+    // 4. 清理Pipelines
     pipeline_.reset();
     computePipeline_.reset();
-    
-    // 4. 清理Descriptor Pool（会自动销毁所有Descriptor Sets）
-    if (descriptorPool_) {
-        device.destroyDescriptorPool(descriptorPool_);
-        descriptorPool_ = nullptr;
-    }
     
     // 5. 清理命令池
     commandPool_.cleanup();
@@ -137,12 +122,9 @@ void GaussianRenderer::cleanup() {
     renderPass_.reset();
     swapchain_.reset();
     
-    LOG_INFO("Gaussian Renderer cleaned up");
 }
 
 void GaussianRenderer::createComputePipeline() {
-    LOG_INFO("Creating compute pipeline for GPU sorting");
-    
     auto device = getDevice();
     
     // 创建 Compute Pipeline（使用独立封装的类）
@@ -160,8 +142,6 @@ void GaussianRenderer::createComputePipeline() {
     uint32_t computeQueueFamily = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
     computeCommandPool_.create(device, computeQueueFamily, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     computeCommandBuffer_ = computeCommandPool_.allocateCommandBuffer();
-    
-    LOG_INFO("Compute pipeline created successfully");
 }
 
 void GaussianRenderer::render() {
@@ -193,8 +173,6 @@ void GaussianRenderer::render() {
             LOG_INFO("Suboptimal swapchain detected, consider recreating");
         }
     }
-    LOG_INFO("Acquired swap chain image successfully");
-    
     // 3. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
     uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
     
@@ -215,21 +193,16 @@ void GaussianRenderer::render() {
         last_view_matrix_ = ubo_[currentFrame_].view;
         last_projection_matrix_ = ubo_[currentFrame_].projection;
     }
-    LOG_INFO("GPU sorting  successfully");
-    
     // 4. 更新Instance Buffer（仅在首次或模型变化时重建）
     if (!instanceBuffer_.getBuffer()) {
         updateVertexBuffer();
     }
-    LOG_INFO("Vertex buffer updated successfully");
     
     // 5. 更新Uniform Buffer（每帧更新）
     updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection);
-    LOG_INFO("Uniform buffer updated successfully");
     
     // 6. 记录渲染命令
     recordCommandBuffer(imageIndex);
-    LOG_INFO("Command buffer recorded successfully");
     
     // 7. 提交图形命令
     vk::SubmitInfo submitInfo{};
@@ -250,7 +223,6 @@ void GaussianRenderer::render() {
     device.resetFences(inFlightFences_[currentFrame_]);
     
     context.getDevice().getGraphicsQueue().submit(submitInfo, inFlightFences_[currentFrame_]);
-    LOG_INFO("Command buffer submitted successfully");
     
     // 8. 呈现图像
     vk::PresentInfoKHR presentInfo{};
@@ -266,7 +238,6 @@ void GaussianRenderer::render() {
     if (presentResult != vk::Result::eSuccess) {
         LOG_ERROR("Failed to present image");
     }
-    LOG_INFO("Image presented successfully");
     
     // 9. 切换到下一帧
     currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -286,6 +257,10 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     auto device = getDevice();
     device.waitIdle();
     
+    // Graphics descriptor sets were allocated from the old pipeline's set
+    // layout. Destroy them before destroying/recreating that layout.
+    destroyDescriptorPool();
+    
     swapchain_->recreateSwapchain(width, height);
     
     renderPass_->cleanup();
@@ -294,6 +269,9 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     
     pipeline_->cleanup();
     pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
+    
+    createDescriptorSets();
+    updateDescriptorSets();
 }
 
 void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera) {
@@ -320,8 +298,6 @@ void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4
 }
 
 void GaussianRenderer::createBuffers() {
-    LOG_INFO("Creating Gaussian buffers with Jacobian projection support");
-    
     auto& context = Context::Instance();
     auto device = getDevice();
     auto physicalDevice = context.PhysicalDevice();
@@ -351,19 +327,13 @@ void GaussianRenderer::createBuffers() {
                                 vk::BufferUsageFlagBits::eUniformBuffer,
                                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
     }
-    
-    LOG_INFO("Gaussian Jacobian projection buffers created successfully");
 }
 
 void GaussianRenderer::createSyncObjects() {
-    LOG_INFO("Creating synchronization objects (MAX_FRAMES_IN_FLIGHT={})", MAX_FRAMES_IN_FLIGHT);
-    
     auto device = getDevice();
     
     // 获取Swapchain图像数量（仅用于日志）
     swapchainImageCount_ = swapchain_->getImageCount();
-    LOG_INFO("Swapchain has {} images, using {} frames in flight", 
-             swapchainImageCount_, MAX_FRAMES_IN_FLIGHT);
     
     // 所有同步对象都按MAX_FRAMES_IN_FLIGHT创建
     imageAvailableSemaphores_.resize(MAX_FRAMES_IN_FLIGHT);
@@ -390,12 +360,12 @@ void GaussianRenderer::createSyncObjects() {
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         commandBuffers_[i] = commandPool_.allocateCommandBuffer();
     }
-    
-    LOG_INFO("Synchronization objects created successfully");
 }
 
 void GaussianRenderer::createDescriptorSets() {
     auto device = getDevice();
+    
+    destroyDescriptorPool();
     
     // 创建 Descriptor Pool（支持 Uniform Buffer 和 Storage Buffer）
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
@@ -431,8 +401,20 @@ void GaussianRenderer::createDescriptorSets() {
     
     computeDescriptorSets_ = device.allocateDescriptorSets(computeAllocInfo);
     
-    LOG_INFO("Descriptor sets created successfully (Graphics: {}, Compute: {})", 
-             descriptorSets_.size(), computeDescriptorSets_.size());
+    LOG_DEBUG("Descriptor sets created successfully (Graphics: {}, Compute: {})", 
+              descriptorSets_.size(), computeDescriptorSets_.size());
+}
+
+void GaussianRenderer::destroyDescriptorPool() {
+    if (!descriptorPool_) {
+        return;
+    }
+
+    auto device = getDevice();
+    device.destroyDescriptorPool(descriptorPool_);
+    descriptorPool_ = nullptr;
+    descriptorSets_.clear();
+    computeDescriptorSets_.clear();
 }
 
 void GaussianRenderer::updateDescriptorSets() {
@@ -518,7 +500,14 @@ void GaussianRenderer::updateDescriptorSets() {
         }
     }
     
-    // 为每个 Compute Descriptor Set 更新 Storage Buffer 绑定
+    // 为每个 Compute Descriptor Set 更新 Storage Buffer 绑定。
+    // GPU sort buffers are created lazily by computeDistances(), so resize can
+    // recreate descriptor sets before these buffers exist.
+    if (!gpuIndexBuffer_.getBuffer() || !gpuDistanceBuffer_.getBuffer()) {
+        LOG_DEBUG("Skipping compute descriptor update until GPU sort buffers exist");
+        return;
+    }
+
     for (size_t i = 0; i < computeDescriptorSets_.size(); ++i) {
         std::array<vk::WriteDescriptorSet, 2> writeDescriptorSets{};
         
@@ -553,13 +542,11 @@ void GaussianRenderer::updateDescriptorSets() {
                                    0, nullptr);
     }
     
-    LOG_INFO("Descriptor sets updated (Graphics UBOs+SSBO: {}, Compute SSBOs: {})", 
-             descriptorSets_.size(), computeDescriptorSets_.size());
+    LOG_DEBUG("Descriptor sets updated (Graphics: {}, Compute: {})", 
+              descriptorSets_.size(), computeDescriptorSets_.size());
 }
 
 void GaussianRenderer::sortGaussiansByDepthGPU() {
-    LOG_INFO("Starting GPU sorting");
-    
     if (!current_model_ || current_model_->isEmpty()) {
         LOG_WARN("Skipping sort: no model or empty");
         return;
@@ -661,7 +648,6 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     // 重置Fence
     device.resetFences(sortFence);
     
-    LOG_INFO("Submitting {} dispatches in single batch", totalDispatches);
     auto sortStart = std::chrono::high_resolution_clock::now();
     context.getDevice().getGraphicsQueue().submit(submitInfo, sortFence);
     
@@ -669,12 +655,10 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     (void)device.waitForFences(sortFence, VK_TRUE, UINT64_MAX);
     auto sortEnd = std::chrono::high_resolution_clock::now();
     auto sortMs = std::chrono::duration_cast<std::chrono::milliseconds>(sortEnd - sortStart).count();
-    LOG_INFO("All dispatches completed (took {} ms)", sortMs);
+    LOG_DEBUG("GPU sorting completed: {} dispatches, {} ms", totalDispatches, sortMs);
     
     // 销毁复用的Fence
     device.destroyFence(sortFence);
-    
-    LOG_INFO("GPU sorting completed ({} dispatches)", totalDispatches);
 }
 
 void GaussianRenderer::computeDistances(const glm::vec3& cameraPosition) {

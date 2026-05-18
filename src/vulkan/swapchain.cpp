@@ -13,7 +13,6 @@ Swapchain::Swapchain(vk::SurfaceKHR surface):
     , imageCount_(0)
     , imageFormat_()
     , extent_() {
-    LOG_INFO("Creating swapchain");
 }
 
 Swapchain::~Swapchain() {
@@ -21,8 +20,6 @@ Swapchain::~Swapchain() {
 }
 
 void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
-    LOG_INFO("Creating swapchain with size: {}x{}", width, height);
-    
     auto phyDevice = Context::Instance().PhysicalDevice();
     auto device = Context::Instance().Device();
     auto surface = surface_;
@@ -37,9 +34,9 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
     }
     vk::SurfaceFormatKHR surface_format = chooseSwapSurfaceFormat(available_formats);
     imageFormat_ = surface_format.format;
-    LOG_INFO("Selected swapchain format: {}, color space: {}",
-             vk::to_string(surface_format.format),
-             vk::to_string(surface_format.colorSpace));
+    LOG_DEBUG("Selected swapchain format: {}, color space: {}",
+              vk::to_string(surface_format.format),
+              vk::to_string(surface_format.colorSpace));
     
     // 选择呈现模式
     std::vector<vk::PresentModeKHR> available_present_modes = phyDevice.getSurfacePresentModesKHR(surface_);
@@ -65,7 +62,7 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
         imageCount_ = capabilities.maxImageCount;
     }
     
-    LOG_INFO("Swapchain configured with {} images", imageCount_);
+    LOG_DEBUG("Swapchain configured with {} images", imageCount_);
     
     // 创建交换链
     vk::SwapchainCreateInfoKHR createInfo{};
@@ -98,8 +95,6 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
         throw std::runtime_error("Failed to create swapchain");
     }
     
-    LOG_INFO("Swapchain created successfully");
-    
     // 获取交换链图像
     std::vector<vk::Image> swapchain_images = device.getSwapchainImagesKHR(swapchain_);
     
@@ -127,12 +122,10 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
         // 不在此处创建Framebuffer，等待RenderPass创建后再创建
         // Framebuffer将在外部通过createFramebuffers方法创建
     }
-    
-    LOG_INFO("Created {} swapchain images", images_.size());
+    LOG_INFO("Swapchain initialized: {}x{}, {} images", extent_.width, extent_.height, images_.size());
 }
 
 void Swapchain::createFramebuffers(vk::Device device, vk::RenderPass renderPass, vk::Format depthFormat) {
-    LOG_INFO("Creating framebuffers with render pass");
     createDepthResources(device, depthFormat);
     
     for (size_t i = 0; i < images_.size(); ++i) {
@@ -155,8 +148,7 @@ void Swapchain::createFramebuffers(vk::Device device, vk::RenderPass renderPass,
             throw std::runtime_error("Failed to create framebuffer");
         }
     }
-    
-    LOG_INFO("Created {} framebuffers", images_.size());
+    LOG_DEBUG("Created {} framebuffers", images_.size());
 }
 
 void Swapchain::createDepthResources(vk::Device device, vk::Format depthFormat) {
@@ -236,8 +228,6 @@ void Swapchain::cleanup() {
         
         device.destroySwapchainKHR(swapchain_);
         swapchain_ = nullptr;
-        
-        LOG_INFO("Swapchain cleaned up");
     }
 }
 
@@ -256,8 +246,6 @@ uint32_t Swapchain::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags 
 }
 
 void Swapchain::recreateSwapchain(uint32_t width, uint32_t height) {
-    LOG_INFO("Recreating swapchain");
-    
     // 等待设备空闲
     auto device = Context::Instance().Device();
     device.waitIdle();
@@ -295,7 +283,7 @@ vk::PresentModeKHR Swapchain::chooseSwapPresentMode(const std::vector<vk::Presen
     // 优先选择 Mailbox 模式（三重缓冲，低延迟）
     for (const auto& available_present_mode : available_present_modes) {
         if (available_present_mode == vk::PresentModeKHR::eMailbox) {
-            LOG_INFO("Selected present mode: Mailbox");
+            LOG_DEBUG("Selected present mode: Mailbox");
             return available_present_mode;
         }
     }
@@ -303,7 +291,7 @@ vk::PresentModeKHR Swapchain::chooseSwapPresentMode(const std::vector<vk::Presen
     // 其次选择 FIFO 模式（垂直同步，保证无撕裂）
     for (const auto& available_present_mode : available_present_modes) {
         if (available_present_mode == vk::PresentModeKHR::eFifo) {
-            LOG_INFO("Selected present mode: FIFO (VSync)");
+            LOG_DEBUG("Selected present mode: FIFO (VSync)");
             return available_present_mode;
         }
     }

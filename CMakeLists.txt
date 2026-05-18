@@ -128,8 +128,10 @@ endif()
 
 # 添加子目录
 add_subdirectory(src)
-# add_subdirectory(apps)
-add_subdirectory(sandbox)
+add_subdirectory(apps)
+if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_subdirectory(sandbox)
+endif()
 
 # 确保在构建库之前编译着色器
 if(GLSLANG_VALIDATOR)
