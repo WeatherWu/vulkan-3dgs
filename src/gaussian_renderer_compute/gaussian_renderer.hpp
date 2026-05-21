@@ -30,6 +30,10 @@ public:
     void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera);
     
 private:
+    void initializeImGui(GLFWwindow* window);
+    void shutdownImGui();
+    void beginImGuiFrame();
+
     void createBuffers();
     void createSyncObjects();
     void createComputePipeline();
@@ -42,7 +46,7 @@ private:
     
     // GPU 深度排序
     void sortGaussiansByDepthGPU();
-    void computeDistances(const glm::vec3& cameraPosition);
+    void ensureSortBuffers(uint32_t pointCount);
     
     // 更新顶点缓冲区数据
     void updateVertexBuffer();
@@ -54,14 +58,22 @@ private:
     std::unique_ptr<Swapchain> swapchain_;
     std::unique_ptr<RenderPass> renderPass_;
     std::unique_ptr<Pipeline> pipeline_;
-    std::unique_ptr<ComputePipeline> computePipeline_;
+    std::unique_ptr<ComputePipeline> radixKeygenPipeline_;
+    std::unique_ptr<ComputePipeline> radixHistogramPipeline_;
+    std::unique_ptr<ComputePipeline> radixPrefixPipeline_;
+    std::unique_ptr<ComputePipeline> radixScatterPipeline_;
     
     // 高斯数据缓冲区
     Buffer instanceBuffer_;    // 实例数据缓冲区（SSBO，存储所有高斯属性）
     Buffer uniformBuffer_;     // 主Uniform Buffer (View/Projection/Camera)
     Buffer screenInfoBuffer_;  // 屏幕信息Uniform Buffer (分辨率)
     Buffer gpuIndexBuffer_;    // GPU排序索引缓冲
-    Buffer gpuDistanceBuffer_; // GPU距离计算缓冲
+    Buffer gpuKeyBuffer_;      // GPU排序key缓冲
+    Buffer gpuIndexTempBuffer_;
+    Buffer gpuKeyTempBuffer_;
+    Buffer radixHistogramBuffer_;
+    Buffer radixOffsetBuffer_;
+    uint32_t sortBufferCapacity_ = 0;
     
     // Descriptor Set 相关
     vk::DescriptorPool descriptorPool_;
@@ -98,6 +110,8 @@ private:
     const GaussianModel* current_model_ = nullptr;
 
     vk_gs::Camera camera_;
+
+    bool imguiInitialized_ = false;
     
     // GPU排序缓存状态
     bool gpu_sort_completed_ = false;

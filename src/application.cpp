@@ -5,8 +5,10 @@
 #include "gaussian_renderer_compute/gaussian_model.hpp"
 #include "utils/logger.hpp"
 
+#include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <algorithm>
 #include <cmath>
 
 namespace vk_gs {
@@ -36,6 +38,9 @@ Application::Application(const std::string& title, int width, int height, Render
     // 使用工厂方法创建具体的渲染器实例
     renderer_ = createRenderer(current_mode_);
     renderer_->initialize(window_->get_handle());
+    renderer_->setImGuiDrawCallback([this]() {
+        drawImGuiControls();
+    });
 
     window_->set_resize_callback([this](int width, int height) {
         if (width <= 0 || height <= 0) {
@@ -71,6 +76,18 @@ void Application::run() {
 
 void Application::tick() {
     window_->poll_events();
+
+    double currentTime = glfwGetTime();
+    float deltaTime = 0.0f;
+    if (has_last_tick_time_) {
+        deltaTime = static_cast<float>(currentTime - last_tick_time_);
+        deltaTime = std::clamp(deltaTime, 0.0f, 0.1f);
+    } else {
+        has_last_tick_time_ = true;
+    }
+    last_tick_time_ = currentTime;
+
+    update(deltaTime);
     render();
 }
 
@@ -96,6 +113,9 @@ void Application::switchRenderMode(RenderMode mode) {
     // 3. 重新初始化
     if (renderer_) {
         renderer_->initialize(window_->get_handle());
+        renderer_->setImGuiDrawCallback([this]() {
+            drawImGuiControls();
+        });
         LOG_INFO("Successfully switched to new render mode");
     } else {
         LOG_ERROR("Failed to create renderer for mode: {}", static_cast<int>(mode));
@@ -123,25 +143,7 @@ void Application::initialize() {
 }
 
 void Application::update(float delta_time) {
-    // 子类可以重写此方法
-    // 默认实现：使用简单的旋转相机
-    static float time = 0.0f;
-    time += delta_time;
-    
-    // 简单的环绕相机
-    float radius = 3.0f;
-    float camX = std::sin(time * 0.5f) * radius;
-    float camZ = std::cos(time * 0.5f) * radius;
-    
-    glm::vec3 cameraPos(camX, 0.0f, camZ);
-    glm::vec3 target(0.0f, 0.0f, 0.0f);
-    glm::vec3 up(0.0f, 1.0f, 0.0f);
-    
-    view_matrix_ = glm::lookAt(cameraPos, target, up);
-    projection_matrix_ = glm::perspective(glm::radians(45.0f), 
-                                          1280.0f / 720.0f, 
-                                          0.1f, 100.0f);
-    projection_matrix_[1][1] *= -1.0f;
+    updateOrbitCamera(delta_time);
 }
 
 void Application::render() {
@@ -176,6 +178,7 @@ void Application::render() {
 
 void Application::setModel(const GaussianModel* model) {
     current_model_ = model;
+    resetOrbitFromModel();
 }
 
 void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) {
@@ -186,6 +189,17 @@ void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) 
 void Application::setTrueCamera(const vk_gs::Camera& camera) {
     camera_ = camera;
     has_true_camera_ = true;
+
+    glm::vec3 offset = camera_.get_position() - orbit_center_;
+    float horizontalDistance = std::sqrt(offset.x * offset.x + offset.z * offset.z);
+    float distance = glm::length(offset);
+    if (distance > 0.001f) {
+        orbit_radius_ = distance;
+        orbit_angle_ = std::atan2(offset.z, offset.x);
+        orbit_pitch_ = std::asin(std::clamp(offset.y / distance, -1.0f, 1.0f));
+    } else if (horizontalDistance > 0.001f) {
+        orbit_angle_ = std::atan2(offset.z, offset.x);
+    }
 }
 
 void Application::cleanup() {
@@ -193,6 +207,119 @@ void Application::cleanup() {
         renderer_->cleanup();
     }
     // 注意：vulkan_context_是单例，不需要在这里清理
+}
+
+void Application::resetOrbitFromModel() {
+    if (!current_model_ || current_model_->isEmpty()) {
+        orbit_center_ = glm::vec3(0.0f);
+        orbit_radius_ = 5.0f;
+        orbit_angle_ = 0.0f;
+        orbit_pitch_ = 0.0f;
+        return;
+    }
+
+    orbit_center_ = current_model_->get_center();
+    orbit_radius_ = std::max(current_model_->get_radius() * 2.5f, 1.0f);
+    orbit_angle_ = 0.0f;
+    orbit_pitch_ = 0.0f;
+}
+
+void Application::updateOrbitCamera(float delta_time) {
+    if (!orbit_camera_enabled_ || !current_model_) {
+        return;
+    }
+
+    updateOrbitInput(delta_time);
+
+    float cosPitch = std::cos(orbit_pitch_);
+
+    glm::vec3 offset(
+        std::cos(orbit_angle_) * cosPitch * orbit_radius_,
+        std::sin(orbit_pitch_) * orbit_radius_,
+        std::sin(orbit_angle_) * cosPitch * orbit_radius_
+    );
+
+    camera_.set_position(orbit_center_ + offset);
+    camera_.set_target(orbit_center_);
+    has_true_camera_ = true;
+
+    if (!window_) {
+        return;
+    }
+
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    glfwGetFramebufferSize(window_->get_handle(), &framebufferWidth, &framebufferHeight);
+    if (framebufferWidth <= 0 || framebufferHeight <= 0) {
+        return;
+    }
+
+    float aspect = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
+    view_matrix_ = camera_.get_view_matrix();
+    projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
+}
+
+void Application::updateOrbitInput(float delta_time) {
+    (void)delta_time;
+
+    if (!window_) {
+        return;
+    }
+
+    bool imguiCapturingMouse = false;
+    if (ImGui::GetCurrentContext()) {
+        imguiCapturingMouse = ImGui::GetIO().WantCaptureMouse;
+    }
+
+    bool leftDown = glfwGetMouseButton(window_->get_handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    double mouseX = 0.0;
+    double mouseY = 0.0;
+    glfwGetCursorPos(window_->get_handle(), &mouseX, &mouseY);
+
+    if (!leftDown || imguiCapturingMouse) {
+        orbit_dragging_ = false;
+        last_mouse_x_ = mouseX;
+        last_mouse_y_ = mouseY;
+        return;
+    }
+
+    if (!orbit_dragging_) {
+        orbit_dragging_ = true;
+        last_mouse_x_ = mouseX;
+        last_mouse_y_ = mouseY;
+        return;
+    }
+
+    double deltaX = mouseX - last_mouse_x_;
+    double deltaY = mouseY - last_mouse_y_;
+    last_mouse_x_ = mouseX;
+    last_mouse_y_ = mouseY;
+
+    orbit_angle_ -= static_cast<float>(deltaX) * orbit_mouse_sensitivity_;
+    orbit_pitch_ -= static_cast<float>(deltaY) * orbit_mouse_sensitivity_;
+    orbit_pitch_ = std::clamp(orbit_pitch_, glm::radians(-89.0f), glm::radians(89.0f));
+}
+
+void Application::drawImGuiControls() {
+    ImGui::Begin("Camera");
+    ImGui::Checkbox("Orbit", &orbit_camera_enabled_);
+    ImGui::SliderFloat("Sensitivity", &orbit_mouse_sensitivity_, 0.001f, 0.02f, "%.3f");
+
+    float radiusLimit = std::max(orbit_radius_ * 3.0f, 20.0f);
+    ImGui::SliderFloat("Radius", &orbit_radius_, 0.1f, radiusLimit, "%.2f");
+
+    float pitchDegrees = glm::degrees(orbit_pitch_);
+    if (ImGui::SliderFloat("Pitch", &pitchDegrees, -89.0f, 89.0f, "%.1f deg")) {
+        orbit_pitch_ = glm::radians(pitchDegrees);
+    }
+
+    if (ImGui::Button("Reset")) {
+        resetOrbitFromModel();
+    }
+
+    const glm::vec3& position = camera_.get_position();
+    ImGui::Text("Position %.2f %.2f %.2f", position.x, position.y, position.z);
+    ImGui::End();
 }
 
 }

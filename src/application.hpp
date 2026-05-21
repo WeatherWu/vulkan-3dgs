@@ -70,6 +70,24 @@ protected:
 private:
     // 工厂方法：根据渲染模式创建对应的渲染器实例
     std::unique_ptr<Renderer> createRenderer(RenderMode mode);
+    void drawImGuiControls();
+    void resetOrbitFromModel();
+    void updateOrbitCamera(float delta_time);
+    void updateOrbitInput(float delta_time);
+
+    bool orbit_camera_enabled_ = true;
+    float orbit_mouse_sensitivity_ = 0.005f;
+    float orbit_radius_ = 5.0f;
+    float orbit_angle_ = 0.0f;
+    float orbit_pitch_ = 0.0f;
+    glm::vec3 orbit_center_ = glm::vec3(0.0f);
+
+    bool orbit_dragging_ = false;
+    double last_mouse_x_ = 0.0;
+    double last_mouse_y_ = 0.0;
+
+    bool has_last_tick_time_ = false;
+    double last_tick_time_ = 0.0;
 };
 
 } // namespace vk_gs

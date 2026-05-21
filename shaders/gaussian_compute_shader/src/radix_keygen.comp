@@ -1,0 +1,63 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) writeonly buffer IndexOutBuffer {
+    uint indicesOut[];
+};
+
+layout(std430, binding = 1) writeonly buffer KeyOutBuffer {
+    uint keysOut[];
+};
+
+struct GaussianInstance {
+    vec4 position;
+    vec4 scale;
+    vec4 rotation;
+    vec4 sh0_alpha;
+    vec4 sh1[3];
+    vec4 sh2[5];
+    vec4 sh3[7];
+};
+
+layout(std430, binding = 6) readonly buffer GaussianInstances {
+    GaussianInstance instances[];
+};
+
+layout(binding = 7) uniform UniformBufferObject {
+    mat4 view;
+    mat4 projection;
+    vec4 cameraPosition_time;
+    vec4 focal;
+} ubo;
+
+layout(push_constant) uniform RadixParams {
+    uint count;
+    uint shift;
+    uint groupCount;
+    uint padding;
+} params;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= params.count) {
+        return;
+    }
+
+    vec4 centerClip = ubo.projection * ubo.view * vec4(instances[index].position.xyz, 1.0);
+    if (centerClip.w <= 1e-6) {
+        indicesOut[index] = 0xffffffffu;
+        keysOut[index] = 0u;
+        return;
+    }
+
+    vec3 ndc = centerClip.xyz / centerClip.w;
+    if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) {
+        indicesOut[index] = 0xffffffffu;
+        keysOut[index] = 0u;
+        return;
+    }
+
+    indicesOut[index] = index;
+    keysOut[index] = floatBitsToUint(ndc.z);
+}

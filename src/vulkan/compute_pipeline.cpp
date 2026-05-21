@@ -21,20 +21,18 @@ void ComputePipeline::initialize(vk::Device device, const std::string& shaderPat
     computeShader_ = std::make_unique<Shader>();
     computeShader_->createFromSpv(device_, shaderPath, vk::ShaderStageFlagBits::eCompute);
     
-    // 创建 Descriptor Set Layout（支持两个 Storage Buffer）
-    std::array<vk::DescriptorSetLayoutBinding, 2> storageBufferBindings{};
+    // 创建 Descriptor Set Layout。Radix sort and key generation share one
+    // layout: index/key ping-pong buffers, histogram/offset tables, instance
+    // data, and the renderer UBO.
+    std::array<vk::DescriptorSetLayoutBinding, 8> storageBufferBindings{};
     
-    // Binding 0: IndexBuffer
-    storageBufferBindings[0].setBinding(0)
-                            .setDescriptorType(vk::DescriptorType::eStorageBuffer)
-                            .setDescriptorCount(1)
-                            .setStageFlags(vk::ShaderStageFlagBits::eCompute);
-    
-    // Binding 1: DistanceBuffer
-    storageBufferBindings[1].setBinding(1)
-                            .setDescriptorType(vk::DescriptorType::eStorageBuffer)
-                            .setDescriptorCount(1)
-                            .setStageFlags(vk::ShaderStageFlagBits::eCompute);
+    for (uint32_t binding = 0; binding < storageBufferBindings.size(); ++binding) {
+        storageBufferBindings[binding].setBinding(binding)
+                                      .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+                                      .setDescriptorCount(1)
+                                      .setStageFlags(vk::ShaderStageFlagBits::eCompute);
+    }
+    storageBufferBindings[7].setDescriptorType(vk::DescriptorType::eUniformBuffer);
     
     vk::DescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.setBindingCount(static_cast<uint32_t>(storageBufferBindings.size()))
@@ -46,7 +44,7 @@ void ComputePipeline::initialize(vk::Device device, const std::string& shaderPat
     vk::PushConstantRange pushConstantRange{};
     pushConstantRange.setStageFlags(vk::ShaderStageFlagBits::eCompute)
                      .setOffset(0)
-                     .setSize(sizeof(uint32_t) * 3); // count, stage, substage
+                     .setSize(sizeof(uint32_t) * 4);
     
     // 创建 Pipeline Layout
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};

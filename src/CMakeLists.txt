@@ -6,6 +6,7 @@ project(vk_gs_core VERSION 1.0.0 LANGUAGES CXX)
 find_package(Vulkan REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 find_package(Stb QUIET)
 
 # 查找GLFW
@@ -85,6 +86,7 @@ target_link_libraries(vk_gs_core PUBLIC
 
 target_link_libraries(vk_gs_core PRIVATE
     glm::glm
+    imgui::imgui
 )
 
 # 编译器选项

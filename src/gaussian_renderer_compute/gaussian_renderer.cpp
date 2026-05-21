@@ -1,6 +1,9 @@
 #include "gaussian_renderer.hpp"
 #include "context/context.hpp"
 #include "utils/logger.hpp"
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -70,6 +73,7 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     createBuffers();
     
     createSyncObjects();
+    initializeImGui(window);
     
     LOG_INFO("Gaussian Renderer initialized successfully");
 }
@@ -81,6 +85,8 @@ void GaussianRenderer::cleanup() {
     if (device) {
         device.waitIdle();
     }
+
+    shutdownImGui();
     
     // 1. 清理同步对象（Fences和Semaphores）
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -108,11 +114,19 @@ void GaussianRenderer::cleanup() {
     uniformBuffer_.cleanup();
     screenInfoBuffer_.cleanup();
     gpuIndexBuffer_.cleanup();
-    gpuDistanceBuffer_.cleanup();
+    gpuKeyBuffer_.cleanup();
+    gpuIndexTempBuffer_.cleanup();
+    gpuKeyTempBuffer_.cleanup();
+    radixHistogramBuffer_.cleanup();
+    radixOffsetBuffer_.cleanup();
+    sortBufferCapacity_ = 0;
     
     // 4. 清理Pipelines
     pipeline_.reset();
-    computePipeline_.reset();
+    radixKeygenPipeline_.reset();
+    radixHistogramPipeline_.reset();
+    radixPrefixPipeline_.reset();
+    radixScatterPipeline_.reset();
     
     // 5. 清理命令池
     commandPool_.cleanup();
@@ -127,9 +141,17 @@ void GaussianRenderer::cleanup() {
 void GaussianRenderer::createComputePipeline() {
     auto device = getDevice();
     
-    // 创建 Compute Pipeline（使用独立封装的类）
-    computePipeline_ = std::make_unique<ComputePipeline>();
-    computePipeline_->initialize(device, "shaders/gaussian_compute_shader.comp.spv");
+    radixKeygenPipeline_ = std::make_unique<ComputePipeline>();
+    radixKeygenPipeline_->initialize(device, "shaders/radix_keygen.comp.spv");
+
+    radixHistogramPipeline_ = std::make_unique<ComputePipeline>();
+    radixHistogramPipeline_->initialize(device, "shaders/radix_histogram.comp.spv");
+
+    radixPrefixPipeline_ = std::make_unique<ComputePipeline>();
+    radixPrefixPipeline_->initialize(device, "shaders/radix_prefix.comp.spv");
+
+    radixScatterPipeline_ = std::make_unique<ComputePipeline>();
+    radixScatterPipeline_->initialize(device, "shaders/radix_scatter.comp.spv");
     
     // 创建 Descriptor Sets
     createDescriptorSets();
@@ -142,6 +164,76 @@ void GaussianRenderer::createComputePipeline() {
     uint32_t computeQueueFamily = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
     computeCommandPool_.create(device, computeQueueFamily, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     computeCommandBuffer_ = computeCommandPool_.allocateCommandBuffer();
+}
+
+void GaussianRenderer::initializeImGui(GLFWwindow* window) {
+    if (imguiInitialized_) {
+        return;
+    }
+
+    auto& context = Context::Instance();
+    auto device = getDevice();
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+
+    if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
+        LOG_ERROR("Failed to initialize ImGui GLFW backend");
+        throw std::runtime_error("Failed to initialize ImGui GLFW backend");
+    }
+
+    ImGui_ImplVulkan_InitInfo initInfo{};
+    initInfo.ApiVersion = VK_API_VERSION_1_2;
+    initInfo.Instance = context.getInstance();
+    initInfo.PhysicalDevice = context.PhysicalDevice();
+    initInfo.Device = device;
+    initInfo.QueueFamily = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
+    initInfo.Queue = context.getDevice().getGraphicsQueue();
+    initInfo.DescriptorPool = VK_NULL_HANDLE;
+    initInfo.DescriptorPoolSize = 64;
+    initInfo.RenderPass = renderPass_->getRenderPass();
+    initInfo.MinImageCount = MAX_FRAMES_IN_FLIGHT;
+    initInfo.ImageCount = swapchain_->getImageCount();
+    initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (!ImGui_ImplVulkan_Init(&initInfo)) {
+        LOG_ERROR("Failed to initialize ImGui Vulkan backend");
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        throw std::runtime_error("Failed to initialize ImGui Vulkan backend");
+    }
+
+    ImGui_ImplVulkan_CreateFontsTexture();
+    imguiInitialized_ = true;
+    LOG_INFO("ImGui initialized");
+}
+
+void GaussianRenderer::shutdownImGui() {
+    if (!imguiInitialized_) {
+        return;
+    }
+
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    imguiInitialized_ = false;
+}
+
+void GaussianRenderer::beginImGuiFrame() {
+    if (!imguiInitialized_) {
+        return;
+    }
+
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    if (imguiDrawCallback_) {
+        imguiDrawCallback_();
+    }
+
+    ImGui::Render();
 }
 
 void GaussianRenderer::render() {
@@ -173,7 +265,15 @@ void GaussianRenderer::render() {
             LOG_INFO("Suboptimal swapchain detected, consider recreating");
         }
     }
-    // 3. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
+    // 3. 更新Instance Buffer（仅在首次或模型变化时重建）
+    if (!instanceBuffer_.getBuffer()) {
+        updateVertexBuffer();
+    }
+
+    // 4. 更新Uniform Buffer，GPU key generation reads it in the sort pass.
+    updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection);
+
+    // 5. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
     uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
     
     const float matrixEpsilon = 1e-5f;
@@ -193,13 +293,8 @@ void GaussianRenderer::render() {
         last_view_matrix_ = ubo_[currentFrame_].view;
         last_projection_matrix_ = ubo_[currentFrame_].projection;
     }
-    // 4. 更新Instance Buffer（仅在首次或模型变化时重建）
-    if (!instanceBuffer_.getBuffer()) {
-        updateVertexBuffer();
-    }
-    
-    // 5. 更新Uniform Buffer（每帧更新）
-    updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection);
+
+    beginImGuiFrame();
     
     // 6. 记录渲染命令
     recordCommandBuffer(imageIndex);
@@ -370,14 +465,14 @@ void GaussianRenderer::createDescriptorSets() {
     // 创建 Descriptor Pool（支持 Uniform Buffer 和 Storage Buffer）
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eUniformBuffer)
-                .setDescriptorCount(MAX_FRAMES_IN_FLIGHT * 2);  // Graphics需要2个UBO
+                .setDescriptorCount(MAX_FRAMES_IN_FLIGHT * 4);
     poolSizes[1].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(4 * MAX_FRAMES_IN_FLIGHT); // Compute需要2个SSBO + Graphics需要2个SSBO
+                .setDescriptorCount(18 * MAX_FRAMES_IN_FLIGHT);
     
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(MAX_FRAMES_IN_FLIGHT * 2);  // 总共需要2套Descriptor Sets
+            .setMaxSets(MAX_FRAMES_IN_FLIGHT * 3);
     
     descriptorPool_ = device.createDescriptorPool(poolInfo);
     
@@ -391,8 +486,8 @@ void GaussianRenderer::createDescriptorSets() {
     
     descriptorSets_ = device.allocateDescriptorSets(graphicsAllocInfo);
     
-    // 分配 Compute Descriptor Sets（每帧一个，使用计算管线的Descriptor Set Layout）
-    std::vector<vk::DescriptorSetLayout> computeLayouts(MAX_FRAMES_IN_FLIGHT, computePipeline_->getDescriptorSetLayout());
+    // 每帧两套 Compute Descriptor Sets：A->B 和 B->A。
+    std::vector<vk::DescriptorSetLayout> computeLayouts(MAX_FRAMES_IN_FLIGHT * 2, radixKeygenPipeline_->getDescriptorSetLayout());
     
     vk::DescriptorSetAllocateInfo computeAllocInfo{};
     computeAllocInfo.setDescriptorPool(descriptorPool_)
@@ -500,42 +595,40 @@ void GaussianRenderer::updateDescriptorSets() {
         }
     }
     
-    // 为每个 Compute Descriptor Set 更新 Storage Buffer 绑定。
-    // GPU sort buffers are created lazily by computeDistances(), so resize can
-    // recreate descriptor sets before these buffers exist.
-    if (!gpuIndexBuffer_.getBuffer() || !gpuDistanceBuffer_.getBuffer()) {
-        LOG_DEBUG("Skipping compute descriptor update until GPU sort buffers exist");
+    if (!gpuIndexBuffer_.getBuffer() ||
+        !gpuKeyBuffer_.getBuffer() ||
+        !gpuIndexTempBuffer_.getBuffer() ||
+        !gpuKeyTempBuffer_.getBuffer() ||
+        !radixHistogramBuffer_.getBuffer() ||
+        !radixOffsetBuffer_.getBuffer() ||
+        !instanceBuffer_.getBuffer() ||
+        !uniformBuffer_.getBuffer()) {
+        LOG_DEBUG("Skipping radix descriptor update until sort buffers exist");
         return;
     }
 
     for (size_t i = 0; i < computeDescriptorSets_.size(); ++i) {
-        std::array<vk::WriteDescriptorSet, 2> writeDescriptorSets{};
+        bool reverse = (i % 2) == 1;
+        std::array<vk::DescriptorBufferInfo, 8> bufferInfos{};
+        bufferInfos[0].setBuffer(reverse ? gpuIndexTempBuffer_.getBuffer() : gpuIndexBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[1].setBuffer(reverse ? gpuKeyTempBuffer_.getBuffer() : gpuKeyBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[2].setBuffer(reverse ? gpuIndexBuffer_.getBuffer() : gpuIndexTempBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[3].setBuffer(reverse ? gpuKeyBuffer_.getBuffer() : gpuKeyTempBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[4].setBuffer(radixHistogramBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[5].setBuffer(radixOffsetBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[6].setBuffer(instanceBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[7].setBuffer(uniformBuffer_.getBuffer()).setOffset(0).setRange(sizeof(UniformBufferObject));
+
+        std::array<vk::WriteDescriptorSet, 8> writeDescriptorSets{};
         
-        // Binding 0: 索引缓冲区 (Storage Buffer)
-        vk::DescriptorBufferInfo indexInfo{};
-        indexInfo.setBuffer(gpuIndexBuffer_.getBuffer())
-                 .setOffset(0)
-                 .setRange(VK_WHOLE_SIZE);
-        
-        writeDescriptorSets[0].setDstSet(computeDescriptorSets_[i])
-                              .setDstBinding(0)
-                              .setDstArrayElement(0)
-                              .setDescriptorCount(1)
-                              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
-                              .setPBufferInfo(&indexInfo);
-        
-        // Binding 1: 距离缓冲区 (Storage Buffer)
-        vk::DescriptorBufferInfo distanceInfo{};
-        distanceInfo.setBuffer(gpuDistanceBuffer_.getBuffer())
-                    .setOffset(0)
-                    .setRange(VK_WHOLE_SIZE);
-        
-        writeDescriptorSets[1].setDstSet(computeDescriptorSets_[i])
-                              .setDstBinding(1)
-                              .setDstArrayElement(0)
-                              .setDescriptorCount(1)
-                              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
-                              .setPBufferInfo(&distanceInfo);
+        for (uint32_t binding = 0; binding < writeDescriptorSets.size(); ++binding) {
+            writeDescriptorSets[binding].setDstSet(computeDescriptorSets_[i])
+                                        .setDstBinding(binding)
+                                        .setDstArrayElement(0)
+                                        .setDescriptorCount(1)
+                                        .setDescriptorType(binding == 7 ? vk::DescriptorType::eUniformBuffer : vk::DescriptorType::eStorageBuffer)
+                                        .setPBufferInfo(&bufferInfos[binding]);
+        }
         
         device.updateDescriptorSets(static_cast<uint32_t>(writeDescriptorSets.size()), 
                                    writeDescriptorSets.data(), 
@@ -555,90 +648,124 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     uint32_t pointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
     LOG_DEBUG("Sorting {} points", pointCount);
     
-    // 1. 计算每个点到相机的距离
-    computeDistances(glm::vec3(ubo_[currentFrame_].cameraPositionTime));
+    ensureSortBuffers(pointCount);
     
-    // 2. 执行 Bitonic Sort（需要元素数量是 2 的幂次）
-    uint32_t paddedCount = 1;
-    while (paddedCount < pointCount) {
-        paddedCount *= 2;
-    }
-    
-    // 创建复用的Fence
+    uint32_t groupCount = (pointCount + 255u) / 256u;
+
     auto device = getDevice();
     vk::FenceCreateInfo fenceInfo{};
     vk::Fence sortFence = device.createFence(fenceInfo);
-    
-    // 执行多轮排序
-    uint32_t totalDispatches = 0;
-    
-    // 优化：批量记录所有dispatch到单个Command Buffer，减少同步开销
+
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
     computeCommandBuffer_.reset();
     computeCommandBuffer_.begin(beginInfo);
-    
-    // 绑定Compute Pipeline（只需绑定一次）
-    computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, computePipeline_->getPipeline());
-    
-    // 绑定Descriptor Set（只需绑定一次）
-    if (!computeDescriptorSets_.empty()) {
+
+    struct PushConstants {
+        uint32_t count;
+        uint32_t shift;
+        uint32_t groupCount;
+        uint32_t padding;
+    } pushConstants{};
+
+    pushConstants.count = pointCount;
+    pushConstants.groupCount = groupCount;
+
+    auto insertComputeBarrier = [this]() {
+        vk::MemoryBarrier memoryBarrier{};
+        memoryBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
+                     .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+
+        computeCommandBuffer_.pipelineBarrier(
+            vk::PipelineStageFlagBits::eComputeShader,
+            vk::PipelineStageFlagBits::eComputeShader,
+            vk::DependencyFlagBits{},
+            1, &memoryBarrier,
+            0, nullptr,
+            0, nullptr
+        );
+    };
+
+    vk::DescriptorSet keygenSet = computeDescriptorSets_[currentFrame_ * 2];
+    computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixKeygenPipeline_->getPipeline());
+    computeCommandBuffer_.bindDescriptorSets(
+        vk::PipelineBindPoint::eCompute,
+        radixKeygenPipeline_->getPipelineLayout(),
+        0,
+        1,
+        &keygenSet,
+        0,
+        nullptr
+    );
+    computeCommandBuffer_.pushConstants(
+        radixKeygenPipeline_->getPipelineLayout(),
+        vk::ShaderStageFlagBits::eCompute,
+        0, sizeof(PushConstants), &pushConstants
+    );
+    computeCommandBuffer_.dispatch(groupCount, 1, 1);
+    insertComputeBarrier();
+
+    for (uint32_t pass = 0; pass < 4; ++pass) {
+        pushConstants.shift = pass * 8u;
+        vk::DescriptorSet radixSet = computeDescriptorSets_[currentFrame_ * 2 + (pass % 2)];
+
+        computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixHistogramPipeline_->getPipeline());
         computeCommandBuffer_.bindDescriptorSets(
             vk::PipelineBindPoint::eCompute,
-            computePipeline_->getPipelineLayout(),
+            radixHistogramPipeline_->getPipelineLayout(),
             0,
             1,
-            &computeDescriptorSets_[currentFrame_],
+            &radixSet,
             0,
             nullptr
         );
+        computeCommandBuffer_.pushConstants(
+            radixHistogramPipeline_->getPipelineLayout(),
+            vk::ShaderStageFlagBits::eCompute,
+            0, sizeof(PushConstants), &pushConstants
+        );
+        computeCommandBuffer_.dispatch(groupCount, 1, 1);
+        insertComputeBarrier();
+
+        computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixPrefixPipeline_->getPipeline());
+        computeCommandBuffer_.bindDescriptorSets(
+            vk::PipelineBindPoint::eCompute,
+            radixPrefixPipeline_->getPipelineLayout(),
+            0,
+            1,
+            &radixSet,
+            0,
+            nullptr
+        );
+        computeCommandBuffer_.pushConstants(
+            radixPrefixPipeline_->getPipelineLayout(),
+            vk::ShaderStageFlagBits::eCompute,
+            0, sizeof(PushConstants), &pushConstants
+        );
+        computeCommandBuffer_.dispatch(1, 1, 1);
+        insertComputeBarrier();
+
+        computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixScatterPipeline_->getPipeline());
+        computeCommandBuffer_.bindDescriptorSets(
+            vk::PipelineBindPoint::eCompute,
+            radixScatterPipeline_->getPipelineLayout(),
+            0,
+            1,
+            &radixSet,
+            0,
+            nullptr
+        );
+        computeCommandBuffer_.pushConstants(
+            radixScatterPipeline_->getPipelineLayout(),
+            vk::ShaderStageFlagBits::eCompute,
+            0, sizeof(PushConstants), &pushConstants
+        );
+        computeCommandBuffer_.dispatch(groupCount, 1, 1);
+        insertComputeBarrier();
     }
     
-    for (uint32_t stage = 2; stage <= paddedCount; stage *= 2) {
-        for (uint32_t substage = stage / 2; substage > 0; substage /= 2) {
-            // 设置Push Constants
-            struct PushConstants {
-                uint32_t count;
-                uint32_t stage;
-                uint32_t substage;
-            } pushConstants;
-            
-            pushConstants.count = paddedCount;
-            pushConstants.stage = stage;
-            pushConstants.substage = substage;
-            
-            computeCommandBuffer_.pushConstants(
-                computePipeline_->getPipelineLayout(),
-                vk::ShaderStageFlagBits::eCompute,
-                0, sizeof(PushConstants), &pushConstants
-            );
-            
-            // 分派计算任务
-            uint32_t workgroupCount = (paddedCount + 255) / 256;
-            computeCommandBuffer_.dispatch(workgroupCount, 1, 1);
-            
-            // 添加内存屏障，确保当前dispatch完成后再执行下一个
-            vk::MemoryBarrier memoryBarrier{};
-            memoryBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
-                        .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
-            
-            computeCommandBuffer_.pipelineBarrier(
-                vk::PipelineStageFlagBits::eComputeShader,
-                vk::PipelineStageFlagBits::eComputeShader,
-                vk::DependencyFlagBits{},
-                1, &memoryBarrier,
-                0, nullptr,
-                0, nullptr
-            );
-            
-            totalDispatches++;
-        }
-    }
-    
-    // 结束记录
     computeCommandBuffer_.end();
     
-    // 一次性提交所有dispatch（大幅减少同步开销）
     auto& context = Context::Instance();
     
     vk::SubmitInfo submitInfo{};
@@ -651,18 +778,16 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     auto sortStart = std::chrono::high_resolution_clock::now();
     context.getDevice().getGraphicsQueue().submit(submitInfo, sortFence);
     
-    // 只等待一次
     (void)device.waitForFences(sortFence, VK_TRUE, UINT64_MAX);
     auto sortEnd = std::chrono::high_resolution_clock::now();
     auto sortMs = std::chrono::duration_cast<std::chrono::milliseconds>(sortEnd - sortStart).count();
-    LOG_DEBUG("GPU sorting completed: {} dispatches, {} ms", totalDispatches, sortMs);
+    LOG_DEBUG("GPU radix sorting completed: {} points, {} groups, {} ms", pointCount, groupCount, sortMs);
     
-    // 销毁复用的Fence
     device.destroyFence(sortFence);
 }
 
-void GaussianRenderer::computeDistances(const glm::vec3& cameraPosition) {
-    if (!current_model_) {
+void GaussianRenderer::ensureSortBuffers(uint32_t pointCount) {
+    if (pointCount == 0 || sortBufferCapacity_ == pointCount) {
         return;
     }
     
@@ -671,65 +796,67 @@ void GaussianRenderer::computeDistances(const glm::vec3& cameraPosition) {
     auto physicalDevice = context.PhysicalDevice();
     auto transferQueue = context.getDevice().getGraphicsQueue();
     uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
+    uint32_t groupCount = (pointCount + 255u) / 256u;
     
-    // 初始化索引和距离缓冲区（如果尚未创建）
-    uint32_t pointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
-    
-    // 计算padding后的大小（必须是2的幂次）
-    uint32_t paddedCount = 1;
-    while (paddedCount < pointCount) {
-        paddedCount *= 2;
+    if (gpuIndexBuffer_.getBuffer() ||
+        gpuKeyBuffer_.getBuffer() ||
+        gpuIndexTempBuffer_.getBuffer() ||
+        gpuKeyTempBuffer_.getBuffer() ||
+        radixHistogramBuffer_.getBuffer() ||
+        radixOffsetBuffer_.getBuffer()) {
+        std::array<vk::Fence, MAX_FRAMES_IN_FLIGHT> fences{};
+        for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+            fences[frame] = inFlightFences_[frame];
+        }
+        (void)device.waitForFences(fences, VK_TRUE, UINT64_MAX);
     }
-    
-    // 每次重排前重置索引和深度数据，避免沿用上一帧已排序的距离。
-    gpuIndexBuffer_.cleanup();
-    gpuDistanceBuffer_.cleanup();
 
-    std::vector<uint32_t> initialIndices(paddedCount);
-    for (uint32_t i = 0; i < pointCount; ++i) {
-        initialIndices[i] = i;
-    }
-    for (uint32_t i = pointCount; i < paddedCount; ++i) {
-        initialIndices[i] = 0xFFFFFFFF;
-    }
+    gpuIndexBuffer_.cleanup();
+    gpuKeyBuffer_.cleanup();
+    gpuIndexTempBuffer_.cleanup();
+    gpuKeyTempBuffer_.cleanup();
+    radixHistogramBuffer_.cleanup();
+    radixOffsetBuffer_.cleanup();
     
     gpuIndexBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                          initialIndices.data(),
-                          initialIndices.size() * sizeof(uint32_t),
+                          nullptr,
+                          static_cast<vk::DeviceSize>(pointCount) * sizeof(uint32_t),
                           vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
                           vk::MemoryPropertyFlagBits::eDeviceLocal);
     
-    std::vector<float> distances(paddedCount);
-    uint32_t idx = 0;
-    for (const auto& point : *current_model_) {
-        glm::vec4 clip = ubo_[currentFrame_].projection * ubo_[currentFrame_].view * glm::vec4(point.position, 1.0f);
-        if (clip.w <= 1e-6f) {
-            distances[idx++] = -std::numeric_limits<float>::infinity();
-            continue;
-        }
+    gpuKeyBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                         nullptr,
+                         static_cast<vk::DeviceSize>(pointCount) * sizeof(uint32_t),
+                         vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+                         vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-        glm::vec3 ndc = glm::vec3(clip) / clip.w;
-        if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f || ndc.z < 0.0f || ndc.z > 1.0f) {
-            distances[idx++] = -std::numeric_limits<float>::infinity();
-            continue;
-        }
+    vk::DeviceSize valueBufferSize = static_cast<vk::DeviceSize>(pointCount) * sizeof(uint32_t);
+    gpuIndexTempBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                               nullptr,
+                               valueBufferSize,
+                               vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+                               vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-        // The local bitonic sorter orders keys descending. Vulkan NDC depth is
-        // larger for farther points, so this yields the required back-to-front
-        // blending order. vkgs uses 1-depth with its radix-sort order; copying
-        // that key here would invert the local draw order.
-        distances[idx++] = ndc.z;
-    }
-    for (uint32_t i = pointCount; i < paddedCount; ++i) {
-        distances[i] = -std::numeric_limits<float>::infinity();
-    }
-    
-    gpuDistanceBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                             distances.data(),
-                             distances.size() * sizeof(float),
+    gpuKeyTempBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                             nullptr,
+                             valueBufferSize,
                              vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
                              vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    vk::DeviceSize radixTableSize = static_cast<vk::DeviceSize>(groupCount) * 256u * sizeof(uint32_t);
+    radixHistogramBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                                 nullptr,
+                                 radixTableSize,
+                                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
+                                 vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    radixOffsetBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                              nullptr,
+                              radixTableSize,
+                              vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
+                              vk::MemoryPropertyFlagBits::eDeviceLocal);
     
+    sortBufferCapacity_ = pointCount;
     updateDescriptorSets();
 }
 
@@ -921,6 +1048,10 @@ void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
                 
                 // drawIndexed: 索引数, 实例数, 起始索引, 顶点偏移, 起始实例
                 commandBuffer.drawIndexed(4, instanceCount, 0, 0, 0);
+            }
+
+            if (imguiInitialized_) {
+                ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
             }
         }commandBuffer.endRenderPass();
         

@@ -74,14 +74,19 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
               .setImageArrayLayers(1)
               .setImageUsage(vk::ImageUsageFlagBits::eColorAttachment);
     
-    // 设置队列家族索引（如果图形队列和呈现队列不同）
-    uint32_t queueFamilyIndices[] = {
-        0, // 需要从Device获取实际的队列家族索引
-        0
-    };
-    
-    // 简化处理：假设使用共享模式
-    createInfo.setImageSharingMode(vk::SharingMode::eExclusive);
+    // 设置队列家族索引和共享模式（当图形队列和呈现队列不同族时使用并发模式）
+    auto& queueIndices = Context::Instance().getDevice().getQueueFamilyIndices();
+    uint32_t graphicsIndex = queueIndices.graphicsIndex.value();
+    uint32_t presentIndex = queueIndices.presentIndex.value();
+
+    if (graphicsIndex != presentIndex) {
+        uint32_t queueFamilyIndices[] = { graphicsIndex, presentIndex };
+        createInfo.setImageSharingMode(vk::SharingMode::eConcurrent)
+                  .setQueueFamilyIndexCount(2)
+                  .setPQueueFamilyIndices(queueFamilyIndices);
+    } else {
+        createInfo.setImageSharingMode(vk::SharingMode::eExclusive);
+    }
     
     createInfo.setPreTransform(capabilities.currentTransform)
               .setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque)

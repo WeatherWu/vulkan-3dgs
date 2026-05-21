@@ -10,7 +10,7 @@ if(NOT imgui_FOUND)
     FetchContent_Declare(
         imgui
         GIT_REPOSITORY https://github.com/ocornut/imgui.git
-        GIT_TAG 1.91.91.91.9
+        GIT_TAG 1.91.9
     )
     FetchContent_MakeAvailable(imgui)
 endif()
