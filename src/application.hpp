@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <glm/glm.hpp>
 
 #include "utils/camera.hpp"
@@ -39,6 +40,7 @@ public:
     
     // 设置模型数据（由外部调用）
     void setModel(const GaussianModel* model);
+    bool loadModelFromFile(const std::string& filename);
     
     // 设置相机参数（由外部调用）
     void setCamera(const glm::mat4& view, const glm::mat4& projection);
@@ -74,13 +76,26 @@ private:
     void resetOrbitFromModel();
     void updateOrbitCamera(float delta_time);
     void updateOrbitInput(float delta_time);
+    void syncOrbitAnglesFromOffset();
+    void rebuildOrbitOffsetFromAngles();
+    void handleScroll(double xoffset, double yoffset);
+    void handleDroppedFiles(const std::vector<std::string>& paths);
+    void updateModelMatrix();
+
+    std::unique_ptr<GaussianModel> owned_model_;
+    std::string owned_model_path_;
+    bool flip_model_y_ = false;
+    bool flip_model_z_ = false;
+    glm::mat4 model_matrix_ = glm::mat4(1.0f);
 
     bool orbit_camera_enabled_ = true;
     float orbit_mouse_sensitivity_ = 0.005f;
+    float orbit_zoom_sensitivity_ = 0.12f;
     float orbit_radius_ = 5.0f;
     float orbit_angle_ = 0.0f;
     float orbit_pitch_ = 0.0f;
     glm::vec3 orbit_center_ = glm::vec3(0.0f);
+    glm::vec3 orbit_offset_ = glm::vec3(5.0f, 0.0f, 0.0f);
 
     bool orbit_dragging_ = false;
     double last_mouse_x_ = 0.0;

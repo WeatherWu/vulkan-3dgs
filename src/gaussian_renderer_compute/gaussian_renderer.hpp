@@ -27,7 +27,7 @@ public:
     void onResize(uint32_t width, uint32_t height) override;
     
     // 设置当前要渲染的模型和相机参数
-    void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera);
+    void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix);
     
 private:
     void initializeImGui(GLFWwindow* window);
@@ -102,6 +102,7 @@ private:
     struct UniformBufferObject {
         alignas(16) glm::mat4 view;              // offset 0, size 64
         alignas(16) glm::mat4 projection;        // offset 64, size 64
+        alignas(16) glm::mat4 model;             // offset 128, size 64
         alignas(16) glm::vec4 cameraPositionTime;// xyz: camera position, w: time
         alignas(16) glm::vec4 focal;             // xy: pixel focal lengths, zw: screen size
     } ubo_[MAX_FRAMES_IN_FLIGHT];
@@ -120,6 +121,7 @@ private:
     glm::vec3 last_camera_position_;
     glm::mat4 last_view_matrix_{1.0f};
     glm::mat4 last_projection_matrix_{1.0f};
+    glm::mat4 last_model_matrix_{1.0f};
     
 };
 

@@ -7,6 +7,7 @@ layout(location = 0) in vec2 quadVertex;  // (-1,-1), (1,-1), (-1,1), (1,1)
 layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 projection;
+    mat4 model;
     vec4 cameraPosition_time; // xyz: camera position, w: time
     vec4 focal;               // xy: pixel focal lengths, zw: screen size
 } ubo;
@@ -143,12 +144,15 @@ void main() {
     );
     
     mat3 covariance3D = rotationMatrix * scaleMatrix * transpose(rotationMatrix);
+    mat3 modelMatrix3x3 = mat3(ubo.model);
+    mat3 covarianceWorld = modelMatrix3x3 * covariance3D * transpose(modelMatrix3x3);
     
     // 2. 将3D协方差变换到相机空间（仅旋转部分，不含平移）
     mat3 viewMatrix3x3 = mat3(ubo.view);
     
     // 将高斯中心变换到相机空间
-    vec4 centerCamera = ubo.view * vec4(instance.position.xyz, 1.0);
+    vec3 worldPosition = (ubo.model * vec4(instance.position.xyz, 1.0)).xyz;
+    vec4 centerCamera = ubo.view * vec4(worldPosition, 1.0);
     
     // 计算投影后的深度
     vec4 centerClip = ubo.projection * centerCamera;
@@ -161,8 +165,7 @@ void main() {
     }
 
     vec3 ndcCenter3 = centerClip.xyz / centerClip.w;
-    if (abs(ndcCenter3.x) > 1.0 || abs(ndcCenter3.y) > 1.0 ||
-        ndcCenter3.z < 0.0 || ndcCenter3.z > 1.0) {
+    if (ndcCenter3.z < 0.0 || ndcCenter3.z > 1.0) {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         return;
     }
@@ -171,7 +174,7 @@ void main() {
 
     // 3. Project world covariance to NDC space using the same path as vkgs
     // projection.comp.
-    mat3 covarianceCamera = viewMatrix3x3 * covariance3D * transpose(viewMatrix3x3);
+    mat3 covarianceCamera = viewMatrix3x3 * covarianceWorld * transpose(viewMatrix3x3);
     float cameraZ = centerCamera.z;
     float cameraZ2 = max(cameraZ * cameraZ, 1e-12);
     float cameraRadius = max(length(centerCamera.xyz), 1e-6);
@@ -242,8 +245,11 @@ void main() {
     vec2 pixelCenter = (ndcCenter3.xy * 0.5 + 0.5) * screenSize;
     
     // 10. 计算视角相关的颜色（使用完整SH评估）
-    // 标准3DGS使用世界空间中从相机指向高斯中心的方向。
-    vec3 viewVector = instance.position.xyz - ubo.cameraPosition_time.xyz;
+    // SH coefficients are stored in model space, so match vkgs and evaluate
+    // with the camera transformed back into model space.
+    vec4 cameraModelPosition4 = inverse(ubo.model) * vec4(ubo.cameraPosition_time.xyz, 1.0);
+    vec3 cameraModelPosition = cameraModelPosition4.xyz / max(cameraModelPosition4.w, 1e-12);
+    vec3 viewVector = instance.position.xyz - cameraModelPosition;
     vec3 viewDirection = dot(viewVector, viewVector) > 1e-12 ? normalize(viewVector) : vec3(0.0);
     fragColor = evaluateSH(instance, viewDirection);
     

@@ -8,6 +8,7 @@
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
 
@@ -56,6 +57,14 @@ Application::Application(const std::string& title, int width, int height, Render
             view_matrix_ = camera_.get_view_matrix();
             projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
         }
+    });
+
+    window_->set_drop_callback([this](const std::vector<std::string>& paths) {
+        handleDroppedFiles(paths);
+    });
+
+    window_->set_scroll_callback([this](double xoffset, double yoffset) {
+        handleScroll(xoffset, yoffset);
     });
     
     initialize();
@@ -148,7 +157,7 @@ void Application::update(float delta_time) {
 
 void Application::render() {
     // 调用具体渲染器的渲染逻辑
-    if (renderer_ && current_model_) {
+    if (renderer_) {
         if (has_true_camera_ && window_) {
             int framebufferWidth = 0;
             int framebufferHeight = 0;
@@ -162,23 +171,43 @@ void Application::render() {
         
         // 传递模型数据和相机参数
         auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get());
-        if (gsRenderer) {
-            gsRenderer->setRenderData(current_model_, view_matrix_, projection_matrix_, camera_);
-        } else {
+        if (gsRenderer && current_model_) {
+            gsRenderer->setRenderData(current_model_, view_matrix_, projection_matrix_, camera_, model_matrix_);
+        } else if (!gsRenderer) {
             LOG_WARN("Renderer is not a GaussianRenderer, skipping data setup");
         }
         
         renderer_->render();
     } else {
-        LOG_WARN("Skipping render: renderer={} model={}", 
-                renderer_ ? "valid" : "null", 
-                current_model_ ? "valid" : "null");
+        static bool warnedMissingModel = false;
+        if (!warnedMissingModel) {
+            LOG_INFO("No model loaded. Drag a .ply file into the window to load it.");
+            warnedMissingModel = true;
+        }
     }
 }
 
 void Application::setModel(const GaussianModel* model) {
+    owned_model_.reset();
     current_model_ = model;
     resetOrbitFromModel();
+}
+
+bool Application::loadModelFromFile(const std::string& filename) {
+    auto model = std::make_unique<GaussianModel>();
+    if (!model->loadFromFile(filename)) {
+        LOG_ERROR("Failed to load model: {}", filename);
+        return false;
+    }
+
+    owned_model_ = std::move(model);
+    owned_model_path_ = filename;
+    current_model_ = owned_model_.get();
+    resetOrbitFromModel();
+    updateModelMatrix();
+
+    LOG_INFO("Loaded model from dropped file: {}", filename);
+    return true;
 }
 
 void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) {
@@ -194,6 +223,7 @@ void Application::setTrueCamera(const vk_gs::Camera& camera) {
     float horizontalDistance = std::sqrt(offset.x * offset.x + offset.z * offset.z);
     float distance = glm::length(offset);
     if (distance > 0.001f) {
+        orbit_offset_ = offset;
         orbit_radius_ = distance;
         orbit_angle_ = std::atan2(offset.z, offset.x);
         orbit_pitch_ = std::asin(std::clamp(offset.y / distance, -1.0f, 1.0f));
@@ -215,6 +245,7 @@ void Application::resetOrbitFromModel() {
         orbit_radius_ = 5.0f;
         orbit_angle_ = 0.0f;
         orbit_pitch_ = 0.0f;
+        orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
         return;
     }
 
@@ -222,6 +253,7 @@ void Application::resetOrbitFromModel() {
     orbit_radius_ = std::max(current_model_->get_radius() * 2.5f, 1.0f);
     orbit_angle_ = 0.0f;
     orbit_pitch_ = 0.0f;
+    orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
 }
 
 void Application::updateOrbitCamera(float delta_time) {
@@ -231,15 +263,14 @@ void Application::updateOrbitCamera(float delta_time) {
 
     updateOrbitInput(delta_time);
 
-    float cosPitch = std::cos(orbit_pitch_);
+    float offsetLength = glm::length(orbit_offset_);
+    if (offsetLength <= 1e-5f) {
+        orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
+    } else {
+        orbit_offset_ = glm::normalize(orbit_offset_) * orbit_radius_;
+    }
 
-    glm::vec3 offset(
-        std::cos(orbit_angle_) * cosPitch * orbit_radius_,
-        std::sin(orbit_pitch_) * orbit_radius_,
-        std::sin(orbit_angle_) * cosPitch * orbit_radius_
-    );
-
-    camera_.set_position(orbit_center_ + offset);
+    camera_.set_position(orbit_center_ + orbit_offset_);
     camera_.set_target(orbit_center_);
     has_true_camera_ = true;
 
@@ -257,6 +288,7 @@ void Application::updateOrbitCamera(float delta_time) {
     float aspect = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
     view_matrix_ = camera_.get_view_matrix();
     projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
+    syncOrbitAnglesFromOffset();
 }
 
 void Application::updateOrbitInput(float delta_time) {
@@ -295,22 +327,84 @@ void Application::updateOrbitInput(float delta_time) {
     last_mouse_x_ = mouseX;
     last_mouse_y_ = mouseY;
 
-    orbit_angle_ -= static_cast<float>(deltaX) * orbit_mouse_sensitivity_;
-    orbit_pitch_ -= static_cast<float>(deltaY) * orbit_mouse_sensitivity_;
-    orbit_pitch_ = std::clamp(orbit_pitch_, glm::radians(-89.0f), glm::radians(89.0f));
+    glm::vec2 drag(static_cast<float>(deltaX), static_cast<float>(deltaY));
+    float dragLength = glm::length(drag);
+    if (dragLength <= 1e-5f) {
+        return;
+    }
+
+    glm::vec3 viewDirection = glm::normalize(orbit_center_ - camera_.get_position());
+    glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+    glm::vec3 cameraRight = glm::cross(viewDirection, worldUp);
+    if (glm::length(cameraRight) <= 1e-5f) {
+        cameraRight = camera_.get_right();
+    }
+    cameraRight = glm::normalize(cameraRight);
+    glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, viewDirection));
+
+    glm::vec3 axisWorld = drag.y * cameraRight + drag.x * cameraUp;
+    float axisLength = glm::length(axisWorld);
+    if (axisLength <= 1e-5f) {
+        return;
+    }
+    axisWorld /= axisLength;
+
+    // Move the camera in the inverse direction so the object appears to rotate
+    // with the mouse, matching a direct model-rotation trackball.
+    float angle = -dragLength * orbit_mouse_sensitivity_;
+    glm::quat deltaRotation = glm::angleAxis(angle, axisWorld);
+    orbit_offset_ = deltaRotation * orbit_offset_;
+    orbit_radius_ = std::max(glm::length(orbit_offset_), 0.05f);
+    syncOrbitAnglesFromOffset();
+}
+
+void Application::syncOrbitAnglesFromOffset() {
+    float distance = glm::length(orbit_offset_);
+    if (distance <= 1e-5f) {
+        orbit_angle_ = 0.0f;
+        orbit_pitch_ = 0.0f;
+        return;
+    }
+
+    orbit_angle_ = std::atan2(orbit_offset_.z, orbit_offset_.x);
+    orbit_pitch_ = std::asin(std::clamp(orbit_offset_.y / distance, -1.0f, 1.0f));
+}
+
+void Application::rebuildOrbitOffsetFromAngles() {
+    float cosPitch = std::cos(orbit_pitch_);
+    orbit_offset_ = glm::vec3(
+        std::cos(orbit_angle_) * cosPitch * orbit_radius_,
+        std::sin(orbit_pitch_) * orbit_radius_,
+        std::sin(orbit_angle_) * cosPitch * orbit_radius_
+    );
 }
 
 void Application::drawImGuiControls() {
     ImGui::Begin("Camera");
+
+    bool flipY = flip_model_y_;
+    bool flipZ = flip_model_z_;
+    if (ImGui::Checkbox("Flip Y", &flipY)) {
+        flip_model_y_ = flipY;
+        updateModelMatrix();
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Flip Z", &flipZ)) {
+        flip_model_z_ = flipZ;
+        updateModelMatrix();
+    }
+
     ImGui::Checkbox("Orbit", &orbit_camera_enabled_);
     ImGui::SliderFloat("Sensitivity", &orbit_mouse_sensitivity_, 0.001f, 0.02f, "%.3f");
+    ImGui::SliderFloat("Dolly Speed", &orbit_zoom_sensitivity_, 0.02f, 0.5f, "%.2f");
 
     float radiusLimit = std::max(orbit_radius_ * 3.0f, 20.0f);
-    ImGui::SliderFloat("Radius", &orbit_radius_, 0.1f, radiusLimit, "%.2f");
+    ImGui::SliderFloat("Distance", &orbit_radius_, 0.1f, radiusLimit, "%.2f");
 
     float pitchDegrees = glm::degrees(orbit_pitch_);
     if (ImGui::SliderFloat("Pitch", &pitchDegrees, -89.0f, 89.0f, "%.1f deg")) {
         orbit_pitch_ = glm::radians(pitchDegrees);
+        rebuildOrbitOffsetFromAngles();
     }
 
     if (ImGui::Button("Reset")) {
@@ -320,6 +414,61 @@ void Application::drawImGuiControls() {
     const glm::vec3& position = camera_.get_position();
     ImGui::Text("Position %.2f %.2f %.2f", position.x, position.y, position.z);
     ImGui::End();
+}
+
+void Application::handleDroppedFiles(const std::vector<std::string>& paths) {
+    if (paths.empty()) {
+        return;
+    }
+
+    if (paths.size() > 1) {
+        LOG_WARN("Multiple files dropped; loading the first one only");
+    }
+
+    loadModelFromFile(paths.front());
+}
+
+void Application::handleScroll(double xoffset, double yoffset) {
+    (void)xoffset;
+
+    if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) {
+        return;
+    }
+
+    float zoomFactor = 1.0f - static_cast<float>(yoffset) * orbit_zoom_sensitivity_;
+    zoomFactor = std::clamp(zoomFactor, 0.1f, 4.0f);
+    orbit_radius_ = std::max(0.05f, orbit_radius_ * zoomFactor);
+    if (glm::length(orbit_offset_) > 1e-5f) {
+        orbit_offset_ = glm::normalize(orbit_offset_) * orbit_radius_;
+    }
+
+    if (!orbit_camera_enabled_ && has_true_camera_) {
+        glm::vec3 toCenter = orbit_center_ - camera_.get_position();
+        float currentDistance = glm::length(toCenter);
+        if (currentDistance > 1e-4f) {
+            camera_.set_position(orbit_center_ - glm::normalize(toCenter) * orbit_radius_);
+            camera_.set_target(orbit_center_);
+            orbit_offset_ = camera_.get_position() - orbit_center_;
+            syncOrbitAnglesFromOffset();
+            view_matrix_ = camera_.get_view_matrix();
+        }
+    }
+}
+
+void Application::updateModelMatrix() {
+    model_matrix_ = glm::mat4(1.0f);
+    if (!current_model_ || current_model_->isEmpty()) {
+        return;
+    }
+
+    glm::vec3 scaling(1.0f);
+    scaling.y = flip_model_y_ ? -1.0f : 1.0f;
+    scaling.z = flip_model_z_ ? -1.0f : 1.0f;
+
+    glm::vec3 center = current_model_->get_center();
+    model_matrix_ = glm::translate(glm::mat4(1.0f), center) *
+                    glm::scale(glm::mat4(1.0f), scaling) *
+                    glm::translate(glm::mat4(1.0f), -center);
 }
 
 }

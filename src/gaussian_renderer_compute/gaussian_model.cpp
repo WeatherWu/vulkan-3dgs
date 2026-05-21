@@ -362,7 +362,6 @@ bool GaussianModel::parsePLYVertex(std::ifstream& file, GaussianPoint& point) co
         else {
             // 跳过该属性的数据
             file.seekg(prop_size, std::ios::cur);
-            LOG_DEBUG("Skipping unused property: {}", prop.name);
         }
     }
     

@@ -46,6 +46,7 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     last_camera_position_ = glm::vec3(0.0f);
     last_view_matrix_ = glm::mat4(1.0f);
     last_projection_matrix_ = glm::mat4(1.0f);
+    last_model_matrix_ = glm::mat4(1.0f);
     
     // 1. 获取窗口尺寸
     int width, height;
@@ -265,33 +266,37 @@ void GaussianRenderer::render() {
             LOG_INFO("Suboptimal swapchain detected, consider recreating");
         }
     }
-    // 3. 更新Instance Buffer（仅在首次或模型变化时重建）
-    if (!instanceBuffer_.getBuffer()) {
-        updateVertexBuffer();
-    }
+    if (current_model_ && !current_model_->isEmpty()) {
+        // 3. 更新Instance Buffer（仅在首次或模型变化时重建）
+        if (!instanceBuffer_.getBuffer()) {
+            updateVertexBuffer();
+        }
 
-    // 4. 更新Uniform Buffer，GPU key generation reads it in the sort pass.
-    updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection);
+        // 4. 更新Uniform Buffer，GPU key generation reads it in the sort pass.
+        updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection);
 
-    // 5. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
-    uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
-    
-    const float matrixEpsilon = 1e-5f;
-    bool needResort = !gpu_sort_completed_ ||
-                      current_model_ != last_sorted_model_ ||
-                      currentPointCount != last_sorted_point_count_ ||
-                      matrixChanged(ubo_[currentFrame_].view, last_view_matrix_, matrixEpsilon) ||
-                      matrixChanged(ubo_[currentFrame_].projection, last_projection_matrix_, matrixEpsilon);
-    
-    if (needResort) {
-        sortGaussiansByDepthGPU();
+        // 5. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
+        uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
         
-        gpu_sort_completed_ = true;
-        last_sorted_point_count_ = currentPointCount;
-        last_sorted_model_ = current_model_;
-        last_camera_position_ = camera_.get_position();
-        last_view_matrix_ = ubo_[currentFrame_].view;
-        last_projection_matrix_ = ubo_[currentFrame_].projection;
+        const float matrixEpsilon = 1e-5f;
+        bool needResort = !gpu_sort_completed_ ||
+                          current_model_ != last_sorted_model_ ||
+                          currentPointCount != last_sorted_point_count_ ||
+                          matrixChanged(ubo_[currentFrame_].view, last_view_matrix_, matrixEpsilon) ||
+                          matrixChanged(ubo_[currentFrame_].projection, last_projection_matrix_, matrixEpsilon) ||
+                          matrixChanged(ubo_[currentFrame_].model, last_model_matrix_, matrixEpsilon);
+        
+        if (needResort) {
+            sortGaussiansByDepthGPU();
+            
+            gpu_sort_completed_ = true;
+            last_sorted_point_count_ = currentPointCount;
+            last_sorted_model_ = current_model_;
+            last_camera_position_ = camera_.get_position();
+            last_view_matrix_ = ubo_[currentFrame_].view;
+            last_projection_matrix_ = ubo_[currentFrame_].projection;
+            last_model_matrix_ = ubo_[currentFrame_].model;
+        }
     }
 
     beginImGuiFrame();
@@ -369,9 +374,25 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     updateDescriptorSets();
 }
 
-void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera) {
+void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix) {
     if (model != current_model_) {
+        auto device = getDevice();
+        if (device) {
+            device.waitIdle();
+        }
+
+        instanceBuffer_.cleanup();
+        gpuIndexBuffer_.cleanup();
+        gpuKeyBuffer_.cleanup();
+        gpuIndexTempBuffer_.cleanup();
+        gpuKeyTempBuffer_.cleanup();
+        radixHistogramBuffer_.cleanup();
+        radixOffsetBuffer_.cleanup();
+        sortBufferCapacity_ = 0;
         gpu_sort_completed_ = false;
+        last_sorted_point_count_ = 0;
+        last_sorted_model_ = nullptr;
+        last_model_matrix_ = glm::mat4(1.0f);
     }
 
     current_model_ = model;
@@ -379,6 +400,7 @@ void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4
     for (uint32_t i = 0u; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         ubo_[i].view = view;
         ubo_[i].projection = projection;
+        ubo_[i].model = modelMatrix;
         
         // 从视图矩阵正确提取相机世界空间位置
         // 视图矩阵 V = [R | t]，其中 t = -R * cameraPos
