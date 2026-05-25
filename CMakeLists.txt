@@ -83,9 +83,6 @@ else()
         "${GRAPHICS_SHADER_SRC_DIR}/gaussian_compute_shader.vert"
         "${GRAPHICS_SHADER_SRC_DIR}/gaussian_compute_shader.frag"
         "${GRAPHICS_SHADER_SRC_DIR}/radix_keygen.comp"
-        "${GRAPHICS_SHADER_SRC_DIR}/radix_histogram.comp"
-        "${GRAPHICS_SHADER_SRC_DIR}/radix_prefix.comp"
-        "${GRAPHICS_SHADER_SRC_DIR}/radix_scatter.comp"
     )
     
     # 编译每个着色器并复制到构建目录

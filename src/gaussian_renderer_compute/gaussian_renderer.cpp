@@ -5,9 +5,15 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <cstdint>
 #include <cmath>
+#include <filesystem>
+#include <iomanip>
 #include <limits>
+#include <sstream>
+#include <glm/gtc/packing.hpp>
 
 namespace vk_gs {
 
@@ -22,6 +28,26 @@ bool matrixChanged(const glm::mat4& lhs, const glm::mat4& rhs, float epsilon) {
         }
     }
     return false;
+}
+
+void loadImGuiFonts() {
+    ImGuiIO& io = ImGui::GetIO();
+    const char* fontCandidates[] = {
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
+    };
+
+    for (const char* fontPath : fontCandidates) {
+        if (std::filesystem::exists(fontPath)) {
+            io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+            LOG_INFO("Loaded ImGui CJK font: {}", fontPath);
+            return;
+        }
+    }
+
+    io.Fonts->AddFontDefault();
+    LOG_WARN("No CJK font found for ImGui; Chinese text may not render correctly");
 }
 
 } // namespace
@@ -54,7 +80,11 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     
     // 2. 创建 Swapchain（只创建图像和ImageView）
     swapchain_ = std::make_unique<Swapchain>(surface);
+    swapchain_->setPresentModePreference(presentModePreference_);
     swapchain_->createSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    swapchainImageCount_ = swapchain_->getImageCount();
+    frameResourceCount_ = swapchainImageCount_;
+    ubo_.resize(frameResourceCount_);
     
     // 3. 创建 RenderPass
     renderPass_ = std::make_unique<RenderPass>();
@@ -90,15 +120,19 @@ void GaussianRenderer::cleanup() {
     shutdownImGui();
     
     // 1. 清理同步对象（Fences和Semaphores）
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        if (imageAvailableSemaphores_.size() > i && imageAvailableSemaphores_[i]) {
-            device.destroySemaphore(imageAvailableSemaphores_[i]);
+    for (vk::Semaphore semaphore : imageAvailableSemaphores_) {
+        if (semaphore) {
+            device.destroySemaphore(semaphore);
         }
-        if (renderFinishedSemaphores_.size() > i && renderFinishedSemaphores_[i]) {
-            device.destroySemaphore(renderFinishedSemaphores_[i]);
+    }
+    for (vk::Fence fence : inFlightFences_) {
+        if (fence) {
+            device.destroyFence(fence);
         }
-        if (inFlightFences_.size() > i && inFlightFences_[i]) {
-            device.destroyFence(inFlightFences_[i]);
+    }
+    for (vk::Semaphore semaphore : renderFinishedSemaphores_) {
+        if (semaphore) {
+            device.destroySemaphore(semaphore);
         }
     }
     
@@ -106,6 +140,8 @@ void GaussianRenderer::cleanup() {
     imageAvailableSemaphores_.clear();
     renderFinishedSemaphores_.clear();
     inFlightFences_.clear();
+    ubo_.clear();
+    frameResourceCount_ = 0;
     
     // 2. 清理Descriptor Pool（会自动销毁所有Descriptor Sets）
     destroyDescriptorPool();
@@ -116,22 +152,21 @@ void GaussianRenderer::cleanup() {
     screenInfoBuffer_.cleanup();
     gpuIndexBuffer_.cleanup();
     gpuKeyBuffer_.cleanup();
-    gpuIndexTempBuffer_.cleanup();
-    gpuKeyTempBuffer_.cleanup();
-    radixHistogramBuffer_.cleanup();
-    radixOffsetBuffer_.cleanup();
+    radixSortStorageBuffer_.cleanup();
+    drawIndirectBuffer_.cleanup();
     sortBufferCapacity_ = 0;
     
     // 4. 清理Pipelines
     pipeline_.reset();
     radixKeygenPipeline_.reset();
-    radixHistogramPipeline_.reset();
-    radixPrefixPipeline_.reset();
-    radixScatterPipeline_.reset();
+    if (radixSorter_) {
+        vrdxDestroySorter(radixSorter_);
+        radixSorter_ = VK_NULL_HANDLE;
+    }
     
     // 5. 清理命令池
     commandPool_.cleanup();
-    computeCommandPool_.cleanup();
+    
     
     // 6. 清理RenderPass和Swapchain
     renderPass_.reset();
@@ -145,26 +180,16 @@ void GaussianRenderer::createComputePipeline() {
     radixKeygenPipeline_ = std::make_unique<ComputePipeline>();
     radixKeygenPipeline_->initialize(device, "shaders/radix_keygen.comp.spv");
 
-    radixHistogramPipeline_ = std::make_unique<ComputePipeline>();
-    radixHistogramPipeline_->initialize(device, "shaders/radix_histogram.comp.spv");
-
-    radixPrefixPipeline_ = std::make_unique<ComputePipeline>();
-    radixPrefixPipeline_->initialize(device, "shaders/radix_prefix.comp.spv");
-
-    radixScatterPipeline_ = std::make_unique<ComputePipeline>();
-    radixScatterPipeline_->initialize(device, "shaders/radix_scatter.comp.spv");
+    auto& context = Context::Instance();
+    VrdxSorterCreateInfo sorterInfo{};
+    sorterInfo.physicalDevice = context.PhysicalDevice();
+    sorterInfo.device = device;
+    sorterInfo.pipelineCache = VK_NULL_HANDLE;
+    vrdxCreateSorter(&sorterInfo, &radixSorter_);
     
     // 创建 Descriptor Sets
     createDescriptorSets();
     
-    // Keep sorting on the graphics queue. vkgs records its rank/sort/projection
-    // work in the graphics submission chain before drawing; using a separate
-    // compute queue here needs semaphore-based cross-queue memory dependencies,
-    // otherwise the sorted index buffer can be stale when the splat pass reads it.
-    auto& context = Context::Instance();
-    uint32_t computeQueueFamily = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
-    computeCommandPool_.create(device, computeQueueFamily, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
-    computeCommandBuffer_ = computeCommandPool_.allocateCommandBuffer();
 }
 
 void GaussianRenderer::initializeImGui(GLFWwindow* window) {
@@ -178,6 +203,7 @@ void GaussianRenderer::initializeImGui(GLFWwindow* window) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+    loadImGuiFonts();
 
     if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
         LOG_ERROR("Failed to initialize ImGui GLFW backend");
@@ -194,7 +220,7 @@ void GaussianRenderer::initializeImGui(GLFWwindow* window) {
     initInfo.DescriptorPool = VK_NULL_HANDLE;
     initInfo.DescriptorPoolSize = 64;
     initInfo.RenderPass = renderPass_->getRenderPass();
-    initInfo.MinImageCount = MAX_FRAMES_IN_FLIGHT;
+    initInfo.MinImageCount = swapchain_->getImageCount();
     initInfo.ImageCount = swapchain_->getImageCount();
     initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
@@ -239,9 +265,12 @@ void GaussianRenderer::beginImGuiFrame() {
 
 void GaussianRenderer::render() {
     auto startTime = std::chrono::high_resolution_clock::now();
+    (void)startTime;
     
     auto& context = Context::Instance();
     auto device = getDevice();
+    record_sort_this_frame_ = false;
+    sort_point_count_this_frame_ = 0;
     
     // 1. 等待上一帧完成
     vk::Result waitResult = device.waitForFences(1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
@@ -287,7 +316,9 @@ void GaussianRenderer::render() {
                           matrixChanged(ubo_[currentFrame_].model, last_model_matrix_, matrixEpsilon);
         
         if (needResort) {
-            sortGaussiansByDepthGPU();
+            ensureSortBuffers(currentPointCount);
+            record_sort_this_frame_ = true;
+            sort_point_count_this_frame_ = currentPointCount;
             
             gpu_sort_completed_ = true;
             last_sorted_point_count_ = currentPointCount;
@@ -316,7 +347,7 @@ void GaussianRenderer::render() {
     submitInfo.setCommandBufferCount(1)
               .setPCommandBuffers(commandBuffers);
     
-    vk::Semaphore signalSemaphores[] = { renderFinishedSemaphores_[currentFrame_] };
+    vk::Semaphore signalSemaphores[] = { renderFinishedSemaphores_[imageIndex] };
     submitInfo.setSignalSemaphoreCount(1)
               .setPSignalSemaphores(signalSemaphores);
     
@@ -335,12 +366,17 @@ void GaussianRenderer::render() {
     presentInfo.setPImageIndices(&imageIndex);
     
     vk::Result presentResult = context.getDevice().getPresentQueue().presentKHR(presentInfo);
-    if (presentResult != vk::Result::eSuccess) {
-        LOG_ERROR("Failed to present image");
+    if (presentResult == vk::Result::eErrorOutOfDateKHR) {
+        LOG_WARN("Swapchain out of date during present, recreating");
+        recreateSwapchain(swapchain_->getExtent().width, swapchain_->getExtent().height);
+    } else if (presentResult == vk::Result::eSuboptimalKHR) {
+        LOG_INFO("Suboptimal swapchain detected during present");
+    } else if (presentResult != vk::Result::eSuccess) {
+        LOG_ERROR("Failed to present image: {}", vk::to_string(presentResult));
     }
     
     // 9. 切换到下一帧
-    currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
+    currentFrame_ = (currentFrame_ + 1) % frameResourceCount_;
 }
 
 void GaussianRenderer::onResize(uint32_t width, uint32_t height) {
@@ -351,27 +387,48 @@ void GaussianRenderer::onResize(uint32_t width, uint32_t height) {
     recreateSwapchain(width, height);
 }
 
+void GaussianRenderer::setPresentModePreference(PresentModePreference preference) {
+    if (presentModePreference_ == preference) {
+        return;
+    }
+
+    presentModePreference_ = preference;
+    if (!swapchain_) {
+        return;
+    }
+
+    swapchain_->setPresentModePreference(preference);
+    auto extent = swapchain_->getExtent();
+    recreateSwapchain(extent.width, extent.height);
+}
+
 void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     LOG_INFO("Recreating swapchain: {}x{}", width, height);
     
     auto device = getDevice();
     device.waitIdle();
-    
-    // Graphics descriptor sets were allocated from the old pipeline's set
-    // layout. Destroy them before destroying/recreating that layout.
-    destroyDescriptorPool();
+
+    vk::Format oldImageFormat = swapchain_->getImageFormat();
     
     swapchain_->recreateSwapchain(width, height);
-    
-    renderPass_->cleanup();
-    renderPass_->initialize(swapchain_->getImageFormat());
+    recreateRenderFinishedSemaphores();
+
+    if (oldImageFormat != swapchain_->getImageFormat()) {
+        // Graphics descriptor sets were allocated from the old pipeline's set
+        // layout. Destroy them before destroying/recreating that layout.
+        destroyDescriptorPool();
+
+        renderPass_->cleanup();
+        renderPass_->initialize(swapchain_->getImageFormat());
+
+        pipeline_->cleanup();
+        pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
+
+        createDescriptorSets();
+        updateDescriptorSets();
+    }
+
     swapchain_->createFramebuffers(device, renderPass_->getRenderPass(), RenderPass::DepthFormat);
-    
-    pipeline_->cleanup();
-    pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
-    
-    createDescriptorSets();
-    updateDescriptorSets();
 }
 
 void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix) {
@@ -384,10 +441,8 @@ void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4
         instanceBuffer_.cleanup();
         gpuIndexBuffer_.cleanup();
         gpuKeyBuffer_.cleanup();
-        gpuIndexTempBuffer_.cleanup();
-        gpuKeyTempBuffer_.cleanup();
-        radixHistogramBuffer_.cleanup();
-        radixOffsetBuffer_.cleanup();
+        radixSortStorageBuffer_.cleanup();
+        drawIndirectBuffer_.cleanup();
         sortBufferCapacity_ = 0;
         gpu_sort_completed_ = false;
         last_sorted_point_count_ = 0;
@@ -397,7 +452,7 @@ void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4
 
     current_model_ = model;
     camera_ = camera;
-    for (uint32_t i = 0u; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (size_t i = 0u; i < ubo_.size(); ++i) {
         ubo_[i].view = view;
         ubo_[i].projection = projection;
         ubo_[i].model = modelMatrix;
@@ -449,23 +504,26 @@ void GaussianRenderer::createBuffers() {
 void GaussianRenderer::createSyncObjects() {
     auto device = getDevice();
     
-    // 获取Swapchain图像数量（仅用于日志）
+    // 获取Swapchain图像数量。presentation wait semaphore 必须按 imageIndex 复用。
     swapchainImageCount_ = swapchain_->getImageCount();
+    frameResourceCount_ = swapchainImageCount_;
     
-    // 所有同步对象都按MAX_FRAMES_IN_FLIGHT创建
-    imageAvailableSemaphores_.resize(MAX_FRAMES_IN_FLIGHT);
-    renderFinishedSemaphores_.resize(MAX_FRAMES_IN_FLIGHT);
-    inFlightFences_.resize(MAX_FRAMES_IN_FLIGHT);
-    commandBuffers_.resize(MAX_FRAMES_IN_FLIGHT);
+    imageAvailableSemaphores_.resize(frameResourceCount_);
+    renderFinishedSemaphores_.resize(swapchainImageCount_);
+    inFlightFences_.resize(frameResourceCount_);
+    commandBuffers_.resize(frameResourceCount_);
+    ubo_.resize(frameResourceCount_);
     
     vk::SemaphoreCreateInfo semaphoreInfo{};
     vk::FenceCreateInfo fenceInfo{};
     fenceInfo.setFlags(vk::FenceCreateFlagBits::eSignaled); // 初始状态为已信号
     
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (size_t i = 0; i < frameResourceCount_; ++i) {
         imageAvailableSemaphores_[i] = device.createSemaphore(semaphoreInfo);
-        renderFinishedSemaphores_[i] = device.createSemaphore(semaphoreInfo);
         inFlightFences_[i] = device.createFence(fenceInfo);
+    }
+    for (uint32_t i = 0; i < swapchainImageCount_; ++i) {
+        renderFinishedSemaphores_[i] = device.createSemaphore(semaphoreInfo);
     }
     
     // 创建命令池
@@ -474,32 +532,65 @@ void GaussianRenderer::createSyncObjects() {
     commandPool_.create(device, graphicsQueueFamily, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     
     // 分配命令缓冲区
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (size_t i = 0; i < frameResourceCount_; ++i) {
         commandBuffers_[i] = commandPool_.allocateCommandBuffer();
+    }
+}
+
+void GaussianRenderer::recreateRenderFinishedSemaphores() {
+    auto device = getDevice();
+    uint32_t newImageCount = swapchain_->getImageCount();
+    if (swapchainImageCount_ == newImageCount &&
+        renderFinishedSemaphores_.size() == newImageCount) {
+        return;
+    }
+
+    for (vk::Semaphore semaphore : renderFinishedSemaphores_) {
+        if (semaphore) {
+            device.destroySemaphore(semaphore);
+        }
+    }
+
+    swapchainImageCount_ = newImageCount;
+    renderFinishedSemaphores_.clear();
+    renderFinishedSemaphores_.resize(swapchainImageCount_);
+
+    vk::SemaphoreCreateInfo semaphoreInfo{};
+    for (uint32_t i = 0; i < swapchainImageCount_; ++i) {
+        renderFinishedSemaphores_[i] = device.createSemaphore(semaphoreInfo);
     }
 }
 
 void GaussianRenderer::createDescriptorSets() {
     auto device = getDevice();
+
+    if (frameResourceCount_ == 0 && swapchain_) {
+        swapchainImageCount_ = swapchain_->getImageCount();
+        frameResourceCount_ = swapchainImageCount_;
+        ubo_.resize(frameResourceCount_);
+    }
+    if (frameResourceCount_ == 0) {
+        throw std::runtime_error("Cannot create descriptor sets before frame resources are initialized");
+    }
     
     destroyDescriptorPool();
     
     // 创建 Descriptor Pool（支持 Uniform Buffer 和 Storage Buffer）
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eUniformBuffer)
-                .setDescriptorCount(MAX_FRAMES_IN_FLIGHT * 4);
+                .setDescriptorCount(frameResourceCount_ * 4);
     poolSizes[1].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(18 * MAX_FRAMES_IN_FLIGHT);
+                .setDescriptorCount(20 * frameResourceCount_);
     
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(MAX_FRAMES_IN_FLIGHT * 3);
+            .setMaxSets(frameResourceCount_ * 3);
     
     descriptorPool_ = device.createDescriptorPool(poolInfo);
     
     // 分配 Graphics Descriptor Sets（每帧一个，使用图形管线的Descriptor Set Layout）
-    std::vector<vk::DescriptorSetLayout> graphicsLayouts(MAX_FRAMES_IN_FLIGHT, pipeline_->getDescriptorSetLayout());
+    std::vector<vk::DescriptorSetLayout> graphicsLayouts(frameResourceCount_, pipeline_->getDescriptorSetLayout());
     
     vk::DescriptorSetAllocateInfo graphicsAllocInfo{};
     graphicsAllocInfo.setDescriptorPool(descriptorPool_)
@@ -509,7 +600,7 @@ void GaussianRenderer::createDescriptorSets() {
     descriptorSets_ = device.allocateDescriptorSets(graphicsAllocInfo);
     
     // 每帧两套 Compute Descriptor Sets：A->B 和 B->A。
-    std::vector<vk::DescriptorSetLayout> computeLayouts(MAX_FRAMES_IN_FLIGHT * 2, radixKeygenPipeline_->getDescriptorSetLayout());
+    std::vector<vk::DescriptorSetLayout> computeLayouts(frameResourceCount_ * 2, radixKeygenPipeline_->getDescriptorSetLayout());
     
     vk::DescriptorSetAllocateInfo computeAllocInfo{};
     computeAllocInfo.setDescriptorPool(descriptorPool_)
@@ -619,10 +710,7 @@ void GaussianRenderer::updateDescriptorSets() {
     
     if (!gpuIndexBuffer_.getBuffer() ||
         !gpuKeyBuffer_.getBuffer() ||
-        !gpuIndexTempBuffer_.getBuffer() ||
-        !gpuKeyTempBuffer_.getBuffer() ||
-        !radixHistogramBuffer_.getBuffer() ||
-        !radixOffsetBuffer_.getBuffer() ||
+        !drawIndirectBuffer_.getBuffer() ||
         !instanceBuffer_.getBuffer() ||
         !uniformBuffer_.getBuffer()) {
         LOG_DEBUG("Skipping radix descriptor update until sort buffers exist");
@@ -630,26 +718,24 @@ void GaussianRenderer::updateDescriptorSets() {
     }
 
     for (size_t i = 0; i < computeDescriptorSets_.size(); ++i) {
-        bool reverse = (i % 2) == 1;
-        std::array<vk::DescriptorBufferInfo, 8> bufferInfos{};
-        bufferInfos[0].setBuffer(reverse ? gpuIndexTempBuffer_.getBuffer() : gpuIndexBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
-        bufferInfos[1].setBuffer(reverse ? gpuKeyTempBuffer_.getBuffer() : gpuKeyBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
-        bufferInfos[2].setBuffer(reverse ? gpuIndexBuffer_.getBuffer() : gpuIndexTempBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
-        bufferInfos[3].setBuffer(reverse ? gpuKeyBuffer_.getBuffer() : gpuKeyTempBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
-        bufferInfos[4].setBuffer(radixHistogramBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
-        bufferInfos[5].setBuffer(radixOffsetBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        std::array<vk::DescriptorBufferInfo, 9> bufferInfos{};
+        bufferInfos[0].setBuffer(gpuIndexBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
+        bufferInfos[1].setBuffer(gpuKeyBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
         bufferInfos[6].setBuffer(instanceBuffer_.getBuffer()).setOffset(0).setRange(VK_WHOLE_SIZE);
         bufferInfos[7].setBuffer(uniformBuffer_.getBuffer()).setOffset(0).setRange(sizeof(UniformBufferObject));
+        bufferInfos[8].setBuffer(drawIndirectBuffer_.getBuffer()).setOffset(0).setRange(sizeof(VkDrawIndexedIndirectCommand));
 
-        std::array<vk::WriteDescriptorSet, 8> writeDescriptorSets{};
-        
-        for (uint32_t binding = 0; binding < writeDescriptorSets.size(); ++binding) {
-            writeDescriptorSets[binding].setDstSet(computeDescriptorSets_[i])
-                                        .setDstBinding(binding)
-                                        .setDstArrayElement(0)
-                                        .setDescriptorCount(1)
-                                        .setDescriptorType(binding == 7 ? vk::DescriptorType::eUniformBuffer : vk::DescriptorType::eStorageBuffer)
-                                        .setPBufferInfo(&bufferInfos[binding]);
+        const std::array<uint32_t, 5> bindings = {0, 1, 6, 7, 8};
+        std::array<vk::WriteDescriptorSet, bindings.size()> writeDescriptorSets{};
+
+        for (size_t writeIndex = 0; writeIndex < bindings.size(); ++writeIndex) {
+            uint32_t binding = bindings[writeIndex];
+            writeDescriptorSets[writeIndex].setDstSet(computeDescriptorSets_[i])
+                                           .setDstBinding(binding)
+                                           .setDstArrayElement(0)
+                                           .setDescriptorCount(1)
+                                           .setDescriptorType(binding == 7 ? vk::DescriptorType::eUniformBuffer : vk::DescriptorType::eStorageBuffer)
+                                           .setPBufferInfo(&bufferInfos[binding]);
         }
         
         device.updateDescriptorSets(static_cast<uint32_t>(writeDescriptorSets.size()), 
@@ -661,27 +747,29 @@ void GaussianRenderer::updateDescriptorSets() {
               descriptorSets_.size(), computeDescriptorSets_.size());
 }
 
-void GaussianRenderer::sortGaussiansByDepthGPU() {
+void GaussianRenderer::recordSortCommands(vk::CommandBuffer commandBuffer, uint32_t pointCount) {
     if (!current_model_ || current_model_->isEmpty()) {
         LOG_WARN("Skipping sort: no model or empty");
         return;
     }
     
-    uint32_t pointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
     LOG_DEBUG("Sorting {} points", pointCount);
-    
-    ensureSortBuffers(pointCount);
     
     uint32_t groupCount = (pointCount + 255u) / 256u;
 
-    auto device = getDevice();
-    vk::FenceCreateInfo fenceInfo{};
-    vk::Fence sortFence = device.createFence(fenceInfo);
+    commandBuffer.fillBuffer(drawIndirectBuffer_.getBuffer(), 0, sizeof(VkDrawIndexedIndirectCommand), 0);
 
-    vk::CommandBufferBeginInfo beginInfo{};
-    beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
-    computeCommandBuffer_.reset();
-    computeCommandBuffer_.begin(beginInfo);
+    vk::MemoryBarrier drawClearBarrier{};
+    drawClearBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+                    .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    commandBuffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::DependencyFlagBits{},
+        1, &drawClearBarrier,
+        0, nullptr,
+        0, nullptr
+    );
 
     struct PushConstants {
         uint32_t count;
@@ -693,24 +781,9 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
     pushConstants.count = pointCount;
     pushConstants.groupCount = groupCount;
 
-    auto insertComputeBarrier = [this]() {
-        vk::MemoryBarrier memoryBarrier{};
-        memoryBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
-                     .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
-
-        computeCommandBuffer_.pipelineBarrier(
-            vk::PipelineStageFlagBits::eComputeShader,
-            vk::PipelineStageFlagBits::eComputeShader,
-            vk::DependencyFlagBits{},
-            1, &memoryBarrier,
-            0, nullptr,
-            0, nullptr
-        );
-    };
-
     vk::DescriptorSet keygenSet = computeDescriptorSets_[currentFrame_ * 2];
-    computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixKeygenPipeline_->getPipeline());
-    computeCommandBuffer_.bindDescriptorSets(
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, radixKeygenPipeline_->getPipeline());
+    commandBuffer.bindDescriptorSets(
         vk::PipelineBindPoint::eCompute,
         radixKeygenPipeline_->getPipelineLayout(),
         0,
@@ -719,93 +792,42 @@ void GaussianRenderer::sortGaussiansByDepthGPU() {
         0,
         nullptr
     );
-    computeCommandBuffer_.pushConstants(
+    commandBuffer.pushConstants(
         radixKeygenPipeline_->getPipelineLayout(),
         vk::ShaderStageFlagBits::eCompute,
         0, sizeof(PushConstants), &pushConstants
     );
-    computeCommandBuffer_.dispatch(groupCount, 1, 1);
-    insertComputeBarrier();
+    commandBuffer.dispatch(groupCount, 1, 1);
 
-    for (uint32_t pass = 0; pass < 4; ++pass) {
-        pushConstants.shift = pass * 8u;
-        vk::DescriptorSet radixSet = computeDescriptorSets_[currentFrame_ * 2 + (pass % 2)];
+    vk::MemoryBarrier sortInputBarrier{};
+    sortInputBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
+                    .setDstAccessMask(vk::AccessFlagBits::eShaderRead |
+                                      vk::AccessFlagBits::eShaderWrite |
+                                      vk::AccessFlagBits::eTransferRead);
+    commandBuffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer,
+        vk::DependencyFlagBits{},
+        1, &sortInputBarrier,
+        0, nullptr,
+        0, nullptr
+    );
 
-        computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixHistogramPipeline_->getPipeline());
-        computeCommandBuffer_.bindDescriptorSets(
-            vk::PipelineBindPoint::eCompute,
-            radixHistogramPipeline_->getPipelineLayout(),
-            0,
-            1,
-            &radixSet,
-            0,
-            nullptr
-        );
-        computeCommandBuffer_.pushConstants(
-            radixHistogramPipeline_->getPipelineLayout(),
-            vk::ShaderStageFlagBits::eCompute,
-            0, sizeof(PushConstants), &pushConstants
-        );
-        computeCommandBuffer_.dispatch(groupCount, 1, 1);
-        insertComputeBarrier();
-
-        computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixPrefixPipeline_->getPipeline());
-        computeCommandBuffer_.bindDescriptorSets(
-            vk::PipelineBindPoint::eCompute,
-            radixPrefixPipeline_->getPipelineLayout(),
-            0,
-            1,
-            &radixSet,
-            0,
-            nullptr
-        );
-        computeCommandBuffer_.pushConstants(
-            radixPrefixPipeline_->getPipelineLayout(),
-            vk::ShaderStageFlagBits::eCompute,
-            0, sizeof(PushConstants), &pushConstants
-        );
-        computeCommandBuffer_.dispatch(1, 1, 1);
-        insertComputeBarrier();
-
-        computeCommandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, radixScatterPipeline_->getPipeline());
-        computeCommandBuffer_.bindDescriptorSets(
-            vk::PipelineBindPoint::eCompute,
-            radixScatterPipeline_->getPipelineLayout(),
-            0,
-            1,
-            &radixSet,
-            0,
-            nullptr
-        );
-        computeCommandBuffer_.pushConstants(
-            radixScatterPipeline_->getPipelineLayout(),
-            vk::ShaderStageFlagBits::eCompute,
-            0, sizeof(PushConstants), &pushConstants
-        );
-        computeCommandBuffer_.dispatch(groupCount, 1, 1);
-        insertComputeBarrier();
-    }
-    
-    computeCommandBuffer_.end();
-    
-    auto& context = Context::Instance();
-    
-    vk::SubmitInfo submitInfo{};
-    submitInfo.setCommandBufferCount(1)
-              .setPCommandBuffers(&computeCommandBuffer_);
-    
-    // 重置Fence
-    device.resetFences(sortFence);
-    
-    auto sortStart = std::chrono::high_resolution_clock::now();
-    context.getDevice().getGraphicsQueue().submit(submitInfo, sortFence);
-    
-    (void)device.waitForFences(sortFence, VK_TRUE, UINT64_MAX);
-    auto sortEnd = std::chrono::high_resolution_clock::now();
-    auto sortMs = std::chrono::duration_cast<std::chrono::milliseconds>(sortEnd - sortStart).count();
-    LOG_DEBUG("GPU radix sorting completed: {} points, {} groups, {} ms", pointCount, groupCount, sortMs);
-    
-    device.destroyFence(sortFence);
+    vrdxCmdSortKeyValueIndirect(
+        commandBuffer,
+        radixSorter_,
+        pointCount,
+        drawIndirectBuffer_.getBuffer(),
+        sizeof(uint32_t),
+        gpuKeyBuffer_.getBuffer(),
+        0,
+        gpuIndexBuffer_.getBuffer(),
+        0,
+        radixSortStorageBuffer_.getBuffer(),
+        0,
+        VK_NULL_HANDLE,
+        0
+    );
 }
 
 void GaussianRenderer::ensureSortBuffers(uint32_t pointCount) {
@@ -818,16 +840,13 @@ void GaussianRenderer::ensureSortBuffers(uint32_t pointCount) {
     auto physicalDevice = context.PhysicalDevice();
     auto transferQueue = context.getDevice().getGraphicsQueue();
     uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
-    uint32_t groupCount = (pointCount + 255u) / 256u;
     
     if (gpuIndexBuffer_.getBuffer() ||
         gpuKeyBuffer_.getBuffer() ||
-        gpuIndexTempBuffer_.getBuffer() ||
-        gpuKeyTempBuffer_.getBuffer() ||
-        radixHistogramBuffer_.getBuffer() ||
-        radixOffsetBuffer_.getBuffer()) {
-        std::array<vk::Fence, MAX_FRAMES_IN_FLIGHT> fences{};
-        for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+        radixSortStorageBuffer_.getBuffer() ||
+        drawIndirectBuffer_.getBuffer()) {
+        std::vector<vk::Fence> fences(frameResourceCount_);
+        for (size_t frame = 0; frame < frameResourceCount_; ++frame) {
             fences[frame] = inFlightFences_[frame];
         }
         (void)device.waitForFences(fences, VK_TRUE, UINT64_MAX);
@@ -835,10 +854,8 @@ void GaussianRenderer::ensureSortBuffers(uint32_t pointCount) {
 
     gpuIndexBuffer_.cleanup();
     gpuKeyBuffer_.cleanup();
-    gpuIndexTempBuffer_.cleanup();
-    gpuKeyTempBuffer_.cleanup();
-    radixHistogramBuffer_.cleanup();
-    radixOffsetBuffer_.cleanup();
+    radixSortStorageBuffer_.cleanup();
+    drawIndirectBuffer_.cleanup();
     
     gpuIndexBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
                           nullptr,
@@ -852,31 +869,22 @@ void GaussianRenderer::ensureSortBuffers(uint32_t pointCount) {
                          vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
                          vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-    vk::DeviceSize valueBufferSize = static_cast<vk::DeviceSize>(pointCount) * sizeof(uint32_t);
-    gpuIndexTempBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+    VrdxSorterStorageRequirements sorterRequirements{};
+    vrdxGetSorterKeyValueStorageRequirements(radixSorter_, pointCount, &sorterRequirements);
+    radixSortStorageBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                                   nullptr,
+                                   sorterRequirements.size,
+                                   vk::BufferUsageFlags(sorterRequirements.usage),
+                                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    drawIndirectBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
                                nullptr,
-                               valueBufferSize,
-                               vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+                               sizeof(VkDrawIndexedIndirectCommand),
+                               vk::BufferUsageFlagBits::eStorageBuffer |
+                                   vk::BufferUsageFlagBits::eIndirectBuffer |
+                                   vk::BufferUsageFlagBits::eTransferSrc |
+                                   vk::BufferUsageFlagBits::eTransferDst,
                                vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-    gpuKeyTempBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                             nullptr,
-                             valueBufferSize,
-                             vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
-                             vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-    vk::DeviceSize radixTableSize = static_cast<vk::DeviceSize>(groupCount) * 256u * sizeof(uint32_t);
-    radixHistogramBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                                 nullptr,
-                                 radixTableSize,
-                                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
-                                 vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-    radixOffsetBuffer_.create(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
-                              nullptr,
-                              radixTableSize,
-                              vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
-                              vk::MemoryPropertyFlagBits::eDeviceLocal);
     
     sortBufferCapacity_ = pointCount;
     updateDescriptorSets();
@@ -894,26 +902,39 @@ void GaussianRenderer::updateVertexBuffer() {
     uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
     
     // 构建实例数据数组（SSBO格式 - 包含完整SH系数）
+    struct alignas(8) PackedSH {
+        uint32_t xy;
+        uint32_t z0;
+    };
+    static_assert(sizeof(PackedSH) == sizeof(uint32_t) * 2,
+                  "PackedSH must match GLSL uvec2 layout");
+
     struct alignas(16) GaussianInstanceData {
         glm::vec4 position;     // xyz: position
         glm::vec4 scale;        // xyz: scale
         glm::vec4 rotation;     // xyzw: quaternion
-        
-        // 球谐函数系数（完整3阶SH）
-        glm::vec4 sh0_alpha;    // xyz: DC项, w: alpha
-        glm::vec4 sh1[3];       // xyz: 1阶SH - 3个基函数
-        glm::vec4 sh2[5];       // xyz: 2阶SH - 5个基函数
-        glm::vec4 sh3[7];       // xyz: 3阶SH - 7个基函数
+
+        PackedSH sh0;           // half-packed xyz DC term
+        PackedSH sh1[3];        // half-packed xyz 1st-order SH
+        PackedSH sh2[5];        // half-packed xyz 2nd-order SH
+        PackedSH sh3[7];        // half-packed xyz 3rd-order SH
     };
-    static_assert(sizeof(GaussianInstanceData) == sizeof(glm::vec4) * 19,
-                  "GaussianInstanceData must match the GLSL std430 vec4 layout");
+    static_assert(sizeof(GaussianInstanceData) == sizeof(glm::vec4) * 3 + sizeof(PackedSH) * 16,
+                  "GaussianInstanceData must match the GLSL std430 packed layout");
+
+    auto packSH = [](const glm::vec3& value) {
+        PackedSH packed{};
+        packed.xy = glm::packHalf2x16(glm::vec2(value.x, value.y));
+        packed.z0 = glm::packHalf2x16(glm::vec2(value.z, 0.0f));
+        return packed;
+    };
     
     uint32_t pointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
     std::vector<GaussianInstanceData> instanceData(pointCount);
     
     size_t idx = 0;
     for (const auto& point : *current_model_) {
-        instanceData[idx].position = glm::vec4(point.position, 0.0f);
+        instanceData[idx].position = glm::vec4(point.position, point.alpha);
         instanceData[idx].scale = glm::vec4(point.scale, 0.0f);
         instanceData[idx].rotation = glm::vec4(
             point.rotation.x,
@@ -922,16 +943,16 @@ void GaussianRenderer::updateVertexBuffer() {
             point.rotation.w
         );
         
-        // 复制完整的SH系数
-        instanceData[idx].sh0_alpha = glm::vec4(point.color.sh0, point.alpha);
+        // Half-pack SH coefficients to reduce SSBO bandwidth.
+        instanceData[idx].sh0 = packSH(point.color.sh0);
         for (int i = 0; i < 3; ++i) {
-            instanceData[idx].sh1[i] = glm::vec4(point.color.sh1[i], 0.0f);
+            instanceData[idx].sh1[i] = packSH(point.color.sh1[i]);
         }
         for (int i = 0; i < 5; ++i) {
-            instanceData[idx].sh2[i] = glm::vec4(point.color.sh2[i], 0.0f);
+            instanceData[idx].sh2[i] = packSH(point.color.sh2[i]);
         }
         for (int i = 0; i < 7; ++i) {
-            instanceData[idx].sh3[i] = glm::vec4(point.color.sh3[i], 0.0f);
+            instanceData[idx].sh3[i] = packSH(point.color.sh3[i]);
         }
         ++idx;
     }
@@ -944,8 +965,10 @@ void GaussianRenderer::updateVertexBuffer() {
                               bufferSize,
                               vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
                               vk::MemoryPropertyFlagBits::eDeviceLocal);
-        LOG_INFO("Created instance SSBO with {} instances ({} bytes, {:.2f} MB)", 
-                 pointCount, bufferSize, bufferSize / (1024.0f * 1024.0f));
+        std::ostringstream sizeMb;
+        sizeMb << std::fixed << std::setprecision(2) << bufferSize / (1024.0 * 1024.0);
+        LOG_INFO("Created instance SSBO with {} instances ({} bytes, {} MB)",
+                 pointCount, bufferSize, sizeMb.str());
         
         // 首次创建后需要更新Descriptor Set
         updateDescriptorSets();
@@ -974,8 +997,12 @@ void GaussianRenderer::updateUniformBuffer(const glm::mat4& view, const glm::mat
         static_cast<float>(extent.height)
     );
     
-    LOG_DEBUG("Pixel focal lengths: fx={:.2f}, fy={:.2f}, screen={}x{}", 
-              ubo_[currentFrame_].focal.x, ubo_[currentFrame_].focal.y, extent.width, extent.height);
+    std::ostringstream fx;
+    std::ostringstream fy;
+    fx << std::fixed << std::setprecision(2) << ubo_[currentFrame_].focal.x;
+    fy << std::fixed << std::setprecision(2) << ubo_[currentFrame_].focal.y;
+    LOG_DEBUG("Pixel focal lengths: fx={}, fy={}, screen={}x{}",
+              fx.str(), fy.str(), extent.width, extent.height);
     
     void* data = device.mapMemory(uniformBuffer_.getMemory(), 0, sizeof(UniformBufferObject));
     std::memcpy(data, &ubo_[currentFrame_], sizeof(UniformBufferObject));
@@ -1001,14 +1028,18 @@ void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
     commandBuffer.begin(beginInfo);{
+        if (record_sort_this_frame_ && sort_point_count_this_frame_ > 0) {
+            recordSortCommands(commandBuffer, sort_point_count_this_frame_);
+        }
+
         if (gpuIndexBuffer_.getBuffer()) {
             vk::MemoryBarrier sortedIndexBarrier{};
             sortedIndexBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
-                              .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+                              .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eIndirectCommandRead);
 
             commandBuffer.pipelineBarrier(
                 vk::PipelineStageFlagBits::eComputeShader,
-                vk::PipelineStageFlagBits::eVertexShader,
+                vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eDrawIndirect,
                 vk::DependencyFlagBits{},
                 1, &sortedIndexBarrier,
                 0, nullptr,
@@ -1066,10 +1097,17 @@ void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
             
             // 使用索引绘制四边形（每个高斯点一个实例）
             if (current_model_ && instanceBuffer_.getBuffer()) {
-                uint32_t instanceCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
-                
-                // drawIndexed: 索引数, 实例数, 起始索引, 顶点偏移, 起始实例
-                commandBuffer.drawIndexed(4, instanceCount, 0, 0, 0);
+                if (drawIndirectBuffer_.getBuffer()) {
+                    commandBuffer.drawIndexedIndirect(
+                        drawIndirectBuffer_.getBuffer(),
+                        0,
+                        1,
+                        sizeof(VkDrawIndexedIndirectCommand)
+                    );
+                } else {
+                    uint32_t instanceCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
+                    commandBuffer.drawIndexed(4, instanceCount, 0, 0, 0);
+                }
             }
 
             if (imguiInitialized_) {

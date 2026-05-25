@@ -12,6 +12,7 @@
 #include "vulkan/command_pool.hpp"
 #include "vulkan/compute_pipeline.hpp"
 #include "utils/camera.hpp"
+#include <vk_radix_sort.h>
 
 namespace vk_gs {
 
@@ -25,6 +26,8 @@ public:
     void cleanup() override;
     void render() override;
     void onResize(uint32_t width, uint32_t height) override;
+    void setPresentModePreference(PresentModePreference preference);
+    PresentModePreference getPresentModePreference() const { return presentModePreference_; }
     
     // 设置当前要渲染的模型和相机参数
     void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix);
@@ -36,6 +39,7 @@ private:
 
     void createBuffers();
     void createSyncObjects();
+    void recreateRenderFinishedSemaphores();
     void createComputePipeline();
     void createDescriptorSets();
     void destroyDescriptorPool();
@@ -45,7 +49,7 @@ private:
     void recreateSwapchain(uint32_t width, uint32_t height);
     
     // GPU 深度排序
-    void sortGaussiansByDepthGPU();
+    void recordSortCommands(vk::CommandBuffer commandBuffer, uint32_t pointCount);
     void ensureSortBuffers(uint32_t pointCount);
     
     // 更新顶点缓冲区数据
@@ -53,15 +57,12 @@ private:
     
     // 记录命令缓冲区
     void recordCommandBuffer(uint32_t imageIndex);
-    void recordComputeCommands(uint32_t stage, uint32_t substage);
 
     std::unique_ptr<Swapchain> swapchain_;
     std::unique_ptr<RenderPass> renderPass_;
     std::unique_ptr<Pipeline> pipeline_;
     std::unique_ptr<ComputePipeline> radixKeygenPipeline_;
-    std::unique_ptr<ComputePipeline> radixHistogramPipeline_;
-    std::unique_ptr<ComputePipeline> radixPrefixPipeline_;
-    std::unique_ptr<ComputePipeline> radixScatterPipeline_;
+    VrdxSorter radixSorter_ = VK_NULL_HANDLE;
     
     // 高斯数据缓冲区
     Buffer instanceBuffer_;    // 实例数据缓冲区（SSBO，存储所有高斯属性）
@@ -69,10 +70,8 @@ private:
     Buffer screenInfoBuffer_;  // 屏幕信息Uniform Buffer (分辨率)
     Buffer gpuIndexBuffer_;    // GPU排序索引缓冲
     Buffer gpuKeyBuffer_;      // GPU排序key缓冲
-    Buffer gpuIndexTempBuffer_;
-    Buffer gpuKeyTempBuffer_;
-    Buffer radixHistogramBuffer_;
-    Buffer radixOffsetBuffer_;
+    Buffer radixSortStorageBuffer_;
+    Buffer drawIndirectBuffer_;
     uint32_t sortBufferCapacity_ = 0;
     
     // Descriptor Set 相关
@@ -81,22 +80,18 @@ private:
     std::vector<vk::DescriptorSet> computeDescriptorSets_;   // Compute Pipeline使用的Descriptor Sets
     
     // 同步对象（基于Swapchain图像索引）
-    std::vector<vk::Semaphore> imageAvailableSemaphores_;  // 按imageIndex索引
+    std::vector<vk::Semaphore> imageAvailableSemaphores_;  // 按frameIndex索引
     std::vector<vk::Semaphore> renderFinishedSemaphores_;  // 按imageIndex索引
     std::vector<vk::Fence> inFlightFences_;                // 按frameIndex索引
     
     // 命令池和命令缓冲区
     CommandPool commandPool_;
-    CommandPool computeCommandPool_;
     std::vector<vk::CommandBuffer> commandBuffers_;        // 按frameIndex索引
-    vk::CommandBuffer computeCommandBuffer_;
     
     // 当前帧索引
     size_t currentFrame_ = 0;
-    uint32_t swapchainImageCount_ = 0;  // Swapchain图像数量（仅用于参考）
-    
-    // 同步对象配置（恢复为2以匹配Swapchain图像数）
-    static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+    uint32_t swapchainImageCount_ = 0;
+    uint32_t frameResourceCount_ = 0;
     
     // Uniform Buffer Object (必须与GLSL std140布局严格对齐)
     struct UniformBufferObject {
@@ -105,7 +100,8 @@ private:
         alignas(16) glm::mat4 model;             // offset 128, size 64
         alignas(16) glm::vec4 cameraPositionTime;// xyz: camera position, w: time
         alignas(16) glm::vec4 focal;             // xy: pixel focal lengths, zw: screen size
-    } ubo_[MAX_FRAMES_IN_FLIGHT];
+    };
+    std::vector<UniformBufferObject> ubo_;
     
     // 当前渲染的高斯模型
     const GaussianModel* current_model_ = nullptr;
@@ -113,6 +109,7 @@ private:
     vk_gs::Camera camera_;
 
     bool imguiInitialized_ = false;
+    PresentModePreference presentModePreference_ = PresentModePreference::MaxFps;
     
     // GPU排序缓存状态
     bool gpu_sort_completed_ = false;
@@ -122,6 +119,8 @@ private:
     glm::mat4 last_view_matrix_{1.0f};
     glm::mat4 last_projection_matrix_{1.0f};
     glm::mat4 last_model_matrix_{1.0f};
+    bool record_sort_this_frame_ = false;
+    uint32_t sort_point_count_this_frame_ = 0;
     
 };
 

@@ -1,6 +1,8 @@
-#include <iostream>
+#include "application.hpp"
 
-int main() {
-    std::cout << "vk_gs app template" << std::endl;
+int main(){
+    vk_gs::Application app("Vulkan Gaussian Splatting", 1280, 720, vk_gs::RenderMode::GaussianGraphics);
+    app.run();
+
     return 0;
 }

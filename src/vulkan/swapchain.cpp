@@ -49,8 +49,10 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
     // 选择交换链范围
     extent_ = chooseSwapExtent(capabilities, width, height);
     
-    // 确定图像数量（强制使用2个图像以匹配MAX_FRAMES_IN_FLIGHT）
-    imageCount_ = 2;
+    // Benchmark mode: request the maximum image count exposed by the surface.
+    // maxImageCount == 0 means the implementation does not publish a hard cap.
+    imageCount_ = capabilities.maxImageCount > 0 ? capabilities.maxImageCount
+                                                 : capabilities.minImageCount + 2;
     
     // 验证是否符合硬件要求
     if (imageCount_ < capabilities.minImageCount) {
@@ -79,13 +81,15 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
     uint32_t graphicsIndex = queueIndices.graphicsIndex.value();
     uint32_t presentIndex = queueIndices.presentIndex.value();
 
+    std::array<uint32_t, 2> queueFamilyIndices = { graphicsIndex, presentIndex };
     if (graphicsIndex != presentIndex) {
-        uint32_t queueFamilyIndices[] = { graphicsIndex, presentIndex };
         createInfo.setImageSharingMode(vk::SharingMode::eConcurrent)
                   .setQueueFamilyIndexCount(2)
-                  .setPQueueFamilyIndices(queueFamilyIndices);
+                  .setPQueueFamilyIndices(queueFamilyIndices.data());
     } else {
-        createInfo.setImageSharingMode(vk::SharingMode::eExclusive);
+        createInfo.setImageSharingMode(vk::SharingMode::eExclusive)
+                  .setQueueFamilyIndexCount(0)
+                  .setPQueueFamilyIndices(nullptr);
     }
     
     createInfo.setPreTransform(capabilities.currentTransform)
@@ -285,25 +289,59 @@ vk::SurfaceFormatKHR Swapchain::chooseSwapSurfaceFormat(const std::vector<vk::Su
 }
 
 vk::PresentModeKHR Swapchain::chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& available_present_modes) {
-    // 优先选择 Mailbox 模式（三重缓冲，低延迟）
-    for (const auto& available_present_mode : available_present_modes) {
-        if (available_present_mode == vk::PresentModeKHR::eMailbox) {
-            LOG_DEBUG("Selected present mode: Mailbox");
-            return available_present_mode;
+    auto findMode = [&available_present_modes](vk::PresentModeKHR mode) -> vk::PresentModeKHR {
+        for (const auto& available_present_mode : available_present_modes) {
+            if (available_present_mode == mode) {
+                return available_present_mode;
+            }
+        }
+        return vk::PresentModeKHR::eFifo;
+    };
+
+    auto hasMode = [&available_present_modes](vk::PresentModeKHR mode) {
+        return std::find(available_present_modes.begin(), available_present_modes.end(), mode) != available_present_modes.end();
+    };
+
+    if (presentModePreference_ == PresentModePreference::VSync) {
+        if (hasMode(vk::PresentModeKHR::eFifo)) {
+            LOG_INFO("Selected present mode: FIFO (VSync capped)");
+            return findMode(vk::PresentModeKHR::eFifo);
         }
     }
-    
-    // 其次选择 FIFO 模式（垂直同步，保证无撕裂）
-    for (const auto& available_present_mode : available_present_modes) {
-        if (available_present_mode == vk::PresentModeKHR::eFifo) {
-            LOG_DEBUG("Selected present mode: FIFO (VSync)");
-            return available_present_mode;
+
+    if (presentModePreference_ == PresentModePreference::LowLatency) {
+        if (hasMode(vk::PresentModeKHR::eMailbox)) {
+            LOG_INFO("Selected present mode: Mailbox");
+            return findMode(vk::PresentModeKHR::eMailbox);
+        }
+        if (hasMode(vk::PresentModeKHR::eImmediate)) {
+            LOG_INFO("Selected present mode: Immediate (Mailbox unavailable)");
+            return findMode(vk::PresentModeKHR::eImmediate);
         }
     }
-    
-    // 如果都没有，返回第一个可用的
-    LOG_WARN("Using fallback present mode");
-    return available_present_modes[0];
+
+    if (hasMode(vk::PresentModeKHR::eImmediate)) {
+        LOG_INFO("Selected present mode: Immediate (uncapped benchmark)");
+        return findMode(vk::PresentModeKHR::eImmediate);
+    }
+
+    if (hasMode(vk::PresentModeKHR::eMailbox)) {
+        LOG_INFO("Selected present mode: Mailbox");
+        return findMode(vk::PresentModeKHR::eMailbox);
+    }
+
+    if (hasMode(vk::PresentModeKHR::eFifo)) {
+        LOG_INFO("Selected present mode: FIFO (VSync capped)");
+        return findMode(vk::PresentModeKHR::eFifo);
+    }
+
+    if (!available_present_modes.empty()) {
+        LOG_WARN("Using fallback present mode");
+        return available_present_modes[0];
+    }
+
+    LOG_WARN("No present mode available, falling back to FIFO");
+    return vk::PresentModeKHR::eFifo;
 }
 
 vk::Extent2D Swapchain::chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height) {

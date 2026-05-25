@@ -14,10 +14,10 @@ struct GaussianInstance {
     vec4 position;
     vec4 scale;
     vec4 rotation;
-    vec4 sh0_alpha;
-    vec4 sh1[3];
-    vec4 sh2[5];
-    vec4 sh3[7];
+    uvec2 sh0;
+    uvec2 sh1[3];
+    uvec2 sh2[5];
+    uvec2 sh3[7];
 };
 
 layout(std430, binding = 6) readonly buffer GaussianInstances {
@@ -32,6 +32,10 @@ layout(binding = 7) uniform UniformBufferObject {
     vec4 focal;
 } ubo;
 
+layout(std430, binding = 8) buffer DrawIndirectBuffer {
+    uint drawArgs[];
+};
+
 layout(push_constant) uniform RadixParams {
     uint count;
     uint shift;
@@ -45,20 +49,27 @@ void main() {
         return;
     }
 
+    if (index == 0u) {
+        drawArgs[0] = 4u;
+        drawArgs[2] = 0u;
+        drawArgs[3] = 0u;
+        drawArgs[4] = 0u;
+    }
+
     vec4 centerClip = ubo.projection * ubo.view * ubo.model * vec4(instances[index].position.xyz, 1.0);
     if (centerClip.w <= 1e-6) {
-        indicesOut[index] = 0xffffffffu;
-        keysOut[index] = 0u;
         return;
     }
 
     vec3 ndc = centerClip.xyz / centerClip.w;
-    if (ndc.z < 0.0 || ndc.z > 1.0) {
-        indicesOut[index] = 0xffffffffu;
-        keysOut[index] = 0u;
+    const float CULL_MARGIN_NDC = 2.0;
+    if (ndc.x < -CULL_MARGIN_NDC || ndc.x > CULL_MARGIN_NDC ||
+        ndc.y < -CULL_MARGIN_NDC || ndc.y > CULL_MARGIN_NDC ||
+        ndc.z < 0.0 || ndc.z > 1.0) {
         return;
     }
 
-    indicesOut[index] = index;
-    keysOut[index] = floatBitsToUint(ndc.z);
+    uint visibleIndex = atomicAdd(drawArgs[1], 1u);
+    indicesOut[visibleIndex] = index;
+    keysOut[visibleIndex] = floatBitsToUint(1.0 - ndc.z);
 }

@@ -1,6 +1,7 @@
 #include "compute_pipeline.hpp"
 #include "utils/logger.hpp"
 
+#include <array>
 #include <stdexcept>
 #include <fstream>
 
@@ -24,7 +25,7 @@ void ComputePipeline::initialize(vk::Device device, const std::string& shaderPat
     // 创建 Descriptor Set Layout。Radix sort and key generation share one
     // layout: index/key ping-pong buffers, histogram/offset tables, instance
     // data, and the renderer UBO.
-    std::array<vk::DescriptorSetLayoutBinding, 8> storageBufferBindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 9> storageBufferBindings{};
     
     for (uint32_t binding = 0; binding < storageBufferBindings.size(); ++binding) {
         storageBufferBindings[binding].setBinding(binding)

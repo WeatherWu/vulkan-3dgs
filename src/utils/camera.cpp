@@ -1,6 +1,9 @@
 #include "camera.hpp"
 #include "utils/logger.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace vk_gs {
 
 Camera::Camera() {
@@ -12,18 +15,40 @@ void Camera::update(float delta_time) {
 }
 
 void Camera::set_target(const glm::vec3& target) {
-    glm::vec3 direction = glm::normalize(target - position_);
-    
-    // 计算偏航角和俯仰角
-    yaw_ = glm::degrees(atan2(direction.z, direction.x));
-    pitch_ = glm::degrees(asin(direction.y));
-    
-    update_vectors();
+    look_at(target, world_up_);
+}
+
+void Camera::look_at(const glm::vec3& target, const glm::vec3& up_hint) {
+    glm::vec3 direction = target - position_;
+    if (glm::length(direction) <= 1e-6f) {
+        return;
+    }
+
+    set_orientation_from_basis(glm::normalize(direction), up_hint);
+    world_up_ = up_;
 }
 
 void Camera::set_up(const glm::vec3& up) {
     world_up_ = glm::normalize(up);
+    set_orientation_from_basis(front_, world_up_);
+}
+
+void Camera::set_yaw(float yaw) {
+    yaw_ = yaw;
     update_vectors();
+}
+
+void Camera::set_pitch(float pitch) {
+    pitch_ = pitch;
+    update_vectors();
+}
+
+void Camera::add_yaw(float delta) {
+    set_yaw(yaw_ + delta);
+}
+
+void Camera::add_pitch(float delta) {
+    set_pitch(pitch_ + delta);
 }
 
 void Camera::move_forward(float distance) {
@@ -63,7 +88,7 @@ glm::mat4 Camera::get_projection_matrix(float aspect_ratio, float fov,
 }
 
 void Camera::update_vectors() {
-    // 限制俯仰角，避免万向节锁
+    // Compatibility path for callers that still use yaw/pitch.
     if (pitch_ > 89.0f) pitch_ = 89.0f;
     if (pitch_ < -89.0f) pitch_ = -89.0f;
     
@@ -72,11 +97,37 @@ void Camera::update_vectors() {
     new_front.x = cos(glm::radians(yaw_)) * cos(glm::radians(pitch_));
     new_front.y = sin(glm::radians(pitch_));
     new_front.z = sin(glm::radians(yaw_)) * cos(glm::radians(pitch_));
-    front_ = glm::normalize(new_front);
-    
-    // 重新计算右向量和上向量
-    right_ = glm::normalize(glm::cross(front_, world_up_));
-    up_ = glm::normalize(glm::cross(right_, front_));
+    set_orientation_from_basis(glm::normalize(new_front), world_up_);
+}
+
+void Camera::set_orientation_from_basis(const glm::vec3& front, const glm::vec3& up_hint) {
+    glm::vec3 normalizedFront = glm::length(front) > 1e-6f ? glm::normalize(front) : glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 upHint = glm::length(up_hint) > 1e-6f ? glm::normalize(up_hint) : glm::vec3(0.0f, 1.0f, 0.0f);
+
+    glm::vec3 right = glm::cross(normalizedFront, upHint);
+    if (glm::length(right) <= 1e-6f) {
+        glm::vec3 fallbackUp = std::abs(normalizedFront.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+        right = glm::cross(normalizedFront, fallbackUp);
+    }
+    right = glm::normalize(right);
+    glm::vec3 up = glm::normalize(glm::cross(right, normalizedFront));
+
+    glm::mat3 basis(right, up, -normalizedFront);
+    orientation_ = glm::normalize(glm::quat_cast(basis));
+    sync_vectors_from_orientation();
+    sync_euler_from_front();
+}
+
+void Camera::sync_vectors_from_orientation() {
+    orientation_ = glm::normalize(orientation_);
+    front_ = glm::normalize(orientation_ * glm::vec3(0.0f, 0.0f, -1.0f));
+    right_ = glm::normalize(orientation_ * glm::vec3(1.0f, 0.0f, 0.0f));
+    up_ = glm::normalize(orientation_ * glm::vec3(0.0f, 1.0f, 0.0f));
+}
+
+void Camera::sync_euler_from_front() {
+    yaw_ = glm::degrees(std::atan2(front_.z, front_.x));
+    pitch_ = glm::degrees(std::asin(std::clamp(front_.y, -1.0f, 1.0f)));
 }
 
 } // namespace vk_gs

@@ -26,6 +26,10 @@ layout(std430, binding = 5) buffer OffsetBuffer {
     uint offsets[];
 };
 
+layout(std430, binding = 8) readonly buffer DrawIndirectBuffer {
+    uint drawArgs[];
+};
+
 layout(push_constant) uniform RadixParams {
     uint count;
     uint shift;
@@ -39,15 +43,18 @@ void main() {
         return;
     }
 
+    uint count = drawArgs[1];
+    uint groupCount = (count + 255u) / 256u;
+
     // Descending radix order: higher digit bins are placed first.
     uint base = 0;
     for (uint higherBin = bin + 1u; higherBin < 256u; ++higherBin) {
-        for (uint groupIndex = 0; groupIndex < params.groupCount; ++groupIndex) {
+        for (uint groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
             base += histograms[groupIndex * 256u + higherBin];
         }
     }
 
-    for (uint groupIndex = 0; groupIndex < params.groupCount; ++groupIndex) {
+    for (uint groupIndex = 0; groupIndex < groupCount; ++groupIndex) {
         offsets[groupIndex * 256u + bin] = base;
         base += histograms[groupIndex * 256u + bin];
     }

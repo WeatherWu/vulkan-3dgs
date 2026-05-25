@@ -122,6 +122,9 @@ void Application::switchRenderMode(RenderMode mode) {
     // 3. 重新初始化
     if (renderer_) {
         renderer_->initialize(window_->get_handle());
+        if (auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get())) {
+            gsRenderer->setPresentModePreference(present_mode_preference_);
+        }
         renderer_->setImGuiDrawCallback([this]() {
             drawImGuiControls();
         });
@@ -171,6 +174,11 @@ void Application::render() {
         
         // 传递模型数据和相机参数
         auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get());
+        if (gsRenderer && present_mode_dirty_) {
+            gsRenderer->setPresentModePreference(present_mode_preference_);
+            present_mode_dirty_ = false;
+        }
+
         if (gsRenderer && current_model_) {
             gsRenderer->setRenderData(current_model_, view_matrix_, projection_matrix_, camera_, model_matrix_);
         } else if (!gsRenderer) {
@@ -224,6 +232,7 @@ void Application::setTrueCamera(const vk_gs::Camera& camera) {
     float distance = glm::length(offset);
     if (distance > 0.001f) {
         orbit_offset_ = offset;
+        orbit_up_ = camera_.get_up();
         orbit_radius_ = distance;
         orbit_angle_ = std::atan2(offset.z, offset.x);
         orbit_pitch_ = std::asin(std::clamp(offset.y / distance, -1.0f, 1.0f));
@@ -246,6 +255,7 @@ void Application::resetOrbitFromModel() {
         orbit_angle_ = 0.0f;
         orbit_pitch_ = 0.0f;
         orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
+        orbit_up_ = glm::vec3(0.0f, 1.0f, 0.0f);
         return;
     }
 
@@ -254,6 +264,7 @@ void Application::resetOrbitFromModel() {
     orbit_angle_ = 0.0f;
     orbit_pitch_ = 0.0f;
     orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
+    orbit_up_ = glm::vec3(0.0f, 1.0f, 0.0f);
 }
 
 void Application::updateOrbitCamera(float delta_time) {
@@ -271,7 +282,7 @@ void Application::updateOrbitCamera(float delta_time) {
     }
 
     camera_.set_position(orbit_center_ + orbit_offset_);
-    camera_.set_target(orbit_center_);
+    camera_.look_at(orbit_center_, orbit_up_);
     has_true_camera_ = true;
 
     if (!window_) {
@@ -334,13 +345,13 @@ void Application::updateOrbitInput(float delta_time) {
     }
 
     glm::vec3 viewDirection = glm::normalize(orbit_center_ - camera_.get_position());
-    glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
-    glm::vec3 cameraRight = glm::cross(viewDirection, worldUp);
+    glm::vec3 cameraUp = glm::normalize(orbit_up_);
+    glm::vec3 cameraRight = glm::cross(viewDirection, cameraUp);
     if (glm::length(cameraRight) <= 1e-5f) {
         cameraRight = camera_.get_right();
     }
     cameraRight = glm::normalize(cameraRight);
-    glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, viewDirection));
+    cameraUp = glm::normalize(glm::cross(cameraRight, viewDirection));
 
     glm::vec3 axisWorld = drag.y * cameraRight + drag.x * cameraUp;
     float axisLength = glm::length(axisWorld);
@@ -354,6 +365,7 @@ void Application::updateOrbitInput(float delta_time) {
     float angle = -dragLength * orbit_mouse_sensitivity_;
     glm::quat deltaRotation = glm::angleAxis(angle, axisWorld);
     orbit_offset_ = deltaRotation * orbit_offset_;
+    orbit_up_ = glm::normalize(deltaRotation * cameraUp);
     orbit_radius_ = std::max(glm::length(orbit_offset_), 0.05f);
     syncOrbitAnglesFromOffset();
 }
@@ -381,6 +393,25 @@ void Application::rebuildOrbitOffsetFromAngles() {
 
 void Application::drawImGuiControls() {
     ImGui::Begin("Camera");
+
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::Text("FPS %.1f", io.Framerate);
+    if (io.Framerate > 0.0f) {
+        ImGui::Text("Frame %.2f ms", 1000.0f / io.Framerate);
+    }
+    ImGui::Separator();
+
+    int presentModeIndex = static_cast<int>(present_mode_preference_);
+    const char* presentModeLabels[] = {
+        "最高帧率",
+        "低延迟",
+        "垂直同步",
+    };
+    if (ImGui::Combo("帧率模式", &presentModeIndex, presentModeLabels, 3)) {
+        present_mode_preference_ = static_cast<PresentModePreference>(presentModeIndex);
+        present_mode_dirty_ = true;
+    }
+    ImGui::Separator();
 
     bool flipY = flip_model_y_;
     bool flipZ = flip_model_z_;
@@ -447,7 +478,7 @@ void Application::handleScroll(double xoffset, double yoffset) {
         float currentDistance = glm::length(toCenter);
         if (currentDistance > 1e-4f) {
             camera_.set_position(orbit_center_ - glm::normalize(toCenter) * orbit_radius_);
-            camera_.set_target(orbit_center_);
+            camera_.look_at(orbit_center_, orbit_up_);
             orbit_offset_ = camera_.get_position() - orbit_center_;
             syncOrbitAnglesFromOffset();
             view_matrix_ = camera_.get_view_matrix();

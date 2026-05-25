@@ -26,6 +26,10 @@ layout(std430, binding = 5) buffer OffsetBuffer {
     uint offsets[];
 };
 
+layout(std430, binding = 8) readonly buffer DrawIndirectBuffer {
+    uint drawArgs[];
+};
+
 layout(push_constant) uniform RadixParams {
     uint count;
     uint shift;
@@ -39,11 +43,12 @@ void main() {
     uint localIndex = gl_LocalInvocationID.x;
     uint groupIndex = gl_WorkGroupID.x;
     uint globalIndex = gl_GlobalInvocationID.x;
+    uint count = drawArgs[1];
 
     localHistogram[localIndex] = 0;
     barrier();
 
-    if (globalIndex < params.count) {
+    if (globalIndex < count) {
         uint digit = (keysIn[globalIndex] >> params.shift) & 0xffu;
         atomicAdd(localHistogram[digit], 1);
     }

@@ -18,13 +18,11 @@ struct GaussianInstance {
     vec4 scale;         // xyz: 缩放
     vec4 rotation;      // xyzw: 四元数
     
-    // 球谐函数系数（完整3阶SH）
-    vec4 sh0_alpha;     // xyz: 0阶SH - DC项, w: alpha
-    vec4 sh1[3];        // xyz: 1阶SH - 3个基函数
-    vec4 sh2[5];        // xyz: 2阶SH - 5个基函数
-    vec4 sh3[7];        // xyz: 3阶SH - 7个基函数
-    
-    // 全部使用vec4，避免CPU侧glm::vec3与GLSL std430 vec3/vec3数组步长不一致。
+    // SH coefficients are half-packed as uvec2: xy in x, z plus padding in y.
+    uvec2 sh0;
+    uvec2 sh1[3];
+    uvec2 sh2[5];
+    uvec2 sh3[7];
 };
 
 layout(std430, binding = 2) readonly buffer GaussianInstances {
@@ -68,6 +66,12 @@ vec3 restore3DGSColor(vec3 sh_color) {
     return max(sh_color + vec3(0.5), vec3(0.0));
 }
 
+vec3 unpackSH(uvec2 packed) {
+    vec2 xy = unpackHalf2x16(packed.x);
+    vec2 z0 = unpackHalf2x16(packed.y);
+    return vec3(xy, z0.x);
+}
+
 vec3 evaluateSH(const GaussianInstance instance, vec3 view_direction) {
     const float SH_C0 = 0.28209479177387814f;
     const float SH_C1 = 0.4886025119029199f;
@@ -89,7 +93,7 @@ vec3 evaluateSH(const GaussianInstance instance, vec3 view_direction) {
     );
     
     // 0阶SH (DC项)
-    vec3 dc = instance.sh0_alpha.xyz * SH_C0;
+    vec3 dc = unpackSH(instance.sh0) * SH_C0;
     vec3 result = dc;
     
     if (view_direction.x == 0.0f && view_direction.y == 0.0f && view_direction.z == 0.0f) {
@@ -101,27 +105,27 @@ vec3 evaluateSH(const GaussianInstance instance, vec3 view_direction) {
     float z = view_direction.z;
     
     // 1阶SH (l=1, m=-1,0,1)
-    result += SH_C1 * (-y * instance.sh1[0].xyz + z * instance.sh1[1].xyz - x * instance.sh1[2].xyz);
+    result += SH_C1 * (-y * unpackSH(instance.sh1[0]) + z * unpackSH(instance.sh1[1]) - x * unpackSH(instance.sh1[2]));
     
     // 2阶SH (l=2, m=-2,-1,0,1,2)
     float xx = x * x, yy = y * y, zz = z * z;
     float xy = x * y, yz = y * z, xz = x * z;
     result += 
-        SH_C2[0] * xy * instance.sh2[0].xyz +
-        SH_C2[1] * yz * instance.sh2[1].xyz +
-        SH_C2[2] * (2.0f * zz - xx - yy) * instance.sh2[2].xyz +
-        SH_C2[3] * xz * instance.sh2[3].xyz +
-        SH_C2[4] * (xx - yy) * instance.sh2[4].xyz;
+        SH_C2[0] * xy * unpackSH(instance.sh2[0]) +
+        SH_C2[1] * yz * unpackSH(instance.sh2[1]) +
+        SH_C2[2] * (2.0f * zz - xx - yy) * unpackSH(instance.sh2[2]) +
+        SH_C2[3] * xz * unpackSH(instance.sh2[3]) +
+        SH_C2[4] * (xx - yy) * unpackSH(instance.sh2[4]);
     
     // 3阶SH (l=3, m=-3,-2,-1,0,1,2,3)
     result +=
-        SH_C3[0] * y * (3.0f * xx - yy) * instance.sh3[0].xyz +
-        SH_C3[1] * xy * z * instance.sh3[1].xyz +
-        SH_C3[2] * y * (4.0f * zz - xx - yy) * instance.sh3[2].xyz +
-        SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * instance.sh3[3].xyz +
-        SH_C3[4] * x * (4.0f * zz - xx - yy) * instance.sh3[4].xyz +
-        SH_C3[5] * z * (xx - yy) * instance.sh3[5].xyz +
-        SH_C3[6] * x * (xx - 3.0f * yy) * instance.sh3[6].xyz;
+        SH_C3[0] * y * (3.0f * xx - yy) * unpackSH(instance.sh3[0]) +
+        SH_C3[1] * xy * z * unpackSH(instance.sh3[1]) +
+        SH_C3[2] * y * (4.0f * zz - xx - yy) * unpackSH(instance.sh3[2]) +
+        SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * unpackSH(instance.sh3[3]) +
+        SH_C3[4] * x * (4.0f * zz - xx - yy) * unpackSH(instance.sh3[4]) +
+        SH_C3[5] * z * (xx - yy) * unpackSH(instance.sh3[5]) +
+        SH_C3[6] * x * (xx - 3.0f * yy) * unpackSH(instance.sh3[6]);
     
     return restore3DGSColor(result);
 }
@@ -230,7 +234,7 @@ void main() {
         -s1 * sinTheta, s1 * cosTheta
     );
 
-    float alpha = clamp(instance.sh0_alpha.w, 0.0, 1.0);
+    float alpha = clamp(instance.position.w, 0.0, 1.0);
     if (255.0 * alpha <= 1.0) {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         return;

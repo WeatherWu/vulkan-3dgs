@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include "utils/camera.hpp"
+#include "vulkan/swapchain.hpp"
 
 namespace vk_gs {
 
@@ -96,6 +97,7 @@ private:
     float orbit_pitch_ = 0.0f;
     glm::vec3 orbit_center_ = glm::vec3(0.0f);
     glm::vec3 orbit_offset_ = glm::vec3(5.0f, 0.0f, 0.0f);
+    glm::vec3 orbit_up_ = glm::vec3(0.0f, 1.0f, 0.0f);
 
     bool orbit_dragging_ = false;
     double last_mouse_x_ = 0.0;
@@ -103,6 +105,8 @@ private:
 
     bool has_last_tick_time_ = false;
     double last_tick_time_ = 0.0;
+    PresentModePreference present_mode_preference_ = PresentModePreference::MaxFps;
+    bool present_mode_dirty_ = false;
 };
 
 } // namespace vk_gs

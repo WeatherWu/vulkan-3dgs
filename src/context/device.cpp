@@ -179,7 +179,9 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
     }
 
     std::set<std::string> required_extensions;
-    required_extensions.insert(vk::KHRSwapchainExtensionName);
+    for (const char* extension : deviceExtensions_) {
+        required_extensions.insert(extension);
+    }
     
     for (const auto& extension : available_extensions) {
         required_extensions.erase(extension.extensionName);

@@ -6,6 +6,12 @@
 
 namespace vk_gs {
 
+enum class PresentModePreference {
+    MaxFps = 0,
+    LowLatency = 1,
+    VSync = 2,
+};
+
 class Swapchain {
 public:
     struct Image{
@@ -22,6 +28,8 @@ public:
     void cleanup();
 
     void recreateSwapchain(uint32_t width, uint32_t height);
+    void setPresentModePreference(PresentModePreference preference) { presentModePreference_ = preference; }
+    PresentModePreference getPresentModePreference() const { return presentModePreference_; }
 
     vk::SwapchainKHR getSwapchain() const { return swapchain_; }
     const std::vector<Image>& getImages() const { return images_; }
@@ -53,6 +61,7 @@ private:
     vk::Image depthImage_ = nullptr;
     vk::DeviceMemory depthImageMemory_ = nullptr;
     vk::ImageView depthImageView_ = nullptr;
+    PresentModePreference presentModePreference_ = PresentModePreference::MaxFps;
 
     void createDepthResources(vk::Device device, vk::Format depthFormat);
     uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const;

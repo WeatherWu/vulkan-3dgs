@@ -51,6 +51,7 @@ add_library(vk_gs_core STATIC
     vulkan/shader.cpp
     vulkan/swapchain.cpp
     vulkan/compute_pipeline.cpp
+    vulkan/vrdx_impl.cpp
     
     # Gaussian Splatting 渲染模块（特定实现）
     gaussian_renderer_compute/gaussian_model.cpp
@@ -70,6 +71,7 @@ add_library(vk_gs_core STATIC
 # 包含目录
 target_include_directories(vk_gs_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/vulkan_radix_sort/include
 )
 
 # 包含目录（私有依赖）
@@ -104,6 +106,10 @@ target_compile_definitions(vk_gs_core PRIVATE
     NOMINMAX
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
 )
+
+if(MSVC)
+    set_source_files_properties(vulkan/vrdx_impl.cpp PROPERTIES COMPILE_OPTIONS "/W0")
+endif()
 
 # 安装配置
 install(TARGETS vk_gs_core

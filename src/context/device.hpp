@@ -55,7 +55,8 @@ private:
     QueueFamilyIndices queueFamilyIndices_;
     
     const std::vector<const char*> deviceExtensions_ = {
-        vk::KHRSwapchainExtensionName
+        vk::KHRSwapchainExtensionName,
+        vk::KHRPushDescriptorExtensionName
     };
 };
 

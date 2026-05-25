@@ -26,6 +26,10 @@ layout(std430, binding = 5) buffer OffsetBuffer {
     uint offsets[];
 };
 
+layout(std430, binding = 8) readonly buffer DrawIndirectBuffer {
+    uint drawArgs[];
+};
+
 layout(push_constant) uniform RadixParams {
     uint count;
     uint shift;
@@ -37,8 +41,9 @@ void main() {
     uint localIndex = gl_LocalInvocationID.x;
     uint groupIndex = gl_WorkGroupID.x;
     uint globalIndex = gl_GlobalInvocationID.x;
+    uint count = drawArgs[1];
 
-    if (globalIndex >= params.count) {
+    if (globalIndex >= count) {
         return;
     }
 
@@ -48,7 +53,7 @@ void main() {
     uint localRank = 0u;
     for (uint i = 0u; i < localIndex; ++i) {
         uint otherIndex = groupStart + i;
-        if (otherIndex >= params.count) {
+        if (otherIndex >= count) {
             break;
         }
 

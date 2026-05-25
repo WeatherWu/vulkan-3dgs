@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 namespace vk_gs {
 
@@ -14,13 +15,14 @@ public:
     // 位置和方向设置
     void set_position(const glm::vec3& position) { position_ = position; }
     void set_target(const glm::vec3& target);
+    void look_at(const glm::vec3& target, const glm::vec3& up_hint);
     void set_up(const glm::vec3& up);
     
     // 欧拉角设置
-    void set_yaw(float yaw) { yaw_ = yaw; }
-    void set_pitch(float pitch) { pitch_ = pitch; }
-    void add_yaw(float delta) { yaw_ += delta; }
-    void add_pitch(float delta) { pitch_ += delta; }
+    void set_yaw(float yaw);
+    void set_pitch(float pitch);
+    void add_yaw(float delta);
+    void add_pitch(float delta);
     
     // 移动控制
     void move_forward(float distance);
@@ -46,8 +48,12 @@ public:
     
 private:
     void update_vectors();
+    void set_orientation_from_basis(const glm::vec3& front, const glm::vec3& up_hint);
+    void sync_vectors_from_orientation();
+    void sync_euler_from_front();
     
     glm::vec3 position_ = glm::vec3(0.0f, 0.0f, 3.0f);
+    glm::quat orientation_ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     glm::vec3 front_ = glm::vec3(0.0f, 0.0f, -1.0f);
     glm::vec3 up_ = glm::vec3(0.0f, 1.0f, 0.0f);
     glm::vec3 right_ = glm::vec3(1.0f, 0.0f, 0.0f);
