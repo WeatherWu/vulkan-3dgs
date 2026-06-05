@@ -1,8 +1,8 @@
 #include "application.hpp"
 #include "window.hpp"
 #include "context/context.hpp"
-#include "gaussian_renderer_compute/gaussian_renderer.hpp"
-#include "gaussian_renderer_compute/gaussian_model.hpp"
+#include "gaussian_renderer/gaussian_renderer.hpp"
+#include "gaussian_renderer/gaussian_model.hpp"
 #include "utils/logger.hpp"
 
 #include <imgui.h>
