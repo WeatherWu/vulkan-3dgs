@@ -30,101 +30,57 @@ include(FetchContent)
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
 
 # === 着色器编译配置 ===
-# 查找Vulkan GLSL编译器 (glslangValidator)
-find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
+set(SLANG_HINTS)
+if(DEFINED ENV{VCPKG_ROOT})
+    list(APPEND SLANG_HINTS "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/shader-slang")
+endif()
 
-# 定义着色器编译函数（无论是否找到glslangValidator都定义）
-function(compile_shader SHADER_SRC SHADER_DST)
-    get_filename_component(SHADER_NAME ${SHADER_SRC} NAME_WE)
-    get_filename_component(SHADER_EXT ${SHADER_SRC} EXT)
-    
-    # 根据文件扩展名确定着色器阶段
-    if(${SHADER_EXT} STREQUAL ".vert")
-        set(SHADER_STAGE "vert")
-    elseif(${SHADER_EXT} STREQUAL ".frag")
-        set(SHADER_STAGE "frag")
-    elseif(${SHADER_EXT} STREQUAL ".comp")
-        set(SHADER_STAGE "comp")
-    elseif(${SHADER_EXT} STREQUAL ".geom")
-        set(SHADER_STAGE "geom")
-    else()
-        message(WARNING "Unknown shader type: ${SHADER_EXT}")
-        return()
-    endif()
-    
-    # 创建输出目录
-    get_filename_component(OUTPUT_DIR ${SHADER_DST} DIRECTORY)
-    file(MAKE_DIRECTORY ${OUTPUT_DIR})
-    
-    # 添加自定义命令编译着色器
+find_program(SLANGC_EXECUTABLE slangc HINTS ${SLANG_HINTS} REQUIRED)
+message(STATUS "Found slangc: ${SLANGC_EXECUTABLE}")
+
+set(SLANG_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/slang")
+set(GRAPHICS_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/spv")
+
+function(compile_slang_shader SHADER_SRC SHADER_STAGE OUTPUT_BASENAME)
+    set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${OUTPUT_BASENAME}.spv")
+    set(BUILD_SPV "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders/${OUTPUT_BASENAME}.spv")
+
     add_custom_command(
-        OUTPUT ${SHADER_DST}
-        COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER_SRC} -o ${SHADER_DST} --target-env vulkan1.2
-        DEPENDS ${SHADER_SRC}
-        COMMENT "Compiling shader ${SHADER_NAME}${SHADER_EXT} -> ${SHADER_NAME}.${SHADER_STAGE}.spv"
+        OUTPUT ${SHADER_SPV}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GRAPHICS_SHADER_SPV_DIR}"
+        COMMAND ${SLANGC_EXECUTABLE}
+            ${SHADER_SRC}
+            -target spirv
+            -profile sm_6_5
+            -entry main
+            -stage ${SHADER_STAGE}
+            -matrix-layout-column-major
+            -fvk-use-gl-layout
+            -o ${SHADER_SPV}
+        DEPENDS
+            ${SHADER_SRC}
+            "${SLANG_SHADER_SRC_DIR}/gaussian_common.slang"
+        COMMENT "Compiling Slang shader ${SHADER_SRC} -> ${OUTPUT_BASENAME}.spv"
         VERBATIM
     )
-    
-    # 将生成的SPV文件标记为 GENERATED
-    set_source_files_properties(${SHADER_DST} PROPERTIES GENERATED TRUE)
+
+    add_custom_command(
+        OUTPUT ${BUILD_SPV}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SPV} ${BUILD_SPV}
+        DEPENDS ${SHADER_SPV}
+        VERBATIM
+    )
+
+    set_source_files_properties(${SHADER_SPV} ${BUILD_SPV} PROPERTIES GENERATED TRUE)
+    set(ALL_SHADER_FILES ${ALL_SHADER_FILES} ${BUILD_SPV} PARENT_SCOPE)
 endfunction()
 
-if(NOT GLSLANG_VALIDATOR)
-    message(WARNING "glslangValidator not found! Shaders will not be compiled automatically.")
-else()
-    message(STATUS "Found glslangValidator: ${GLSLANG_VALIDATOR}")
-    
-    # 编译图形着色器
-    set(GRAPHICS_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/src")
-    set(GRAPHICS_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/spv")
-    
-    # 定义着色器文件列表（包含 Compute Shader）
-    set(GRAPHICS_SHADERS
-        "${GRAPHICS_SHADER_SRC_DIR}/gaussian_compute_shader.vert"
-        "${GRAPHICS_SHADER_SRC_DIR}/gaussian_compute_shader.frag"
-        "${GRAPHICS_SHADER_SRC_DIR}/radix_keygen.comp"
-    )
-    
-    # 编译每个着色器并复制到构建目录
-    foreach(SHADER_SRC ${GRAPHICS_SHADERS})
-        get_filename_component(SHADER_NAME ${SHADER_SRC} NAME_WE)
-        get_filename_component(SHADER_EXT ${SHADER_SRC} EXT)
-        
-        # 确定SPIR-V输出路径（源码目录）
-        if(${SHADER_EXT} STREQUAL ".vert")
-            set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${SHADER_NAME}.vert.spv")
-        elseif(${SHADER_EXT} STREQUAL ".frag")
-            set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${SHADER_NAME}.frag.spv")
-        elseif(${SHADER_EXT} STREQUAL ".comp")
-            set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${SHADER_NAME}.comp.spv")
-        else()
-            continue()
-        endif()
+compile_slang_shader("${SLANG_SHADER_SRC_DIR}/gaussian_compute_shader.vert.slang" vertex "gaussian_compute_shader.vert")
+compile_slang_shader("${SLANG_SHADER_SRC_DIR}/gaussian_compute_shader.frag.slang" fragment "gaussian_compute_shader.frag")
+compile_slang_shader("${SLANG_SHADER_SRC_DIR}/radix_keygen.comp.slang" compute "radix_keygen.comp")
 
-        # 编译着色器到源码目录的spv文件夹
-        compile_shader(${SHADER_SRC} ${SHADER_SPV})
-        
-        # 使用简化的生成器表达式动态确定目标目录（支持多配置生成器）
-        set(BUILD_SPV "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders/${SHADER_NAME}${SHADER_EXT}.spv")
-        
-        # 添加自定义命令，在构建后强制复制SPV文件到构建目录（确保使用最新版本）
-        add_custom_command(
-            OUTPUT ${BUILD_SPV}
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SPV} ${BUILD_SPV}
-            DEPENDS ${SHADER_SPV}
-            VERBATIM
-        )
-        
-        set_source_files_properties(${BUILD_SPV} PROPERTIES GENERATED TRUE)
-        
-        # 添加到全局着色器文件列表
-        list(APPEND ALL_SHADER_FILES ${BUILD_SPV})
-    endforeach()
-    
-    # 创建自定义目标用于着色器编译
-    add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
-endif()
+add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
 
 # 添加子目录
 add_subdirectory(src)
@@ -134,11 +90,9 @@ if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 # 确保在构建库之前编译着色器
-if(GLSLANG_VALIDATOR)
-    # 注意：这里假设 src/CMakeLists.txt 中定义的目标名为 vk_gs_core
-    # 如果目标名不同，请相应调整
-    add_dependencies(vk_gs_core compile_shaders)
-endif()
+# 注意：这里假设 src/CMakeLists.txt 中定义的目标名为 vk_gs_core
+# 如果目标名不同，请相应调整
+add_dependencies(vk_gs_core compile_shaders)
 
 # 安装配置
 install(DIRECTORY src/ DESTINATION include)

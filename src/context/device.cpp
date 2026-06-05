@@ -55,7 +55,11 @@ void Device::createDevice() {
 
     // 配置设备特性
     vk::PhysicalDeviceFeatures deviceFeatures{};
+    deviceFeatures.setSamplerAnisotropy(VK_TRUE);
+    vk::PhysicalDeviceVulkan11Features vulkan11Features{};
+    vulkan11Features.setShaderDrawParameters(VK_TRUE);
     createInfo.setPEnabledFeatures(&deviceFeatures);
+    createInfo.setPNext(&vulkan11Features);
 
     device_ = phyDevice_.createDevice(createInfo);
     if (!device_) {
@@ -198,10 +202,15 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
     
     // 检查特性支持
     vk::PhysicalDeviceFeatures supported_features = device.getFeatures();
+    vk::PhysicalDeviceVulkan11Features vulkan11Features{};
+    vk::PhysicalDeviceFeatures2 features2{};
+    features2.setPNext(&vulkan11Features);
+    device.getFeatures2(&features2);
     
     return queueFamilyIndices_ && 
            extensions_supported && swapchain_adequate && 
-           supported_features.samplerAnisotropy;
+           supported_features.samplerAnisotropy &&
+           vulkan11Features.shaderDrawParameters;
 }
 
 void Device::cleanup() {

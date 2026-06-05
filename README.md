@@ -25,10 +25,11 @@ vk-gs/
 │   └── sandbox.cpp
 ├── shaders/
 │   └── gaussian_compute_shader/
-│       └── src/
-│           ├── gaussian_compute_shader.vert
-│           ├── gaussian_compute_shader.frag
-│           └── gaussian_compute_shader.comp
+│       └── slang/
+│           ├── gaussian_common.slang
+│           ├── gaussian_compute_shader.vert.slang
+│           ├── gaussian_compute_shader.frag.slang
+│           └── radix_keygen.comp.slang
 └── src/
     ├── application.hpp/cpp
     ├── window.hpp/cpp
@@ -64,7 +65,7 @@ sandbox.cpp
   -> GaussianModel::loadFromFile("insect.ply")
   -> Application
   -> GaussianRenderer::setRenderData(...)
-  -> GPU depth sort compute shader
+  -> GPU keygen + vulkan_radix_sort
   -> instanced quad graphics pipeline
   -> swapchain present
 ```
@@ -83,13 +84,13 @@ sandbox.cpp
 
 ## Shader
 
-GLSL 源码在：
+Slang 源码在：
 
 ```text
-shaders/gaussian_compute_shader/src/
+shaders/gaussian_compute_shader/slang/
 ```
 
-CMake 使用 `glslangValidator` 编译为 SPIR-V，并复制到运行目录：
+CMake 使用 `slangc` 编译为 SPIR-V，并复制到运行目录：
 
 ```text
 build/bin/<Config>/shaders/
@@ -97,16 +98,17 @@ build/bin/<Config>/shaders/
 
 当前 shader 包含：
 
-- `gaussian_compute_shader.vert`: 按排序索引读取高斯实例，投影协方差，计算屏幕椭圆和 SH 颜色。
-- `gaussian_compute_shader.frag`: 计算高斯 alpha 衰减并输出颜色。
-- `gaussian_compute_shader.comp`: bitonic sort，用于按深度排序高斯索引。
+- `gaussian_common.slang`: 共享 Gaussian 数据结构、half-packed SH 解包和 SH 评估。
+- `gaussian_compute_shader.vert.slang`: 按排序索引读取高斯实例，投影协方差，计算屏幕椭圆和 SH 颜色。
+- `gaussian_compute_shader.frag.slang`: 计算高斯 alpha 衰减并输出颜色。
+- `radix_keygen.comp.slang`: GPU 可见性裁剪、排序 key 生成和 indirect draw instance count 写入。
 
 ## 构建依赖
 
 - CMake 3.26+
 - C++20 编译器
 - Vulkan headers/library
-- `glslangValidator`
+- `slangc`（可通过 vcpkg 的 `shader-slang` 获取）
 - GLFW3
 - GLM
 - STB headers
@@ -164,4 +166,3 @@ cmake --build build --config Debug --target vk_gs_sandbox
 日志使用 `utils/logger.hpp`，默认输出 INFO 及以上级别。Debug 构建会把日志级别调到 `DEBUG_VKGS`。
 
 热路径上的每帧 INFO 已经尽量移除，INFO 主要保留启动、设备选择、模型加载、swapchain 初始化和 resize 重建等状态信息。
-
