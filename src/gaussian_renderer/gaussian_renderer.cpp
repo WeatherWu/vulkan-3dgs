@@ -177,8 +177,27 @@ void GaussianRenderer::cleanup() {
 void GaussianRenderer::createComputePipeline() {
     auto device = getDevice();
     
+    auto makeComputeBinding = [](uint32_t binding, vk::DescriptorType type) {
+        vk::DescriptorSetLayoutBinding layoutBinding{};
+        layoutBinding.setBinding(binding)
+                     .setDescriptorType(type)
+                     .setDescriptorCount(1)
+                     .setStageFlags(vk::ShaderStageFlagBits::eCompute);
+        return layoutBinding;
+    };
+
+    ComputePipelineConfig keygenConfig{};
+    keygenConfig.descriptorBindings = {
+        makeComputeBinding(0, vk::DescriptorType::eStorageBuffer), // indicesOut
+        makeComputeBinding(1, vk::DescriptorType::eStorageBuffer), // keysOut
+        makeComputeBinding(6, vk::DescriptorType::eStorageBuffer), // instances
+        makeComputeBinding(7, vk::DescriptorType::eUniformBuffer), // ubo
+        makeComputeBinding(8, vk::DescriptorType::eStorageBuffer), // drawArgs
+    };
+    keygenConfig.pushConstantSize = sizeof(uint32_t) * 4;
+
     radixKeygenPipeline_ = std::make_unique<ComputePipeline>();
-    radixKeygenPipeline_->initialize(device, "shaders/radix_keygen.comp.spv");
+    radixKeygenPipeline_->initialize(device, "shaders/radix_keygen.comp.spv", keygenConfig);
 
     auto& context = Context::Instance();
     VrdxSorterCreateInfo sorterInfo{};

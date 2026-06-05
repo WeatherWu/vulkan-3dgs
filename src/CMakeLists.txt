@@ -53,11 +53,16 @@ add_library(vk_gs_core STATIC
     vulkan/compute_pipeline.cpp
     vulkan/vrdx_impl.cpp
     
-    # Gaussian Splatting 渲染模块（特定实现）
+    # Gaussian Splatting 渲染模块
     gaussian_renderer/gaussian_model.cpp
     gaussian_renderer/gaussian_renderer.cpp
     gaussian_renderer/renderpass.cpp
     gaussian_renderer/pipeline.cpp
+
+    # Gaussian Training 训练模块
+    gaussian_training/gaussian_training.cpp
+    gaussian_training/training_buffers.cpp
+    gaussian_training/training_pipeline.cpp
 
     # 工具模块
     utils/camera.cpp

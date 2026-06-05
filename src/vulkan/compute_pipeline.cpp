@@ -1,9 +1,7 @@
 #include "compute_pipeline.hpp"
 #include "utils/logger.hpp"
 
-#include <array>
 #include <stdexcept>
-#include <fstream>
 
 namespace vk_gs {
 
@@ -13,46 +11,36 @@ ComputePipeline::~ComputePipeline() {
     cleanup();
 }
 
-void ComputePipeline::initialize(vk::Device device, const std::string& shaderPath) {
+void ComputePipeline::initialize(vk::Device device, const std::string& shaderPath, const ComputePipelineConfig& config) {
+    cleanup();
+
     device_ = device;
-    
+
     LOG_DEBUG("Creating compute pipeline: {}", shaderPath);
-    
+
     // 加载 Compute Shader
     computeShader_ = std::make_unique<Shader>();
     computeShader_->createFromSpv(device_, shaderPath, vk::ShaderStageFlagBits::eCompute);
-    
-    // 创建 Descriptor Set Layout。Radix sort and key generation share one
-    // layout: index/key ping-pong buffers, histogram/offset tables, instance
-    // data, and the renderer UBO.
-    std::array<vk::DescriptorSetLayoutBinding, 9> storageBufferBindings{};
-    
-    for (uint32_t binding = 0; binding < storageBufferBindings.size(); ++binding) {
-        storageBufferBindings[binding].setBinding(binding)
-                                      .setDescriptorType(vk::DescriptorType::eStorageBuffer)
-                                      .setDescriptorCount(1)
-                                      .setStageFlags(vk::ShaderStageFlagBits::eCompute);
-    }
-    storageBufferBindings[7].setDescriptorType(vk::DescriptorType::eUniformBuffer);
-    
+
     vk::DescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.setBindingCount(static_cast<uint32_t>(storageBufferBindings.size()))
-              .setPBindings(storageBufferBindings.data());
+    layoutInfo.setBindingCount(static_cast<uint32_t>(config.descriptorBindings.size()))
+              .setPBindings(config.descriptorBindings.empty() ? nullptr : config.descriptorBindings.data());
     
     descriptorSetLayout_ = device_.createDescriptorSetLayout(layoutInfo);
     
-    // 创建 Push Constant Range
     vk::PushConstantRange pushConstantRange{};
-    pushConstantRange.setStageFlags(vk::ShaderStageFlagBits::eCompute)
-                     .setOffset(0)
-                     .setSize(sizeof(uint32_t) * 4);
+    if (config.pushConstantSize > 0) {
+        pushConstantRange.setStageFlags(config.pushConstantStages)
+                         .setOffset(0)
+                         .setSize(config.pushConstantSize);
+    }
     
     // 创建 Pipeline Layout
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.setSetLayoutCount(1)
                       .setPSetLayouts(&descriptorSetLayout_)
-                      .setPushConstantRangeCount(1)
-                      .setPPushConstantRanges(&pushConstantRange);
+                      .setPushConstantRangeCount(config.pushConstantSize > 0 ? 1u : 0u)
+                      .setPPushConstantRanges(config.pushConstantSize > 0 ? &pushConstantRange : nullptr);
     
     pipelineLayout_ = device_.createPipelineLayout(pipelineLayoutInfo);
     

@@ -1,5 +1,5 @@
 \build
-\.vscode
+\.**
 
 # Ignore all spv folders under any shaders directory
 **/shaders/**/spv/

@@ -40,6 +40,8 @@ message(STATUS "Found slangc: ${SLANGC_EXECUTABLE}")
 
 set(SLANG_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/slang")
 set(GRAPHICS_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/spv")
+set(TRAINING_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/slang")
+set(TRAINING_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/spv")
 
 function(compile_slang_shader SHADER_SRC SHADER_STAGE OUTPUT_BASENAME)
     set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${OUTPUT_BASENAME}.spv")
@@ -80,6 +82,48 @@ compile_slang_shader("${SLANG_SHADER_SRC_DIR}/gaussian_compute_shader.vert.slang
 compile_slang_shader("${SLANG_SHADER_SRC_DIR}/gaussian_compute_shader.frag.slang" fragment "gaussian_compute_shader.frag")
 compile_slang_shader("${SLANG_SHADER_SRC_DIR}/radix_keygen.comp.slang" compute "radix_keygen.comp")
 
+function(compile_training_shader SHADER_SRC OUTPUT_BASENAME)
+    set(SHADER_SPV "${TRAINING_SHADER_SPV_DIR}/${OUTPUT_BASENAME}.spv")
+    set(BUILD_SPV "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders/${OUTPUT_BASENAME}.spv")
+
+    add_custom_command(
+        OUTPUT ${SHADER_SPV}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${TRAINING_SHADER_SPV_DIR}"
+        COMMAND ${SLANGC_EXECUTABLE}
+            ${SHADER_SRC}
+            -target spirv
+            -profile sm_6_5
+            -entry main
+            -stage compute
+            -matrix-layout-column-major
+            -fvk-use-gl-layout
+            -o ${SHADER_SPV}
+        DEPENDS
+            ${SHADER_SRC}
+            "${TRAINING_SHADER_SRC_DIR}/train_common.slang"
+            "${TRAINING_SHADER_SRC_DIR}/train_loss_common.slang"
+        COMMENT "Compiling training Slang shader ${SHADER_SRC} -> ${OUTPUT_BASENAME}.spv"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT ${BUILD_SPV}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SPV} ${BUILD_SPV}
+        DEPENDS ${SHADER_SPV}
+        VERBATIM
+    )
+
+    set_source_files_properties(${SHADER_SPV} ${BUILD_SPV} PROPERTIES GENERATED TRUE)
+    set(ALL_SHADER_FILES ${ALL_SHADER_FILES} ${BUILD_SPV} PARENT_SCOPE)
+endfunction()
+
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_clear.comp.slang" "train_clear.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_project.comp.slang" "train_project.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_forward.comp.slang" "train_forward.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_loss.comp.slang" "train_loss.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_pack_render_buffer.comp.slang" "train_pack_render_buffer.comp")
+
 add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
 
 # 添加子目录
@@ -99,6 +143,11 @@ install(DIRECTORY src/ DESTINATION include)
 
 # 安装着色器文件（使用生成器表达式支持多配置）
 install(DIRECTORY ${GRAPHICS_SHADER_SPV_DIR}/ 
+    DESTINATION bin/$<CONFIG>/shaders
+    FILES_MATCHING PATTERN "*.spv"
+)
+
+install(DIRECTORY ${TRAINING_SHADER_SPV_DIR}/
     DESTINATION bin/$<CONFIG>/shaders
     FILES_MATCHING PATTERN "*.spv"
 )

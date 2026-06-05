@@ -3,16 +3,23 @@
 #include <vulkan/vulkan.hpp>
 #include <vector>
 #include <memory>
+#include <string>
 #include "vulkan/shader.hpp"
 
 namespace vk_gs {
+
+struct ComputePipelineConfig {
+    std::vector<vk::DescriptorSetLayoutBinding> descriptorBindings;
+    uint32_t pushConstantSize = 0;
+    vk::ShaderStageFlags pushConstantStages = vk::ShaderStageFlagBits::eCompute;
+};
 
 class ComputePipeline {
 public:
     ComputePipeline();
     ~ComputePipeline();
     
-    void initialize(vk::Device device, const std::string& shaderPath);
+    void initialize(vk::Device device, const std::string& shaderPath, const ComputePipelineConfig& config);
     void cleanup();
     
     vk::Pipeline getPipeline() const { return pipeline_; }
