@@ -4,3 +4,6 @@
 # Ignore all spv folders under any shaders directory
 **/shaders/**/spv/
 **/spv/
+
+
+*.ply
