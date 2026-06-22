@@ -63,6 +63,7 @@ add_library(vk_gs_core STATIC
     gaussian_training/gaussian_training.cpp
     gaussian_training/training_buffers.cpp
     gaussian_training/training_pipeline.cpp
+    gaussian_training/gaussian_backward_renderer.cpp
 
     # 工具模块
     utils/camera.cpp

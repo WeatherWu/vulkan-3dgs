@@ -154,7 +154,9 @@ void GaussianRenderer::cleanup() {
     gpuKeyBuffer_.cleanup();
     radixSortStorageBuffer_.cleanup();
     drawIndirectBuffer_.cleanup();
+    renderBuffer_.cleanup();
     sortBufferCapacity_ = 0;
+    renderBufferExtent_ = vk::Extent2D{};
     
     // 4. 清理Pipelines
     pipeline_.reset();
@@ -283,6 +285,11 @@ void GaussianRenderer::beginImGuiFrame() {
 }
 
 void GaussianRenderer::render() {
+    renderToImage();
+    presentImage();
+}
+
+void GaussianRenderer::renderToImage() {
     auto startTime = std::chrono::high_resolution_clock::now();
     (void)startTime;
     
@@ -373,16 +380,29 @@ void GaussianRenderer::render() {
     device.resetFences(inFlightFences_[currentFrame_]);
     
     context.getDevice().getGraphicsQueue().submit(submitInfo, inFlightFences_[currentFrame_]);
-    
-    // 8. 呈现图像
+
+    acquiredImageIndex_ = imageIndex;
+    imageReadyForPresent_ = true;
+    presentWaitSemaphoreConsumed_ = false;
+}
+
+void GaussianRenderer::presentImage() {
+    if (!imageReadyForPresent_) {
+        return;
+    }
+
+    auto& context = Context::Instance();
+
+    // 呈现图像
     vk::PresentInfoKHR presentInfo{};
-    presentInfo.setWaitSemaphoreCount(1)
-               .setPWaitSemaphores(signalSemaphores);
+    vk::Semaphore signalSemaphores[] = { renderFinishedSemaphores_[acquiredImageIndex_] };
+    presentInfo.setWaitSemaphoreCount(presentWaitSemaphoreConsumed_ ? 0u : 1u)
+               .setPWaitSemaphores(presentWaitSemaphoreConsumed_ ? nullptr : signalSemaphores);
     
     vk::SwapchainKHR swapchains[] = { swapchain_->getSwapchain() };
     presentInfo.setSwapchainCount(1)
                .setPSwapchains(swapchains);
-    presentInfo.setPImageIndices(&imageIndex);
+    presentInfo.setPImageIndices(&acquiredImageIndex_);
     
     vk::Result presentResult = context.getDevice().getPresentQueue().presentKHR(presentInfo);
     if (presentResult == vk::Result::eErrorOutOfDateKHR) {
@@ -394,8 +414,19 @@ void GaussianRenderer::render() {
         LOG_ERROR("Failed to present image: {}", vk::to_string(presentResult));
     }
     
-    // 9. 切换到下一帧
+    imageReadyForPresent_ = false;
+    presentWaitSemaphoreConsumed_ = false;
     currentFrame_ = (currentFrame_ + 1) % frameResourceCount_;
+}
+
+void GaussianRenderer::renderToBuffer() {
+    renderToImage();
+    if (!imageReadyForPresent_) {
+        return;
+    }
+
+    ensureRenderBuffer();
+    copyRenderedImageToBuffer();
 }
 
 void GaussianRenderer::onResize(uint32_t width, uint32_t height) {
@@ -459,11 +490,13 @@ void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4
 
         instanceBuffer_.cleanup();
         gpuIndexBuffer_.cleanup();
-        gpuKeyBuffer_.cleanup();
-        radixSortStorageBuffer_.cleanup();
-        drawIndirectBuffer_.cleanup();
-        sortBufferCapacity_ = 0;
-        gpu_sort_completed_ = false;
+    gpuKeyBuffer_.cleanup();
+    radixSortStorageBuffer_.cleanup();
+    drawIndirectBuffer_.cleanup();
+    renderBuffer_.cleanup();
+    sortBufferCapacity_ = 0;
+    renderBufferExtent_ = vk::Extent2D{};
+    gpu_sort_completed_ = false;
         last_sorted_point_count_ = 0;
         last_sorted_model_ = nullptr;
         last_model_matrix_ = glm::mat4(1.0f);
@@ -518,6 +551,140 @@ void GaussianRenderer::createBuffers() {
                                 vk::BufferUsageFlagBits::eUniformBuffer,
                                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
     }
+}
+
+void GaussianRenderer::ensureRenderBuffer() {
+    auto extent = swapchain_->getExtent();
+    if (renderBuffer_.getBuffer() &&
+        renderBufferExtent_.width == extent.width &&
+        renderBufferExtent_.height == extent.height) {
+        return;
+    }
+
+    auto device = getDevice();
+    auto& context = Context::Instance();
+    auto physicalDevice = context.PhysicalDevice();
+    auto transferQueue = context.getDevice().getGraphicsQueue();
+    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
+
+    if (renderBuffer_.getBuffer()) {
+        device.waitIdle();
+        renderBuffer_.cleanup();
+    }
+
+    vk::DeviceSize bufferSize =
+        static_cast<vk::DeviceSize>(extent.width) *
+        static_cast<vk::DeviceSize>(extent.height) *
+        4u;
+
+    renderBuffer_.create(device,
+                         physicalDevice,
+                         transferQueue,
+                         transferQueueFamilyIndex,
+                         nullptr,
+                         bufferSize,
+                         vk::BufferUsageFlagBits::eStorageBuffer |
+                             vk::BufferUsageFlagBits::eTransferDst |
+                             vk::BufferUsageFlagBits::eTransferSrc,
+                         vk::MemoryPropertyFlagBits::eDeviceLocal);
+    renderBufferExtent_ = extent;
+}
+
+void GaussianRenderer::copyRenderedImageToBuffer() {
+    auto device = getDevice();
+    auto& context = Context::Instance();
+
+    vk::Result waitResult = device.waitForFences(1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
+    if (waitResult != vk::Result::eSuccess) {
+        LOG_ERROR("waitForFences before render buffer copy failed: {}", vk::to_string(waitResult));
+        throw std::runtime_error("Failed to wait for render completion before buffer copy");
+    }
+
+    vk::CommandBuffer commandBuffer = commandBuffers_[currentFrame_];
+    commandBuffer.reset();
+
+    vk::CommandBufferBeginInfo beginInfo{};
+    beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    commandBuffer.begin(beginInfo);
+
+    vk::ImageMemoryBarrier toTransferSrc{};
+    toTransferSrc.setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
+                 .setDstAccessMask(vk::AccessFlagBits::eTransferRead)
+                 .setOldLayout(vk::ImageLayout::ePresentSrcKHR)
+                 .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
+                 .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                 .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                 .setImage(swapchain_->getImages()[acquiredImageIndex_].image)
+                 .setSubresourceRange(vk::ImageSubresourceRange(
+                     vk::ImageAspectFlagBits::eColor,
+                     0, 1, 0, 1
+                 ));
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                                  vk::PipelineStageFlagBits::eTransfer,
+                                  vk::DependencyFlagBits{},
+                                  0, nullptr,
+                                  0, nullptr,
+                                  1, &toTransferSrc);
+
+    vk::BufferImageCopy copyRegion{};
+    copyRegion.setBufferOffset(0)
+              .setBufferRowLength(0)
+              .setBufferImageHeight(0)
+              .setImageSubresource(vk::ImageSubresourceLayers(
+                  vk::ImageAspectFlagBits::eColor,
+                  0, 0, 1
+              ))
+              .setImageOffset(vk::Offset3D(0, 0, 0))
+              .setImageExtent(vk::Extent3D(renderBufferExtent_.width, renderBufferExtent_.height, 1));
+    commandBuffer.copyImageToBuffer(swapchain_->getImages()[acquiredImageIndex_].image,
+                                    vk::ImageLayout::eTransferSrcOptimal,
+                                    renderBuffer_.getBuffer(),
+                                    1,
+                                    &copyRegion);
+
+    vk::ImageMemoryBarrier toPresent{};
+    toPresent.setSrcAccessMask(vk::AccessFlagBits::eTransferRead)
+             .setDstAccessMask(vk::AccessFlagBits::eNone)
+             .setOldLayout(vk::ImageLayout::eTransferSrcOptimal)
+             .setNewLayout(vk::ImageLayout::ePresentSrcKHR)
+             .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+             .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+             .setImage(swapchain_->getImages()[acquiredImageIndex_].image)
+             .setSubresourceRange(vk::ImageSubresourceRange(
+                 vk::ImageAspectFlagBits::eColor,
+                 0, 1, 0, 1
+             ));
+
+    vk::BufferMemoryBarrier bufferReady{};
+    bufferReady.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+               .setDstAccessMask(vk::AccessFlagBits::eShaderRead)
+               .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+               .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+               .setBuffer(renderBuffer_.getBuffer())
+               .setOffset(0)
+               .setSize(VK_WHOLE_SIZE);
+
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                  vk::PipelineStageFlagBits::eBottomOfPipe | vk::PipelineStageFlagBits::eComputeShader,
+                                  vk::DependencyFlagBits{},
+                                  0, nullptr,
+                                  1, &bufferReady,
+                                  1, &toPresent);
+
+    commandBuffer.end();
+
+    vk::PipelineStageFlags waitStage = vk::PipelineStageFlagBits::eTransfer;
+    vk::Semaphore waitSemaphore = renderFinishedSemaphores_[acquiredImageIndex_];
+    vk::SubmitInfo submitInfo{};
+    submitInfo.setWaitSemaphoreCount(1)
+              .setPWaitSemaphores(&waitSemaphore)
+              .setPWaitDstStageMask(&waitStage)
+              .setCommandBufferCount(1)
+              .setPCommandBuffers(&commandBuffer);
+
+    context.getDevice().getGraphicsQueue().submit(submitInfo);
+    context.getDevice().getGraphicsQueue().waitIdle();
+    presentWaitSemaphoreConsumed_ = true;
 }
 
 void GaussianRenderer::createSyncObjects() {

@@ -16,9 +16,12 @@ void TrainingBuffers::initialize(vk::Device device,
 }
 
 void TrainingBuffers::cleanup() {
+    camera_.cleanup();
     previewInstances_.cleanup();
     counters_.cleanup();
     loss_.cleanup();
+    projectedGrads_.cleanup();
+    pixelGrads_.cleanup();
     targetColor_.cleanup();
     renderedColor_.cleanup();
     tileRanges_.cleanup();
@@ -55,9 +58,12 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     tileRanges_.cleanup();
     renderedColor_.cleanup();
     targetColor_.cleanup();
+    pixelGrads_.cleanup();
+    projectedGrads_.cleanup();
     loss_.cleanup();
     counters_.cleanup();
     previewInstances_.cleanup();
+    camera_.cleanup();
 
     createStorageBuffer(gaussianParams_, sizeof(GaussianTrainParam) * safeGaussianCount);
     createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) * safeGaussianCount);
@@ -67,9 +73,12 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     createStorageBuffer(tileRanges_, sizeof(glm::uvec4) * tileCount);
     createStorageBuffer(renderedColor_, sizeof(glm::vec4) * pixelCount);
     createStorageBuffer(targetColor_, sizeof(glm::vec4) * pixelCount);
-    createStorageBuffer(loss_, sizeof(float));
+    createStorageBuffer(pixelGrads_, sizeof(PixelGrad) * pixelCount);
+    createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * safeGaussianCount);
+    createStorageBuffer(loss_, sizeof(float) * pixelCount);
     createStorageBuffer(counters_, sizeof(glm::uvec4));
     createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * safeGaussianCount);
+    createUniformBuffer(camera_, sizeof(TrainingForwardCamera));
 
     gaussianCapacity_ = safeGaussianCount;
     extent_ = {safeWidth, safeHeight};
@@ -84,6 +93,18 @@ void TrainingBuffers::createStorageBuffer(Buffer& buffer, vk::DeviceSize size) {
                   size,
                   vk::BufferUsageFlagBits::eStorageBuffer |
                       vk::BufferUsageFlagBits::eTransferSrc |
+                      vk::BufferUsageFlagBits::eTransferDst,
+                  vk::MemoryPropertyFlagBits::eDeviceLocal);
+}
+
+void TrainingBuffers::createUniformBuffer(Buffer& buffer, vk::DeviceSize size) {
+    buffer.create(device_,
+                  physicalDevice_,
+                  transferQueue_,
+                  transferQueueFamilyIndex_,
+                  nullptr,
+                  size,
+                  vk::BufferUsageFlagBits::eUniformBuffer |
                       vk::BufferUsageFlagBits::eTransferDst,
                   vk::MemoryPropertyFlagBits::eDeviceLocal);
 }

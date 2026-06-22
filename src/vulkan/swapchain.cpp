@@ -74,7 +74,8 @@ void Swapchain::createSwapchain(uint32_t width, uint32_t height) {
               .setImageColorSpace(surface_format.colorSpace)
               .setImageExtent(extent_)
               .setImageArrayLayers(1)
-              .setImageUsage(vk::ImageUsageFlagBits::eColorAttachment);
+              .setImageUsage(vk::ImageUsageFlagBits::eColorAttachment |
+                             vk::ImageUsageFlagBits::eTransferSrc);
     
     // 设置队列家族索引和共享模式（当图形队列和呈现队列不同族时使用并发模式）
     auto& queueIndices = Context::Instance().getDevice().getQueueFamilyIndices();

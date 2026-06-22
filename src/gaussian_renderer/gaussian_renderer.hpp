@@ -21,22 +21,33 @@ class GaussianRenderer : public Renderer {
 public:
     GaussianRenderer();
     ~GaussianRenderer() override;
-    
+
+    // ---- Renderer 接口 ----
     void initialize(GLFWwindow* window) override;
     void cleanup() override;
+
     void render() override;
+    void renderToImage() override;
+    void presentImage() override;
+    void renderToBuffer() override;
+
     void onResize(uint32_t width, uint32_t height) override;
+
+    // ---- 原有公开接口 ----
     void setPresentModePreference(PresentModePreference preference);
     PresentModePreference getPresentModePreference() const { return presentModePreference_; }
-    
-    // 设置当前要渲染的模型和相机参数
+
     void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix);
-    
+    vk::DescriptorBufferInfo renderBufferInfo() const { return renderBuffer_.getDescriptorInfo(); }
+    vk::Extent2D renderBufferExtent() const { return renderBufferExtent_; }
+
 private:
+    // ---- ImGui ----
     void initializeImGui(GLFWwindow* window);
     void shutdownImGui();
     void beginImGuiFrame();
 
+    // ---- 资源创建 ----
     void createBuffers();
     void createSyncObjects();
     void recreateRenderFinishedSemaphores();
@@ -46,72 +57,74 @@ private:
     void updateDescriptorSets();
     void updateUniformBuffer(const glm::mat4& view, const glm::mat4& projection);
 
+    // ---- Swapchain ----
     void recreateSwapchain(uint32_t width, uint32_t height);
-    
-    // GPU 深度排序
+
+    // ---- GPU 深度排序 ----
     void recordSortCommands(vk::CommandBuffer commandBuffer, uint32_t pointCount);
     void ensureSortBuffers(uint32_t pointCount);
-    
-    // 更新顶点缓冲区数据
-    void updateVertexBuffer();
-    
-    // 记录命令缓冲区
-    void recordCommandBuffer(uint32_t imageIndex);
 
+    // ---- 数据上传 ----
+    void updateVertexBuffer();
+    void recordCommandBuffer(uint32_t imageIndex);
+    void ensureRenderBuffer();
+    void copyRenderedImageToBuffer();
+
+    // ---- Swapchain ----
     std::unique_ptr<Swapchain> swapchain_;
     std::unique_ptr<RenderPass> renderPass_;
     std::unique_ptr<Pipeline> pipeline_;
     std::unique_ptr<ComputePipeline> radixKeygenPipeline_;
     VrdxSorter radixSorter_ = VK_NULL_HANDLE;
-    
-    // 高斯数据缓冲区
-    Buffer instanceBuffer_;    // 实例数据缓冲区（SSBO，存储所有高斯属性）
-    Buffer uniformBuffer_;     // 主Uniform Buffer (View/Projection/Camera)
-    Buffer screenInfoBuffer_;  // 屏幕信息Uniform Buffer (分辨率)
-    Buffer gpuIndexBuffer_;    // GPU排序索引缓冲
-    Buffer gpuKeyBuffer_;      // GPU排序key缓冲
+
+    // ---- 高斯数据缓冲区 ----
+    Buffer instanceBuffer_;
+    Buffer uniformBuffer_;
+    Buffer screenInfoBuffer_;
+    Buffer gpuIndexBuffer_;
+    Buffer gpuKeyBuffer_;
     Buffer radixSortStorageBuffer_;
     Buffer drawIndirectBuffer_;
+    Buffer renderBuffer_;
     uint32_t sortBufferCapacity_ = 0;
-    
-    // Descriptor Set 相关
+    vk::Extent2D renderBufferExtent_{0, 0};
+
+    // ---- Descriptor ----
     vk::DescriptorPool descriptorPool_;
-    std::vector<vk::DescriptorSet> descriptorSets_;          // Graphics Pipeline使用的Descriptor Sets
-    std::vector<vk::DescriptorSet> computeDescriptorSets_;   // Compute Pipeline使用的Descriptor Sets
-    
-    // 同步对象（基于Swapchain图像索引）
-    std::vector<vk::Semaphore> imageAvailableSemaphores_;  // 按frameIndex索引
-    std::vector<vk::Semaphore> renderFinishedSemaphores_;  // 按imageIndex索引
-    std::vector<vk::Fence> inFlightFences_;                // 按frameIndex索引
-    
-    // 命令池和命令缓冲区
+    std::vector<vk::DescriptorSet> descriptorSets_;
+    std::vector<vk::DescriptorSet> computeDescriptorSets_;
+
+    // ---- 同步对象 ----
+    std::vector<vk::Semaphore> imageAvailableSemaphores_;
+    std::vector<vk::Semaphore> renderFinishedSemaphores_;
+    std::vector<vk::Fence> inFlightFences_;
+
+    // ---- 命令 ----
     CommandPool commandPool_;
-    std::vector<vk::CommandBuffer> commandBuffers_;        // 按frameIndex索引
-    
-    // 当前帧索引
+    std::vector<vk::CommandBuffer> commandBuffers_;
+
     size_t currentFrame_ = 0;
     uint32_t swapchainImageCount_ = 0;
     uint32_t frameResourceCount_ = 0;
-    
-    // Uniform Buffer Object (必须与GLSL std140布局严格对齐)
+
+    // ---- UBO ----
     struct UniformBufferObject {
-        alignas(16) glm::mat4 view;              // offset 0, size 64
-        alignas(16) glm::mat4 projection;        // offset 64, size 64
-        alignas(16) glm::mat4 model;             // offset 128, size 64
-        alignas(16) glm::vec4 cameraPositionTime;// xyz: camera position, w: time
-        alignas(16) glm::vec4 focal;             // xy: pixel focal lengths, zw: screen size
+        alignas(16) glm::mat4 view;
+        alignas(16) glm::mat4 projection;
+        alignas(16) glm::mat4 model;
+        alignas(16) glm::vec4 cameraPositionTime;
+        alignas(16) glm::vec4 focal;
     };
     std::vector<UniformBufferObject> ubo_;
-    
-    // 当前渲染的高斯模型
-    const GaussianModel* current_model_ = nullptr;
 
+    // ---- 模型 & 相机 ----
+    const GaussianModel* current_model_ = nullptr;
     vk_gs::Camera camera_;
 
     bool imguiInitialized_ = false;
     PresentModePreference presentModePreference_ = PresentModePreference::MaxFps;
-    
-    // GPU排序缓存状态
+
+    // ---- GPU 排序缓存 ----
     bool gpu_sort_completed_ = false;
     uint32_t last_sorted_point_count_ = 0;
     const GaussianModel* last_sorted_model_ = nullptr;
@@ -121,7 +134,10 @@ private:
     glm::mat4 last_model_matrix_{1.0f};
     bool record_sort_this_frame_ = false;
     uint32_t sort_point_count_this_frame_ = 0;
-    
+    uint32_t acquiredImageIndex_ = 0;
+    bool imageReadyForPresent_ = false;
+    bool presentWaitSemaphoreConsumed_ = false;
+
 };
 
 } // namespace vk_gs

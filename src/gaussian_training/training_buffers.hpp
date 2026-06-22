@@ -28,12 +28,16 @@ public:
     vk::DescriptorBufferInfo tileRangesInfo() const { return tileRanges_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo renderedColorInfo() const { return renderedColor_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo targetColorInfo() const { return targetColor_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo pixelGradsInfo() const { return pixelGrads_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo projectedGradsInfo() const { return projectedGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo lossInfo() const { return loss_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo countersInfo() const { return counters_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo previewInstancesInfo() const { return previewInstances_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo cameraInfo() const { return camera_.getDescriptorInfo(); }
 
 private:
     void createStorageBuffer(Buffer& buffer, vk::DeviceSize size);
+    void createUniformBuffer(Buffer& buffer, vk::DeviceSize size);
 
     vk::Device device_ = nullptr;
     vk::PhysicalDevice physicalDevice_ = nullptr;
@@ -51,9 +55,12 @@ private:
     Buffer tileRanges_;
     Buffer renderedColor_;
     Buffer targetColor_;
+    Buffer pixelGrads_;
+    Buffer projectedGrads_;
     Buffer loss_;
     Buffer counters_;
     Buffer previewInstances_;
+    Buffer camera_;
 };
 
 } // namespace vk_gs

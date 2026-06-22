@@ -42,6 +42,16 @@ set(SLANG_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/sl
 set(GRAPHICS_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader/spv")
 set(TRAINING_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/slang")
 set(TRAINING_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/spv")
+set(TRAINING_SHADER_COMMON_DEPS
+    "${TRAINING_SHADER_SRC_DIR}/train_common.slang"
+    "${TRAINING_SHADER_SRC_DIR}/train_loss_common.slang"
+    "${TRAINING_SHADER_SRC_DIR}/train_forward_common.slang"
+    "${TRAINING_SHADER_SRC_DIR}/train_forward_tile_common.slang"
+    "${TRAINING_SHADER_SRC_DIR}/train_forward_project_common.slang"
+    "${TRAINING_SHADER_SRC_DIR}/train_backward_types.slang"
+    "${TRAINING_SHADER_SRC_DIR}/train_backward_common.slang"
+    "${TRAINING_SHADER_SRC_DIR}/train_backward_project_common.slang"
+)
 
 function(compile_slang_shader SHADER_SRC SHADER_STAGE OUTPUT_BASENAME)
     set(SHADER_SPV "${GRAPHICS_SHADER_SPV_DIR}/${OUTPUT_BASENAME}.spv")
@@ -100,8 +110,7 @@ function(compile_training_shader SHADER_SRC OUTPUT_BASENAME)
             -o ${SHADER_SPV}
         DEPENDS
             ${SHADER_SRC}
-            "${TRAINING_SHADER_SRC_DIR}/train_common.slang"
-            "${TRAINING_SHADER_SRC_DIR}/train_loss_common.slang"
+            ${TRAINING_SHADER_COMMON_DEPS}
         COMMENT "Compiling training Slang shader ${SHADER_SRC} -> ${OUTPUT_BASENAME}.spv"
         VERBATIM
     )
@@ -122,6 +131,10 @@ compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_clear.comp.slang" "tra
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_project.comp.slang" "train_project.comp")
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_forward.comp.slang" "train_forward.comp")
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_loss.comp.slang" "train_loss.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_clear.comp.slang" "train_backward_clear.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_loss_to_pixel.comp.slang" "train_backward_loss_to_pixel.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_pixel_to_2dgs.comp.slang" "train_backward_pixel_to_2dgs.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_pack_render_buffer.comp.slang" "train_pack_render_buffer.comp")
 
 add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
