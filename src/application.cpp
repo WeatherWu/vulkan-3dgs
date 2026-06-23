@@ -10,9 +10,52 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
+#include <cctype>
+#include <cfloat>
 #include <cmath>
+#include <cstring>
+#include <exception>
 
+#include <ImGuiFileDialog.h>
 namespace vk_gs {
+
+namespace {
+
+void copyToInputBuffer(std::array<char, 512>& buffer, const std::string& value) {
+    std::fill(buffer.begin(), buffer.end(), '\0');
+    std::copy_n(value.data(), std::min(value.size(), buffer.size() - 1), buffer.data());
+}
+
+void copyToInputBuffer(std::array<char, 256>& buffer, const std::string& value) {
+    std::fill(buffer.begin(), buffer.end(), '\0');
+    std::copy_n(value.data(), std::min(value.size(), buffer.size() - 1), buffer.data());
+}
+
+std::string inputBufferString(const std::array<char, 512>& buffer) {
+    return std::string(buffer.data());
+}
+
+std::string inputBufferString(const std::array<char, 256>& buffer) {
+    return std::string(buffer.data());
+}
+
+bool hasExtension(const std::filesystem::path& path, const std::string& extension) {
+    std::string actual = path.extension().string();
+    std::transform(actual.begin(), actual.end(), actual.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return actual == extension;
+}
+
+std::filesystem::path existingDirectoryOrCurrent(const std::string& value) {
+    std::filesystem::path path(value);
+    if (std::filesystem::is_directory(path)) {
+        return path;
+    }
+    return std::filesystem::current_path();
+}
+
+} // namespace
 
 Application::Application(const std::string& title, int width, int height, RenderMode mode) 
     : current_mode_(mode) {
@@ -66,6 +109,11 @@ Application::Application(const std::string& title, int width, int height, Render
     window_->set_scroll_callback([this](double xoffset, double yoffset) {
         handleScroll(xoffset, yoffset);
     });
+
+    copyToInputBuffer(training_dataset_path_, "data/mipnerf360/bicycle");
+    copyToInputBuffer(training_output_dir_, "output");
+    copyToInputBuffer(training_output_name_, "bicycle.ply");
+    training_status_ = "Training dataset is not loaded";
     
     initialize();
 }
@@ -156,6 +204,17 @@ void Application::initialize() {
 
 void Application::update(float delta_time) {
     updateOrbitCamera(delta_time);
+
+    if (training_running_) {
+        try {
+            for (uint32_t i = 0; i < std::max(training_steps_per_frame_, 1u); ++i) {
+                runTrainingStepFromUi();
+            }
+        } catch (const std::exception& error) {
+            training_running_ = false;
+            setTrainingError(error.what());
+        }
+    }
 }
 
 void Application::render() {
@@ -213,6 +272,9 @@ bool Application::loadModelFromFile(const std::string& filename) {
     current_model_ = owned_model_.get();
     resetOrbitFromModel();
     updateModelMatrix();
+    if (training_initialized_) {
+        training_.setForwardModel(current_model_);
+    }
 
     LOG_INFO("Loaded model from dropped file: {}", filename);
     return true;
@@ -242,6 +304,9 @@ void Application::setTrueCamera(const vk_gs::Camera& camera) {
 }
 
 void Application::cleanup() {
+    training_.cleanup();
+    training_initialized_ = false;
+
     if (renderer_) {
         renderer_->cleanup();
     }
@@ -445,6 +510,8 @@ void Application::drawImGuiControls() {
     const glm::vec3& position = camera_.get_position();
     ImGui::Text("Position %.2f %.2f %.2f", position.x, position.y, position.z);
     ImGui::End();
+
+    drawTrainingControls();
 }
 
 void Application::handleDroppedFiles(const std::vector<std::string>& paths) {
@@ -456,7 +523,20 @@ void Application::handleDroppedFiles(const std::vector<std::string>& paths) {
         LOG_WARN("Multiple files dropped; loading the first one only");
     }
 
-    loadModelFromFile(paths.front());
+    std::filesystem::path droppedPath(paths.front());
+    if (std::filesystem::is_directory(droppedPath)) {
+        copyToInputBuffer(training_dataset_path_, droppedPath.string());
+        syncDefaultOutputNameFromDataset();
+        validateTrainingDatasetFromUi();
+        return;
+    }
+
+    if (hasExtension(droppedPath, ".ply")) {
+        loadModelFromFile(paths.front());
+        return;
+    }
+
+    setTrainingError("Unsupported dropped file. Drop a .ply model or a dataset folder.");
 }
 
 void Application::handleScroll(double xoffset, double yoffset) {
@@ -500,6 +580,317 @@ void Application::updateModelMatrix() {
     model_matrix_ = glm::translate(glm::mat4(1.0f), center) *
                     glm::scale(glm::mat4(1.0f), scaling) *
                     glm::translate(glm::mat4(1.0f), -center);
+}
+
+void Application::drawTrainingControls() {
+    ImGui::Begin("Training");
+
+    ImGui::InputText("Dataset Folder", training_dataset_path_.data(), training_dataset_path_.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Browse##DatasetFolder")) {
+        chooseTrainingDatasetFolderFromUi();
+    }
+    ImGui::InputInt("Downscale", &training_downscale_);
+    training_downscale_ = std::clamp(training_downscale_, 1, 16);
+
+    if (ImGui::Button("Validate")) {
+        validateTrainingDatasetFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load Dataset")) {
+        loadTrainingDatasetFromUi();
+    }
+
+    if (training_dataset_valid_) {
+        ImGui::Text("Frames %u", training_frame_count_);
+        ImGui::Text("Resolution %ux%u", training_width_, training_height_);
+    }
+
+    ImGui::Separator();
+    ImGui::InputScalar("Steps/Frame", ImGuiDataType_U32, &training_steps_per_frame_);
+    training_steps_per_frame_ = std::max(training_steps_per_frame_, 1u);
+
+    bool canTrain = training_dataset_loaded_ && current_model_ != nullptr;
+    if (!canTrain) {
+        ImGui::BeginDisabled();
+    }
+
+    if (ImGui::Button(training_running_ ? "Pause Training" : "Start Training")) {
+        training_running_ = !training_running_;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Train Step")) {
+        try {
+            runTrainingStepFromUi();
+        } catch (const std::exception& error) {
+            setTrainingError(error.what());
+        }
+    }
+
+    if (!canTrain) {
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Text("Steps %llu", static_cast<unsigned long long>(training_steps_done_));
+    ImGui::Text("Frame %llu / %u",
+                static_cast<unsigned long long>(training_.hasDataset() ? training_.currentFrameIndex() : 0),
+                training_frame_count_);
+
+    ImGui::Separator();
+    ImGui::InputText("Output Folder", training_output_dir_.data(), training_output_dir_.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Browse##OutputFolder")) {
+        chooseTrainingOutputFolderFromUi();
+    }
+    ImGui::InputText("PLY Name", training_output_name_.data(), training_output_name_.size());
+    if (ImGui::Button("Save PLY")) {
+        exportTrainingModelFromUi();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save As")) {
+        saveTrainingPlyAsFromUi();
+    }
+
+    if (!training_status_.empty()) {
+        ImGui::TextWrapped("%s", training_status_.c_str());
+    }
+
+    if (training_error_popup_pending_) {
+        ImGui::OpenPopup("Training Error");
+        training_error_popup_pending_ = false;
+    }
+    if (ImGui::BeginPopupModal("Training Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("%s", training_error_.c_str());
+        if (ImGui::Button("OK")) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    drawTrainingFileDialogs();
+    ImGui::End();
+}
+
+void Application::validateTrainingDatasetFromUi() {
+    try {
+        auto validation = TrainingDatasetLoader::validateMipNeRF360Scene(inputBufferString(training_dataset_path_),
+                                                                         static_cast<uint32_t>(training_downscale_));
+        training_dataset_valid_ = validation.valid;
+        training_frame_count_ = validation.frameCount;
+        training_width_ = validation.width;
+        training_height_ = validation.height;
+        if (!validation.valid) {
+            setTrainingError(validation.message);
+            return;
+        }
+        syncDefaultOutputNameFromDataset();
+        setTrainingStatus("Dataset valid: " + std::to_string(training_frame_count_) +
+                          " frames, " + std::to_string(training_width_) +
+                          "x" + std::to_string(training_height_));
+    } catch (const std::exception& error) {
+        training_dataset_valid_ = false;
+        setTrainingError(error.what());
+    }
+}
+
+void Application::loadTrainingDatasetFromUi() {
+    validateTrainingDatasetFromUi();
+    if (!training_dataset_valid_) {
+        return;
+    }
+
+    try {
+        initializeTrainingIfNeeded();
+        training_.loadMipNeRF360Dataset(inputBufferString(training_dataset_path_),
+                                        static_cast<uint32_t>(training_downscale_));
+        training_.resize(current_model_ ? static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end())) : 1u,
+                         TrainingExtent{training_width_, training_height_});
+        training_.setForwardModel(current_model_);
+        training_dataset_loaded_ = true;
+        setTrainingStatus("Dataset loaded for training");
+    } catch (const std::exception& error) {
+        training_dataset_loaded_ = false;
+        setTrainingError(error.what());
+    }
+}
+
+void Application::initializeTrainingIfNeeded() {
+    if (training_initialized_) {
+        return;
+    }
+
+    if (!renderer_) {
+        throw std::runtime_error("Renderer is not initialized");
+    }
+
+    auto& context = Context::Instance();
+    auto& device = context.getDevice();
+    auto computeFamily = device.getQueueFamilyIndices().computeIndex.value_or(
+        device.getQueueFamilyIndices().graphicsIndex.value());
+    auto transferFamily = device.getQueueFamilyIndices().transferIndex.value_or(
+        device.getQueueFamilyIndices().graphicsIndex.value());
+
+    training_.initialize(context.Device(),
+                         context.PhysicalDevice(),
+                         context.getTransferQueue(),
+                         transferFamily);
+    training_.setForwardRenderer(*renderer_);
+    training_.initializeBackward(context.Device(),
+                                 context.PhysicalDevice(),
+                                 device.getComputeQueue(),
+                                 computeFamily,
+                                 current_model_ ? static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end())) : 1u,
+                                 TrainingExtent{std::max(training_width_, 1u), std::max(training_height_, 1u)});
+    training_initialized_ = true;
+}
+
+void Application::runTrainingStepFromUi() {
+    if (!training_dataset_loaded_) {
+        throw std::runtime_error("Load a training dataset before starting training");
+    }
+    if (!current_model_) {
+        throw std::runtime_error("Load a .ply model before starting training");
+    }
+
+    training_.setForwardModel(current_model_);
+    training_.trainStep();
+    ++training_steps_done_;
+}
+
+void Application::exportTrainingModelFromUi() {
+    if (!owned_model_) {
+        setTrainingError("No owned Gaussian model is loaded to export");
+        return;
+    }
+
+    try {
+        exportTrainingModelToPath(outputPlyPath());
+    } catch (const std::exception& error) {
+        setTrainingError(error.what());
+    }
+}
+
+void Application::exportTrainingModelToPath(const std::filesystem::path& path) {
+    if (!owned_model_) {
+        throw std::runtime_error("No owned Gaussian model is loaded to export");
+    }
+
+    std::filesystem::path outputPath = path;
+    if (outputPath.extension().empty()) {
+        outputPath += ".ply";
+    }
+
+    std::filesystem::create_directories(outputPath.parent_path());
+    if (!owned_model_->exportToPLY(outputPath.string())) {
+        throw std::runtime_error("Failed to export PLY: " + outputPath.string());
+    }
+
+    setTrainingStatus("Saved PLY: " + outputPath.string());
+}
+
+void Application::chooseTrainingDatasetFolderFromUi() {
+    IGFD::FileDialogConfig config;
+    config.path = existingDirectoryOrCurrent(inputBufferString(training_dataset_path_)).string();
+    config.flags = ImGuiFileDialogFlags_Modal;
+    ImGuiFileDialog::Instance()->OpenDialog("TrainingDatasetFolderDialog",
+                                            "Select Training Dataset Folder",
+                                            nullptr,
+                                            config);
+}
+
+void Application::chooseTrainingOutputFolderFromUi() {
+    IGFD::FileDialogConfig config;
+    config.path = existingDirectoryOrCurrent(inputBufferString(training_output_dir_)).string();
+    config.flags = ImGuiFileDialogFlags_Modal;
+    ImGuiFileDialog::Instance()->OpenDialog("TrainingOutputFolderDialog",
+                                            "Select Output Folder",
+                                            nullptr,
+                                            config);
+}
+
+void Application::saveTrainingPlyAsFromUi() {
+    IGFD::FileDialogConfig config;
+    config.path = existingDirectoryOrCurrent(inputBufferString(training_output_dir_)).string();
+    config.fileName = inputBufferString(training_output_name_);
+    config.flags = ImGuiFileDialogFlags_Modal;
+    ImGuiFileDialog::Instance()->OpenDialog("TrainingSavePlyDialog",
+                                            "Save Training Result",
+                                            ".ply",
+                                            config);
+}
+
+void Application::drawTrainingFileDialogs() {
+    const ImVec2 minSize(620.0f, 360.0f);
+    const ImVec2 maxSize(FLT_MAX, FLT_MAX);
+
+    if (ImGuiFileDialog::Instance()->Display("TrainingDatasetFolderDialog",
+                                             ImGuiWindowFlags_NoCollapse,
+                                             minSize,
+                                             maxSize)) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            copyToInputBuffer(training_dataset_path_, ImGuiFileDialog::Instance()->GetCurrentPath());
+            syncDefaultOutputNameFromDataset();
+            validateTrainingDatasetFromUi();
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+
+    if (ImGuiFileDialog::Instance()->Display("TrainingOutputFolderDialog",
+                                             ImGuiWindowFlags_NoCollapse,
+                                             minSize,
+                                             maxSize)) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            copyToInputBuffer(training_output_dir_, ImGuiFileDialog::Instance()->GetCurrentPath());
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+
+    if (ImGuiFileDialog::Instance()->Display("TrainingSavePlyDialog",
+                                             ImGuiWindowFlags_NoCollapse,
+                                             minSize,
+                                             maxSize)) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::filesystem::path path(ImGuiFileDialog::Instance()->GetFilePathName());
+            copyToInputBuffer(training_output_dir_, path.parent_path().string());
+            copyToInputBuffer(training_output_name_, path.filename().string());
+            try {
+                exportTrainingModelToPath(path);
+            } catch (const std::exception& error) {
+                setTrainingError(error.what());
+            }
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+}
+
+void Application::setTrainingStatus(const std::string& message) {
+    training_status_ = message;
+    LOG_INFO("{}", message);
+}
+
+void Application::setTrainingError(const std::string& message) {
+    training_error_ = message;
+    training_status_ = message;
+    training_error_popup_pending_ = true;
+    LOG_ERROR("{}", message);
+}
+
+std::filesystem::path Application::outputPlyPath() const {
+    std::filesystem::path outputDir(inputBufferString(training_output_dir_));
+    std::filesystem::path outputName(inputBufferString(training_output_name_));
+    if (outputName.extension().empty()) {
+        outputName += ".ply";
+    }
+    return outputDir / outputName;
+}
+
+void Application::syncDefaultOutputNameFromDataset() {
+    std::filesystem::path datasetPath(inputBufferString(training_dataset_path_));
+    std::string name = datasetPath.filename().string();
+    if (name.empty()) {
+        name = "trained";
+    }
+    copyToInputBuffer(training_output_name_, name + ".ply");
 }
 
 }

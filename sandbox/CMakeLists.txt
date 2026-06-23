@@ -3,6 +3,7 @@ project(vk_gs_sandbox VERSION 1.0.0 LANGUAGES CXX)
 
 # 创建示例应用程序。默认 ALL_BUILD 不直接包含它，下面用 Debug-only 聚合目标控制默认构建。
 add_executable(vk_gs_sandbox EXCLUDE_FROM_ALL sandbox.cpp)
+add_executable(vk_gs_dataset_probe EXCLUDE_FROM_ALL dataset_probe.cpp)
 
 # Visual Studio / multi-config 生成器不能按配置改变 EXCLUDE_FROM_ALL。
 # 这里让 sandbox 本体始终退出 ALL_BUILD，然后让这个 ALL 目标只在 Debug
@@ -21,9 +22,15 @@ set_target_properties(vk_gs_sandbox PROPERTIES
 
 # 链接核心库
 target_link_libraries(vk_gs_sandbox PRIVATE vk_gs_core)
+target_link_libraries(vk_gs_dataset_probe PRIVATE vk_gs_core)
     
 # 包含目录
 target_include_directories(vk_gs_sandbox PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src/include
+)
+
+target_include_directories(vk_gs_dataset_probe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src/include
 )

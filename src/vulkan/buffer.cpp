@@ -130,6 +130,20 @@ void Buffer::cleanup() {
     size_ = 0;
 }
 
+void Buffer::upload(const void* data, vk::DeviceSize size) {
+    if (!buffer_ || !memory_) {
+        throw std::runtime_error("Cannot upload to an uninitialized buffer");
+    }
+    if (!data) {
+        throw std::runtime_error("Cannot upload null data to buffer");
+    }
+    if (size > size_) {
+        throw std::runtime_error("Upload size exceeds buffer capacity");
+    }
+
+    uploadData(data, size);
+}
+
 vk::DescriptorBufferInfo Buffer::getDescriptorInfo() const {
     vk::DescriptorBufferInfo info{};
     info.setBuffer(buffer_)

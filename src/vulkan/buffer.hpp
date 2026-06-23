@@ -31,6 +31,7 @@ public:
 
     // 清理资源
     void cleanup();
+    void upload(const void* data, vk::DeviceSize size);
 
     // 获取底层对象
     vk::Buffer getBuffer() const { return buffer_; }

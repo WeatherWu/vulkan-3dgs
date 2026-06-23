@@ -24,6 +24,7 @@ public:
                             vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void backward() override;
+    void gradientDescent() override;
 
     bool isInitialized() const override { return initialized_; }
     uint32_t gaussianCount() const { return gaussianCount_; }
@@ -37,6 +38,7 @@ private:
     void computeLossToPixel();
     void backpropPixelTo2DGS();
     void backprop2DGSTo3DGS();
+    void optimizeParameters();
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
 
@@ -51,12 +53,14 @@ private:
     ComputePipeline lossToPixelPipeline_;
     ComputePipeline pixelTo2DGSPipeline_;
     ComputePipeline twoDGSTo3DGSPipeline_;
+    ComputePipeline optimizerPipeline_;
     vk::DescriptorPool descriptorPool_ = nullptr;
     vk::DescriptorSet backwardClearDescriptorSet_ = nullptr;
     vk::DescriptorSet lossDescriptorSet_ = nullptr;
     vk::DescriptorSet lossToPixelDescriptorSet_ = nullptr;
     vk::DescriptorSet pixelTo2DGSDescriptorSet_ = nullptr;
     vk::DescriptorSet twoDGSTo3DGSDescriptorSet_ = nullptr;
+    vk::DescriptorSet optimizerDescriptorSet_ = nullptr;
     const TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
     TrainingPushConstants pushConstants_{};

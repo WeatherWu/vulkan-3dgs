@@ -29,7 +29,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float3x3 dLoss_dCovariancePixel = backwardConicToCovariance(projectionState.covariancePixel, projectedGrad.conicOpacity.xyz);
     float3x3 dLoss_dCovariance3D = backwardCovariancePixelToCovariance3D(projectionState, dLoss_dCovariancePixel);
     grad.scale.xyz += backwardCovariance3DToScale(gaussian, dLoss_dCovariance3D);
+    grad.rotation += backwardCovariance3DToRotation(gaussian, dLoss_dCovariance3D);
 
+    grad.positionOpacity.xyz += backwardProjectedColorToPosition(gaussian, projectedGrad.color.xyz);
     backwardProjectedColorToSH(grad, gaussian, projectedGrad.color.xyz);
     gaussianGrads[gaussianIndex] = grad;
 }

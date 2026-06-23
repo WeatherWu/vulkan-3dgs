@@ -3,8 +3,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <array>
+#include <filesystem>
 #include <glm/glm.hpp>
 
+#include "gaussian_training/gaussian_training.hpp"
 #include "utils/camera.hpp"
 #include "vulkan/swapchain.hpp"
 
@@ -82,6 +85,21 @@ private:
     void handleScroll(double xoffset, double yoffset);
     void handleDroppedFiles(const std::vector<std::string>& paths);
     void updateModelMatrix();
+    void drawTrainingControls();
+    void validateTrainingDatasetFromUi();
+    void loadTrainingDatasetFromUi();
+    void initializeTrainingIfNeeded();
+    void runTrainingStepFromUi();
+    void exportTrainingModelFromUi();
+    void exportTrainingModelToPath(const std::filesystem::path& path);
+    void chooseTrainingDatasetFolderFromUi();
+    void chooseTrainingOutputFolderFromUi();
+    void saveTrainingPlyAsFromUi();
+    void drawTrainingFileDialogs();
+    void setTrainingStatus(const std::string& message);
+    void setTrainingError(const std::string& message);
+    std::filesystem::path outputPlyPath() const;
+    void syncDefaultOutputNameFromDataset();
 
     std::unique_ptr<GaussianModel> owned_model_;
     std::string owned_model_path_;
@@ -107,6 +125,24 @@ private:
     double last_tick_time_ = 0.0;
     PresentModePreference present_mode_preference_ = PresentModePreference::MaxFps;
     bool present_mode_dirty_ = false;
+
+    GaussianTraining training_;
+    bool training_initialized_ = false;
+    bool training_dataset_valid_ = false;
+    bool training_dataset_loaded_ = false;
+    bool training_running_ = false;
+    bool training_error_popup_pending_ = false;
+    int training_downscale_ = 4;
+    uint32_t training_frame_count_ = 0;
+    uint32_t training_width_ = 0;
+    uint32_t training_height_ = 0;
+    uint32_t training_steps_per_frame_ = 1;
+    uint64_t training_steps_done_ = 0;
+    std::array<char, 512> training_dataset_path_{};
+    std::array<char, 512> training_output_dir_{};
+    std::array<char, 256> training_output_name_{};
+    std::string training_status_;
+    std::string training_error_;
 };
 
 } // namespace vk_gs

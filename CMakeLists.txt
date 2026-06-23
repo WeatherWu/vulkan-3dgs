@@ -135,6 +135,7 @@ compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_clear.comp.sl
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_loss_to_pixel.comp.slang" "train_backward_loss_to_pixel.comp")
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_pixel_to_2dgs.comp.slang" "train_backward_pixel_to_2dgs.comp")
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
+compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
 compile_training_shader("${TRAINING_SHADER_SRC_DIR}/train_pack_render_buffer.comp.slang" "train_pack_render_buffer.comp")
 
 add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})

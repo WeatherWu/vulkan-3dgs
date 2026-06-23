@@ -63,6 +63,7 @@ public:
     virtual void cleanup() = 0;
 
     virtual void backward() = 0;
+    virtual void gradientDescent() = 0;
 
     virtual bool isInitialized() const = 0;
 };

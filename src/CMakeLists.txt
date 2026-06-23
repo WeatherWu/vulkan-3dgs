@@ -9,6 +9,8 @@ find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(Stb QUIET)
 
+set(IMGUI_FILE_DIALOG_DIR "${CMAKE_SOURCE_DIR}/third_party/ImGuiFileDialog")
+
 # 查找GLFW
 if(NOT glfw3_FOUND)
     FetchContent_Declare(
@@ -64,9 +66,12 @@ add_library(vk_gs_core STATIC
     gaussian_training/training_buffers.cpp
     gaussian_training/training_pipeline.cpp
     gaussian_training/gaussian_backward_renderer.cpp
+    gaussian_training/training_dataset.cpp
 
     # 工具模块
     utils/camera.cpp
+    utils/stb_image_impl.cpp
+    ${IMGUI_FILE_DIALOG_DIR}/ImGuiFileDialog.cpp
     
     # 应用框架与渲染管理
     window.cpp
@@ -82,8 +87,10 @@ target_include_directories(vk_gs_core PUBLIC
 
 # 包含目录（私有依赖）
 target_include_directories(vk_gs_core PRIVATE
+    ${Stb_INCLUDE_DIR}
     ${Stb_SOURCE_DIR}
     ${glm_SOURCE_DIR}
+    ${IMGUI_FILE_DIALOG_DIR}
 )
 
 # 链接库
@@ -115,6 +122,7 @@ target_compile_definitions(vk_gs_core PRIVATE
 
 if(MSVC)
     set_source_files_properties(vulkan/vrdx_impl.cpp PROPERTIES COMPILE_OPTIONS "/W0")
+    set_source_files_properties(${IMGUI_FILE_DIALOG_DIR}/ImGuiFileDialog.cpp PROPERTIES COMPILE_OPTIONS "/W0")
 endif()
 
 # 安装配置

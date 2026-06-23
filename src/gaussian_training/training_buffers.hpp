@@ -16,6 +16,8 @@ public:
     void cleanup();
 
     void resize(uint32_t gaussianCount, TrainingExtent extent);
+    void uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height);
+    void uploadCamera(const TrainingForwardCamera& camera);
 
     uint32_t gaussianCapacity() const { return gaussianCapacity_; }
     TrainingExtent extent() const { return extent_; }
