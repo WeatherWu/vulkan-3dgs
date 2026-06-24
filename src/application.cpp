@@ -272,9 +272,6 @@ bool Application::loadModelFromFile(const std::string& filename) {
     current_model_ = owned_model_.get();
     resetOrbitFromModel();
     updateModelMatrix();
-    if (training_initialized_) {
-        training_.setForwardModel(current_model_);
-    }
 
     LOG_INFO("Loaded model from dropped file: {}", filename);
     return true;
@@ -585,6 +582,10 @@ void Application::updateModelMatrix() {
 void Application::drawTrainingControls() {
     ImGui::Begin("Training");
 
+    if (training_running_) {
+        ImGui::BeginDisabled();
+    }
+
     ImGui::InputText("Dataset Folder", training_dataset_path_.data(), training_dataset_path_.size());
     ImGui::SameLine();
     if (ImGui::Button("Browse##DatasetFolder")) {
@@ -592,6 +593,25 @@ void Application::drawTrainingControls() {
     }
     ImGui::InputInt("Downscale", &training_downscale_);
     training_downscale_ = std::clamp(training_downscale_, 1, 16);
+
+    const bool canEditTrainingSetup = !training_running_;
+
+    if (ImGui::CollapsingHeader("Initialization", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!canEditTrainingSetup) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::InputScalar("Fallback Gaussians", ImGuiDataType_U32, &training_initial_gaussians_);
+        training_initial_gaussians_ = std::clamp(training_initial_gaussians_, 1u, 1000000u);
+        ImGui::InputScalar("Random Seed", ImGuiDataType_U32, &training_random_seed_);
+        training_random_seed_ = std::max(training_random_seed_, 1u);
+        ImGui::InputFloat("Initial Opacity", &training_initial_opacity_, 0.01f, 0.05f, "%.4f");
+        training_initial_opacity_ = std::clamp(training_initial_opacity_, 0.001f, 0.99f);
+        ImGui::InputFloat("Scene Radius Scale", &training_scene_radius_scale_, 0.1f, 1.0f, "%.3f");
+        training_scene_radius_scale_ = std::clamp(training_scene_radius_scale_, 0.01f, 100.0f);
+        if (!canEditTrainingSetup) {
+            ImGui::EndDisabled();
+        }
+    }
 
     if (ImGui::Button("Validate")) {
         validateTrainingDatasetFromUi();
@@ -601,29 +621,84 @@ void Application::drawTrainingControls() {
         loadTrainingDatasetFromUi();
     }
 
+    if (training_running_) {
+        ImGui::EndDisabled();
+    }
+
     if (training_dataset_valid_) {
         ImGui::Text("Frames %u", training_frame_count_);
         ImGui::Text("Resolution %ux%u", training_width_, training_height_);
     }
 
     ImGui::Separator();
-    ImGui::InputScalar("Steps/Frame", ImGuiDataType_U32, &training_steps_per_frame_);
-    training_steps_per_frame_ = std::max(training_steps_per_frame_, 1u);
+    if (ImGui::CollapsingHeader("Training", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::InputScalar("Steps/Frame", ImGuiDataType_U32, &training_steps_per_frame_);
+        training_steps_per_frame_ = std::max(training_steps_per_frame_, 1u);
+        if (!canEditTrainingSetup) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::InputFloat("Learning Rate", &training_learning_rate_, 0.0001f, 0.001f, "%.6g");
+        training_learning_rate_ = std::max(training_learning_rate_, 0.0f);
+        ImGui::InputFloat("Adam Beta1", &training_adam_beta1_, 0.01f, 0.05f, "%.6g");
+        training_adam_beta1_ = std::clamp(training_adam_beta1_, 0.0f, 0.999999f);
+        ImGui::InputFloat("Adam Beta2", &training_adam_beta2_, 0.001f, 0.01f, "%.6g");
+        training_adam_beta2_ = std::clamp(training_adam_beta2_, 0.0f, 0.999999f);
+        ImGui::InputFloat("Adam Epsilon", &training_adam_epsilon_, 0.00000001f, 0.0000001f, "%.6g");
+        training_adam_epsilon_ = std::max(training_adam_epsilon_, 1e-12f);
+        ImGui::InputFloat("Gradient Clip", &training_grad_clip_, 10.0f, 100.0f, "%.6g");
+        training_grad_clip_ = std::max(training_grad_clip_, 1e-8f);
+        if (!canEditTrainingSetup) {
+            ImGui::EndDisabled();
+        }
+    }
 
-    bool canTrain = training_dataset_loaded_ && current_model_ != nullptr;
+    if (ImGui::CollapsingHeader("Densification / Pruning", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!canEditTrainingSetup) {
+            ImGui::BeginDisabled();
+        }
+        ImGui::Checkbox("Enable Densification", &training_densification_enabled_);
+        ImGui::InputScalar("Densify From", ImGuiDataType_U32, &training_densify_from_iteration_);
+        ImGui::InputScalar("Densify Until", ImGuiDataType_U32, &training_densify_until_iteration_);
+        training_densify_until_iteration_ = std::max(training_densify_until_iteration_,
+                                                     training_densify_from_iteration_);
+        ImGui::InputScalar("Densify Interval", ImGuiDataType_U32, &training_densification_interval_);
+        training_densification_interval_ = std::max(training_densification_interval_, 1u);
+        ImGui::InputScalar("Opacity Reset Interval", ImGuiDataType_U32, &training_opacity_reset_interval_);
+        training_opacity_reset_interval_ = std::max(training_opacity_reset_interval_, 1u);
+        ImGui::InputScalar("Max Gaussians", ImGuiDataType_U32, &training_max_gaussians_);
+        training_max_gaussians_ = std::clamp(training_max_gaussians_, 1u, 10000000u);
+        ImGui::InputScalar("Split Children", ImGuiDataType_U32, &training_split_children_);
+        training_split_children_ = std::clamp(training_split_children_, 2u, 8u);
+        ImGui::InputFloat("Gradient Threshold", &training_densify_grad_threshold_, 0.00001f, 0.0001f, "%.6g");
+        training_densify_grad_threshold_ = std::max(training_densify_grad_threshold_, 0.0f);
+        ImGui::InputFloat("Min Opacity", &training_min_opacity_, 0.001f, 0.01f, "%.6g");
+        training_min_opacity_ = std::clamp(training_min_opacity_, 0.0f, 0.99f);
+        ImGui::InputFloat("Percent Dense", &training_percent_dense_, 0.001f, 0.01f, "%.6g");
+        training_percent_dense_ = std::clamp(training_percent_dense_, 0.0f, 1.0f);
+        ImGui::InputFloat("Screen Prune Size", &training_screen_size_prune_threshold_, 1.0f, 10.0f, "%.3f");
+        training_screen_size_prune_threshold_ = std::max(training_screen_size_prune_threshold_, 0.0f);
+        if (!canEditTrainingSetup) {
+            ImGui::EndDisabled();
+        }
+    }
+
+    bool canTrain = training_dataset_loaded_;
     if (!canTrain) {
         ImGui::BeginDisabled();
     }
 
     if (ImGui::Button(training_running_ ? "Pause Training" : "Start Training")) {
-        training_running_ = !training_running_;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Train Step")) {
-        try {
-            runTrainingStepFromUi();
-        } catch (const std::exception& error) {
-            setTrainingError(error.what());
+        if (training_running_) {
+            training_running_ = false;
+        } else {
+            try {
+                applyTrainingConfigFromUi();
+                initializeTrainingIfNeeded();
+                training_running_ = true;
+            } catch (const std::exception& error) {
+                training_running_ = false;
+                setTrainingError(error.what());
+            }
         }
     }
 
@@ -632,6 +707,7 @@ void Application::drawTrainingControls() {
     }
 
     ImGui::Text("Steps %llu", static_cast<unsigned long long>(training_steps_done_));
+    ImGui::Text("Gaussians %u", training_.gaussianCount());
     ImGui::Text("Frame %llu / %u",
                 static_cast<unsigned long long>(training_.hasDataset() ? training_.currentFrameIndex() : 0),
                 training_frame_count_);
@@ -700,14 +776,24 @@ void Application::loadTrainingDatasetFromUi() {
     }
 
     try {
-        initializeTrainingIfNeeded();
+        auto& context = Context::Instance();
+        auto& device = context.getDevice();
+        auto transferFamily = device.getQueueFamilyIndices().transferIndex.value_or(
+            device.getQueueFamilyIndices().graphicsIndex.value());
+        if (training_.isInitialized()) {
+            training_.cleanup();
+            training_initialized_ = false;
+        }
+        training_.initialize(context.Device(),
+                             context.PhysicalDevice(),
+                             context.getTransferQueue(),
+                             transferFamily);
         training_.loadMipNeRF360Dataset(inputBufferString(training_dataset_path_),
                                         static_cast<uint32_t>(training_downscale_));
-        training_.resize(current_model_ ? static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end())) : 1u,
-                         TrainingExtent{training_width_, training_height_});
-        training_.setForwardModel(current_model_);
+        training_initialized_ = false;
         training_dataset_loaded_ = true;
-        setTrainingStatus("Dataset loaded for training");
+        training_steps_done_ = 0;
+        setTrainingStatus("Dataset loaded. Press Start Training to initialize and train.");
     } catch (const std::exception& error) {
         training_dataset_loaded_ = false;
         setTrainingError(error.what());
@@ -738,7 +824,7 @@ void Application::initializeTrainingIfNeeded() {
                                           context.PhysicalDevice(),
                                           device.getComputeQueue(),
                                           computeFamily,
-                                          current_model_ ? static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end())) : 1u,
+                                          std::max(training_.gaussianCount(), 1u),
                                           TrainingExtent{std::max(training_width_, 1u), std::max(training_height_, 1u)});
     training_initialized_ = true;
 }
@@ -747,17 +833,13 @@ void Application::runTrainingStepFromUi() {
     if (!training_dataset_loaded_) {
         throw std::runtime_error("Load a training dataset before starting training");
     }
-    if (!current_model_) {
-        throw std::runtime_error("Load a .ply model before starting training");
-    }
-
     training_.trainStep();
     ++training_steps_done_;
 }
 
 void Application::exportTrainingModelFromUi() {
-    if (!owned_model_) {
-        setTrainingError("No owned Gaussian model is loaded to export");
+    if (!training_.hasTrainableModel()) {
+        setTrainingError("No trained Gaussian model is available to export");
         return;
     }
 
@@ -769,8 +851,8 @@ void Application::exportTrainingModelFromUi() {
 }
 
 void Application::exportTrainingModelToPath(const std::filesystem::path& path) {
-    if (!owned_model_) {
-        throw std::runtime_error("No owned Gaussian model is loaded to export");
+    if (!training_.hasTrainableModel()) {
+        throw std::runtime_error("No trained Gaussian model is available to export");
     }
 
     std::filesystem::path outputPath = path;
@@ -778,8 +860,7 @@ void Application::exportTrainingModelToPath(const std::filesystem::path& path) {
         outputPath += ".ply";
     }
 
-    std::filesystem::create_directories(outputPath.parent_path());
-    if (!owned_model_->exportToPLY(outputPath.string())) {
+    if (!training_.exportToPLY(outputPath)) {
         throw std::runtime_error("Failed to export PLY: " + outputPath.string());
     }
 
@@ -859,6 +940,56 @@ void Application::drawTrainingFileDialogs() {
         }
         ImGuiFileDialog::Instance()->Close();
     }
+}
+
+void Application::applyTrainingConfigFromUi() {
+    if (!training_dataset_loaded_) {
+        throw std::runtime_error("Load a training dataset before starting training");
+    }
+
+    if (!training_.hasTrainableModel()) {
+        TrainingInitializationConfig initConfig{};
+        initConfig.randomGaussianCount = training_initial_gaussians_;
+        initConfig.randomSeed = training_random_seed_;
+        initConfig.initialOpacity = training_initial_opacity_;
+        initConfig.sceneRadiusScale = training_scene_radius_scale_;
+        training_.initializeModelFromDataset(initConfig);
+        training_initialized_ = false;
+
+        const std::string initSource = training_.usedRandomInitialization()
+            ? "random fallback"
+            : "COLMAP sparse points";
+        setTrainingStatus("Training initialized with " +
+                          std::to_string(training_.gaussianCount()) +
+                          " gaussians from " + initSource);
+    }
+
+    TrainingOptimizerConfig optimizerConfig{};
+    optimizerConfig.learningRate = training_learning_rate_;
+    optimizerConfig.beta1 = training_adam_beta1_;
+    optimizerConfig.beta2 = training_adam_beta2_;
+    optimizerConfig.epsilon = training_adam_epsilon_;
+    optimizerConfig.gradClip = training_grad_clip_;
+    training_.setOptimizerConfig(optimizerConfig);
+
+    applyTrainingDensificationConfigFromUi();
+}
+
+void Application::applyTrainingDensificationConfigFromUi() {
+    TrainingDensificationConfig config{};
+    config.enabled = training_densification_enabled_;
+    config.densifyFromIteration = training_densify_from_iteration_;
+    config.densifyUntilIteration = std::max(training_densify_until_iteration_,
+                                            training_densify_from_iteration_);
+    config.densificationInterval = std::max(training_densification_interval_, 1u);
+    config.opacityResetInterval = std::max(training_opacity_reset_interval_, 1u);
+    config.maxGaussianCount = std::max(training_max_gaussians_, 1u);
+    config.splitChildren = std::clamp(training_split_children_, 2u, 8u);
+    config.densifyGradThreshold = std::max(training_densify_grad_threshold_, 0.0f);
+    config.minOpacity = std::clamp(training_min_opacity_, 0.0f, 0.99f);
+    config.percentDense = std::clamp(training_percent_dense_, 0.0f, 1.0f);
+    config.screenSizePruneThreshold = std::max(training_screen_size_prune_threshold_, 0.0f);
+    training_.setDensificationConfig(config);
 }
 
 void Application::setTrainingStatus(const std::string& message) {

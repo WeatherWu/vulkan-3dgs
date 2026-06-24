@@ -101,11 +101,19 @@ void GaussianForwardRenderer::forward() {
         return;
     }
 
+    prepareTileItems();
+    renderPreparedTiles();
+}
+
+void GaussianForwardRenderer::prepareTileItems() {
     clearForwardBuffers();
     projectGaussians();
     clearTileRanges();
     countTileCoverage();
     prefixTileRanges();
+}
+
+void GaussianForwardRenderer::renderPreparedTiles() {
     emitTileItems();
     sortTileItems();
     compositePixels();
@@ -113,7 +121,7 @@ void GaussianForwardRenderer::forward() {
 
 void GaussianForwardRenderer::createForwardResources() {
     clearPipeline_.initialize(device_, "shaders/train_clear.comp.spv",
-                              pipelineConfig({storageBinding(1), storageBinding(6), storageBinding(8), storageBinding(9)}));
+                              pipelineConfig({storageBinding(1), storageBinding(6), storageBinding(8), storageBinding(9), storageBinding(14), storageBinding(15)}));
     projectPipeline_.initialize(device_, "shaders/train_forward_project.comp.spv",
                                 pipelineConfig({storageBinding(0), storageBinding(3), uniformBinding(11)}));
     tileClearPipeline_.initialize(device_, "shaders/train_forward_tile_clear.comp.spv",
@@ -127,11 +135,11 @@ void GaussianForwardRenderer::createForwardResources() {
     tileSortPipeline_.initialize(device_, "shaders/train_forward_tile_sort.comp.spv",
                                  pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5)}));
     forwardPipeline_.initialize(device_, "shaders/train_forward.comp.spv",
-                                pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6)}));
+                                pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14), storageBinding(15), storageBinding(16)}));
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(24);
+                .setDescriptorCount(29);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
@@ -193,11 +201,13 @@ void GaussianForwardRenderer::destroyForwardResources() {
 }
 
 void GaussianForwardRenderer::clearForwardBuffers() {
-    updateDescriptorSet(clearDescriptorSet_, {1, 6, 8, 9});
+    updateDescriptorSet(clearDescriptorSet_, {1, 6, 8, 9, 14, 15});
     bindAndDispatch(clearPipeline_, clearDescriptorSet_, std::max(ceilDiv(pushConstants_.pixelCount, 256u),
                                                                   ceilDiv(pushConstants_.gaussianCount, 256u)));
     shaderBufferBarrier({trainingBuffers_->gaussianGradsInfo(),
                          trainingBuffers_->renderedColorInfo(),
+                         trainingBuffers_->pixelBlendStatesInfo(),
+                         trainingBuffers_->gaussianVisibilityInfo(),
                          trainingBuffers_->lossInfo(),
                          trainingBuffers_->countersInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
@@ -228,7 +238,9 @@ void GaussianForwardRenderer::prefixTileRanges() {
     updateDescriptorSet(tilePrefixDescriptorSet_, {5, 9});
     bindAndDispatch(tilePrefixPipeline_, tilePrefixDescriptorSet_, 1);
     shaderBufferBarrier({trainingBuffers_->tileRangesInfo(), trainingBuffers_->countersInfo()},
-                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+                        vk::AccessFlagBits::eShaderRead |
+                            vk::AccessFlagBits::eShaderWrite |
+                            vk::AccessFlagBits::eTransferRead);
 }
 
 void GaussianForwardRenderer::emitTileItems() {
@@ -246,9 +258,11 @@ void GaussianForwardRenderer::sortTileItems() {
 }
 
 void GaussianForwardRenderer::compositePixels() {
-    updateDescriptorSet(forwardDescriptorSet_, {3, 4, 5, 6});
+    updateDescriptorSet(forwardDescriptorSet_, {3, 4, 5, 6, 14, 15, 16});
     bindAndDispatch(forwardPipeline_, forwardDescriptorSet_, ceilDiv(extent_.width, 16u), ceilDiv(extent_.height, 16u));
-    shaderBufferBarrier({trainingBuffers_->renderedColorInfo()},
+    shaderBufferBarrier({trainingBuffers_->renderedColorInfo(),
+                         trainingBuffers_->pixelBlendStatesInfo(),
+                         trainingBuffers_->gaussianVisibilityInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
@@ -300,8 +314,13 @@ void GaussianForwardRenderer::shaderBufferBarrier(std::initializer_list<vk::Desc
         return;
     }
 
+    vk::PipelineStageFlags dstStages = vk::PipelineStageFlagBits::eComputeShader;
+    if (dstAccessMask & (vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite)) {
+        dstStages |= vk::PipelineStageFlagBits::eTransfer;
+    }
+
     commandBuffer_.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
-                                   vk::PipelineStageFlagBits::eComputeShader,
+                                   dstStages,
                                    vk::DependencyFlagBits{},
                                    0,
                                    nullptr,
@@ -322,8 +341,11 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     auto lossInfo = trainingBuffers_->lossInfo();
     auto countersInfo = trainingBuffers_->countersInfo();
     auto cameraInfo = trainingBuffers_->cameraInfo();
+    auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
+    auto gaussianVisibilityInfo = trainingBuffers_->gaussianVisibilityInfo();
+    auto densificationStatesInfo = trainingBuffers_->densificationStatesInfo();
 
-    std::array<vk::DescriptorBufferInfo, 12> infos{};
+    std::array<vk::DescriptorBufferInfo, 20> infos{};
     infos[0] = gaussianParamsInfo;
     infos[1] = gaussianGradsInfo;
     infos[3] = projectedInfo;
@@ -333,8 +355,11 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     infos[8] = lossInfo;
     infos[9] = countersInfo;
     infos[11] = cameraInfo;
+    infos[14] = pixelBlendStatesInfo;
+    infos[15] = gaussianVisibilityInfo;
+    infos[16] = densificationStatesInfo;
 
-    std::array<vk::WriteDescriptorSet, 9> writes{};
+    std::array<vk::WriteDescriptorSet, 12> writes{};
     uint32_t writeCount = 0;
     for (uint32_t binding : bindings) {
         if (!infos[binding].buffer) {

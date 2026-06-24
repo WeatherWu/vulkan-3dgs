@@ -1,4 +1,4 @@
-#include "train_common.slang"
+#include "../common/train_common.slang"
 
 [[vk::binding(1, 0)]]
 RWStructuredBuffer<GaussianGrad> gaussianGrads;
@@ -11,6 +11,12 @@ RWStructuredBuffer<float> lossBuffer;
 
 [[vk::binding(9, 0)]]
 RWStructuredBuffer<uint4> counters;
+
+[[vk::binding(14, 0)]]
+RWStructuredBuffer<PixelBlendState> pixelBlendStates;
+
+[[vk::binding(15, 0)]]
+RWStructuredBuffer<GaussianVisibilityState> gaussianVisibility;
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -26,10 +32,23 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
             zeroGrad.sh[i] = 0.0;
         }
         gaussianGrads[index] = zeroGrad;
+
+        GaussianVisibilityState visibility;
+        visibility.contributionCount = 0;
+        visibility.alphaSum = 0.0;
+        visibility.maxScreenRadius = 0.0;
+        visibility.padding0 = 0;
+        gaussianVisibility[index] = visibility;
     }
 
     if (index < params.pixelCount) {
         renderedColor[index] = float4(0.0, 0.0, 0.0, 1.0);
+        PixelBlendState blendState;
+        blendState.finalTransmittance = 1.0;
+        blendState.accumulatedAlpha = 0.0;
+        blendState.processedCount = 0;
+        blendState.lastContributor = 0xFFFFFFFFu;
+        pixelBlendStates[index] = blendState;
     }
 
     if (index == 0) {

@@ -24,6 +24,8 @@ public:
                             vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void forward() override;
+    void prepareTileItems();
+    void renderPreparedTiles();
 
     bool isInitialized() const override { return initialized_; }
 

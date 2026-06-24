@@ -32,10 +32,12 @@ public:
     // 清理资源
     void cleanup();
     void upload(const void* data, vk::DeviceSize size);
+    void download(void* data, vk::DeviceSize size);
 
     // 获取底层对象
     vk::Buffer getBuffer() const { return buffer_; }
     vk::DeviceMemory getMemory() const { return memory_; }
+    vk::DeviceSize getSize() const { return size_; }
     vk::DescriptorBufferInfo getDescriptorInfo() const;
 
 private:
@@ -46,6 +48,7 @@ private:
     vk::Buffer buffer_ = nullptr;
     vk::DeviceMemory memory_ = nullptr;
     vk::DeviceSize size_ = 0;
+    vk::MemoryPropertyFlags properties_{};
 
     // 辅助函数：查找合适的内存类型
     static uint32_t findMemoryType(vk::PhysicalDevice physicalDevice, 

@@ -2,12 +2,14 @@
 
 #include <memory>
 #include <filesystem>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 #include <GLFW/glfw3.h>
 
 #include "gaussian_training/training_buffers.hpp"
 #include "gaussian_training/training_dataset.hpp"
 #include "gaussian_training/gaussian_backward_renderer.hpp"
+#include "gaussian_training/gaussian_densification_renderer.hpp"
 #include "gaussian_training/gaussian_forward_renderer.hpp"
 #include "renderer.hpp"
 #include "vulkan/command_pool.hpp"
@@ -15,7 +17,6 @@
 namespace vk_gs {
 
 class GaussianRenderer;
-class GaussianModel;
 
 class GaussianTraining {
 public:
@@ -47,12 +48,18 @@ public:
     void trainStep();
     void loadMipNeRF360Dataset(const std::filesystem::path& sceneRoot,
                                uint32_t preferredDownscale = 4);
+    void initializeModelFromDataset(const TrainingInitializationConfig& config = {});
+    bool exportToPLY(const std::filesystem::path& path);
     void setTrainingFrameIndex(size_t frameIndex);
-    void setForwardModel(const GaussianModel* model);
+    void setDensificationConfig(const TrainingDensificationConfig& config) { densificationConfig_ = config; }
+    void setOptimizerConfig(const TrainingOptimizerConfig& config) { optimizerConfig_ = config; }
 
     bool isInitialized() const { return initialized_; }
     bool isRendererInitialized() const { return rendererInitialized_; }
     bool hasDataset() const { return !dataset_.empty(); }
+    bool hasTrainableModel() const { return trainableGaussianCount_ > 0; }
+    bool usedRandomInitialization() const { return usedRandomInitialization_; }
+    uint32_t gaussianCount() const { return trainableGaussianCount_; }
     size_t datasetFrameCount() const { return dataset_.size(); }
     size_t currentFrameIndex() const { return currentDatasetFrameIndex_; }
     TrainingBuffers& buffers() { return buffers_; }
@@ -63,14 +70,18 @@ public:
 
 private:
     TrainingPushConstants createPushConstants() const;
+    TrainingDensificationPushConstants createDensificationPushConstants(bool pruneByScreenSize) const;
+    bool shouldRunDensification() const;
     void createTrainingCommandResources(vk::Device device,
                                         vk::Queue computeQueue,
                                         uint32_t computeQueueFamilyIndex);
     void destroyTrainingCommandResources();
     void uploadCurrentTrainingFrame();
-    void uploadForwardModelToBuffers();
+    std::vector<GaussianTrainParam> createSparsePointInitialGaussians() const;
+    std::vector<GaussianTrainParam> createRandomInitialGaussians(const TrainingInitializationConfig& config) const;
     TrainingForwardCamera createTrainingCamera(const TrainingCameraFrame& frame) const;
     glm::mat4 createProjectionMatrix(const TrainingCameraFrame& frame) const;
+    float estimateSceneExtent() const;
 
     bool initialized_ = false;
     bool rendererInitialized_ = false;
@@ -82,9 +93,15 @@ private:
     TrainingBuffers buffers_;
     TrainingDataset dataset_;
     size_t currentDatasetFrameIndex_ = 0;
-    const GaussianModel* forwardModel_ = nullptr;
+    uint32_t trainableGaussianCount_ = 0;
+    bool usedRandomInitialization_ = false;
     std::unique_ptr<ForwardTrainingRenderer> forward_;
     std::unique_ptr<BackwardRenderer> backward_;
+    std::unique_ptr<GaussianDensificationRenderer> densification_;
+    TrainingDensificationConfig densificationConfig_{};
+    TrainingOptimizerConfig optimizerConfig_{};
+    uint32_t trainingIteration_ = 0;
+    float sceneExtent_ = 1.0f;
 
 };
 

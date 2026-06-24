@@ -60,7 +60,7 @@ public:
     }
     
     // 读取二进制文件
-    static std::vector<char> loadBinaryFile(const std::string& filename) {
+    static std::vector<char> readBinaryFile(const std::string& filename) {
         // 解析文件路径
         std::string resolvedPath = resolvePath(filename);
         
@@ -80,6 +80,29 @@ public:
         
         LOG_DEBUG("Loaded shader file: {} ({} bytes)", filename, file_size);
         return buffer;
+    }
+
+    template <typename T>
+    static T readBinaryValue(std::istream& stream) {
+        T value{};
+        stream.read(reinterpret_cast<char*>(&value), sizeof(T));
+        if (!stream) {
+            throw std::runtime_error("Unexpected end of binary file");
+        }
+        return value;
+    }
+
+    static std::string readNullTerminatedString(std::istream& stream) {
+        std::string value;
+        char ch = '\0';
+        while (stream.get(ch)) {
+            if (ch == '\0') {
+                return value;
+            }
+            value.push_back(ch);
+        }
+
+        throw std::runtime_error("Unexpected end of binary string");
     }
 };
 

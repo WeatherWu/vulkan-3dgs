@@ -21,6 +21,9 @@ struct GaussianSample {
 struct PixelComposite {
     float3 color;
     float transmittance;
+    float accumulatedAlpha;
+    uint processedCount;
+    uint lastContributor;
 };
 
 uint tileCountX() {
@@ -84,11 +87,15 @@ PixelComposite makeEmptyComposite() {
     PixelComposite composite;
     composite.color = float3(0.0);
     composite.transmittance = 1.0;
+    composite.accumulatedAlpha = 0.0;
+    composite.processedCount = 0;
+    composite.lastContributor = 0xFFFFFFFFu;
     return composite;
 }
 
 void compositeGaussianFrontToBack(inout PixelComposite composite, GaussianSample sample) {
     composite.color += composite.transmittance * sample.alpha * sample.color;
+    composite.accumulatedAlpha += composite.transmittance * sample.alpha;
     composite.transmittance *= 1.0 - sample.alpha;
 }
 

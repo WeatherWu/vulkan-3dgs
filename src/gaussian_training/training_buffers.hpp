@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 #include "gaussian_training/training_types.hpp"
@@ -16,11 +17,20 @@ public:
     void cleanup();
 
     void resize(uint32_t gaussianCount, TrainingExtent extent);
+    void resizeTileItems(uint32_t tileItemCapacity);
+    void ensureDensificationCapacity(uint32_t gaussianCapacity);
+    void adoptDensifiedGaussians(uint32_t gaussianCount);
     void uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount);
+    std::vector<GaussianTrainParam> downloadGaussianParams(uint32_t gaussianCount);
+    std::vector<GaussianVisibilityState> downloadGaussianVisibility(uint32_t gaussianCount);
     void uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height);
     void uploadCamera(const TrainingForwardCamera& camera);
+    uint32_t requiredTileItemCount();
+    uint32_t densifiedGaussianCount();
 
     uint32_t gaussianCapacity() const { return gaussianCapacity_; }
+    uint32_t densificationCapacity() const { return densificationCapacity_; }
+    uint32_t tileItemCapacity() const { return tileItemCapacity_; }
     TrainingExtent extent() const { return extent_; }
 
     vk::DescriptorBufferInfo gaussianParamsInfo() const { return gaussianParams_.getDescriptorInfo(); }
@@ -32,6 +42,12 @@ public:
     vk::DescriptorBufferInfo renderedColorInfo() const { return renderedColor_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo targetColorInfo() const { return targetColor_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo pixelGradsInfo() const { return pixelGrads_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo pixelBlendStatesInfo() const { return pixelBlendStates_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo gaussianVisibilityInfo() const { return gaussianVisibility_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo densificationStatesInfo() const { return densificationStates_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo densifiedParamsInfo() const { return densifiedParams_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo densifiedAdamStatesInfo() const { return densifiedAdamStates_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo densificationCountersInfo() const { return densificationCounters_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo projectedGradsInfo() const { return projectedGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo lossInfo() const { return loss_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo countersInfo() const { return counters_.getDescriptorInfo(); }
@@ -41,6 +57,7 @@ public:
 private:
     void createStorageBuffer(Buffer& buffer, vk::DeviceSize size);
     void createUniformBuffer(Buffer& buffer, vk::DeviceSize size);
+    void createZeroedStorageBuffer(Buffer& buffer, vk::DeviceSize size);
 
     vk::Device device_ = nullptr;
     vk::PhysicalDevice physicalDevice_ = nullptr;
@@ -48,6 +65,8 @@ private:
     uint32_t transferQueueFamilyIndex_ = 0;
 
     uint32_t gaussianCapacity_ = 0;
+    uint32_t densificationCapacity_ = 0;
+    uint32_t tileItemCapacity_ = 0;
     TrainingExtent extent_{};
 
     Buffer gaussianParams_;
@@ -59,6 +78,12 @@ private:
     Buffer renderedColor_;
     Buffer targetColor_;
     Buffer pixelGrads_;
+    Buffer pixelBlendStates_;
+    Buffer gaussianVisibility_;
+    Buffer densificationStates_;
+    Buffer densifiedParams_;
+    Buffer densifiedAdamStates_;
+    Buffer densificationCounters_;
     Buffer projectedGrads_;
     Buffer loss_;
     Buffer counters_;

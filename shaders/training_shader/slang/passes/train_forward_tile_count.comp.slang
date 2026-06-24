@@ -1,10 +1,7 @@
-#include "train_forward_tile_common.slang"
+#include "../common/train_forward_tile_common.slang"
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<ProjectedGaussian> projectedGaussians;
-
-[[vk::binding(4, 0)]]
-RWStructuredBuffer<uint> tileItems;
 
 [[vk::binding(5, 0)]]
 RWStructuredBuffer<uint4> tileRanges;
@@ -24,14 +21,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     for (uint tileY = bounds.minTile.y; tileY <= bounds.maxTile.y; ++tileY) {
         for (uint tileX = bounds.minTile.x; tileX <= bounds.maxTile.x; ++tileX) {
-            uint tileIndex = trainTileIndex(uint2(tileX, tileY));
-            uint localOffset = 0;
-            InterlockedAdd(tileRanges[tileIndex].z, 1u, localOffset);
-
-            uint4 range = tileRanges[tileIndex];
-            if (localOffset < range.y) {
-                tileItems[range.x + localOffset] = gaussianIndex;
-            }
+            uint ignored = 0;
+            InterlockedAdd(tileRanges[trainTileIndex(uint2(tileX, tileY))].y, 1u, ignored);
         }
     }
 }

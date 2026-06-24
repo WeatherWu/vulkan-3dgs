@@ -17,15 +17,19 @@ Buffer::Buffer(Buffer&& other) noexcept
     : device_(other.device_),
       physicalDevice_(other.physicalDevice_),
       transferQueue_(other.transferQueue_),
+      transferQueueFamilyIndex_(other.transferQueueFamilyIndex_),
       buffer_(other.buffer_),
       memory_(other.memory_),
-      size_(other.size_) {
+      size_(other.size_),
+      properties_(other.properties_) {
     other.device_ = nullptr;
     other.physicalDevice_ = nullptr;
     other.transferQueue_ = nullptr;
+    other.transferQueueFamilyIndex_ = 0;
     other.buffer_ = nullptr;
     other.memory_ = nullptr;
     other.size_ = 0;
+    other.properties_ = {};
 }
 
 Buffer& Buffer::operator=(Buffer&& other) noexcept {
@@ -34,15 +38,19 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         device_ = other.device_;
         physicalDevice_ = other.physicalDevice_;
         transferQueue_ = other.transferQueue_;
+        transferQueueFamilyIndex_ = other.transferQueueFamilyIndex_;
         buffer_ = other.buffer_;
         memory_ = other.memory_;
         size_ = other.size_;
+        properties_ = other.properties_;
         other.device_ = nullptr;
         other.physicalDevice_ = nullptr;
         other.transferQueue_ = nullptr;
+        other.transferQueueFamilyIndex_ = 0;
         other.buffer_ = nullptr;
         other.memory_ = nullptr;
         other.size_ = 0;
+        other.properties_ = {};
     }
     return *this;
 }
@@ -62,6 +70,7 @@ void Buffer::create(vk::Device device,
     transferQueue_ = transferQueue;
     transferQueueFamilyIndex_ = transferQueueFamilyIndex;
     size_ = size;
+    properties_ = properties;
 
     // 1. 创建目标缓冲区
     LOG_DEBUG("Buffer::create - Creating Vulkan buffer");
@@ -128,6 +137,7 @@ void Buffer::cleanup() {
     physicalDevice_ = nullptr;
     transferQueue_ = nullptr;
     size_ = 0;
+    properties_ = {};
 }
 
 void Buffer::upload(const void* data, vk::DeviceSize size) {
@@ -142,6 +152,70 @@ void Buffer::upload(const void* data, vk::DeviceSize size) {
     }
 
     uploadData(data, size);
+}
+
+void Buffer::download(void* data, vk::DeviceSize size) {
+    if (!buffer_ || !memory_) {
+        throw std::runtime_error("Cannot download from an uninitialized buffer");
+    }
+    if (!data) {
+        throw std::runtime_error("Cannot download to null data");
+    }
+    if (size > size_) {
+        throw std::runtime_error("Download size exceeds buffer capacity");
+    }
+
+    if ((properties_ & vk::MemoryPropertyFlagBits::eHostVisible) == vk::MemoryPropertyFlagBits::eHostVisible) {
+        void* mappedMemory = device_.mapMemory(memory_, 0, size);
+        std::memcpy(data, mappedMemory, static_cast<size_t>(size));
+        device_.unmapMemory(memory_);
+        return;
+    }
+
+    CommandPool cmdPool;
+    cmdPool.create(device_, transferQueueFamilyIndex_, vk::CommandPoolCreateFlagBits::eTransient);
+
+    vk::Buffer stagingBuffer;
+    vk::DeviceMemory stagingMemory;
+
+    vk::BufferCreateInfo bufferInfo{};
+    bufferInfo.setSize(size)
+              .setUsage(vk::BufferUsageFlagBits::eTransferDst)
+              .setSharingMode(vk::SharingMode::eExclusive);
+    stagingBuffer = device_.createBuffer(bufferInfo);
+
+    vk::MemoryRequirements memRequirements = device_.getBufferMemoryRequirements(stagingBuffer);
+    vk::MemoryAllocateInfo allocInfo{};
+    allocInfo.setAllocationSize(memRequirements.size)
+             .setMemoryTypeIndex(findMemoryType(physicalDevice_,
+                                                memRequirements.memoryTypeBits,
+                                                vk::MemoryPropertyFlagBits::eHostVisible |
+                                                    vk::MemoryPropertyFlagBits::eHostCoherent));
+    stagingMemory = device_.allocateMemory(allocInfo);
+    device_.bindBufferMemory(stagingBuffer, stagingMemory, 0);
+
+    vk::CommandBuffer commandBuffer = cmdPool.allocateCommandBuffer();
+    vk::CommandBufferBeginInfo beginInfo{};
+    beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    commandBuffer.begin(beginInfo);
+
+    vk::BufferCopy copyRegion{};
+    copyRegion.setSize(size);
+    commandBuffer.copyBuffer(buffer_, stagingBuffer, copyRegion);
+    commandBuffer.end();
+
+    vk::SubmitInfo submitInfo{};
+    submitInfo.setCommandBufferCount(1)
+              .setPCommandBuffers(&commandBuffer);
+    transferQueue_.submit(submitInfo);
+    transferQueue_.waitIdle();
+
+    void* mappedMemory = device_.mapMemory(stagingMemory, 0, size);
+    std::memcpy(data, mappedMemory, static_cast<size_t>(size));
+    device_.unmapMemory(stagingMemory);
+
+    device_.destroyBuffer(stagingBuffer);
+    device_.freeMemory(stagingMemory);
 }
 
 vk::DescriptorBufferInfo Buffer::getDescriptorInfo() const {

@@ -70,28 +70,3 @@ ProjectedGaussianGrad backwardGaussianSample(ProjectedGaussian gaussian,
     grad.centerRadius.y += dLoss_dPower * (b * dx + c * dy);
     return grad;
 }
-
-float3 renderSuffixColor(StructuredBuffer<ProjectedGaussian> projectedGaussians,
-                         StructuredBuffer<uint> tileItems,
-                         TileRange range,
-                         uint firstOffset,
-                         float2 samplePosition) {
-    PixelComposite suffix = makeEmptyComposite();
-    for (uint itemOffset = firstOffset; itemOffset < range.count; ++itemOffset) {
-        uint gaussianIndex = tileItems[range.start + itemOffset];
-        if (gaussianIndex >= params.gaussianCount) {
-            continue;
-        }
-
-        GaussianSample sample = evaluateGaussianSample(projectedGaussians[gaussianIndex], samplePosition);
-        if (!contributesToPixel(sample)) {
-            continue;
-        }
-
-        compositeGaussianFrontToBack(suffix, sample);
-        if (suffix.transmittance <= TRAIN_TRANSMITTANCE_MIN) {
-            break;
-        }
-    }
-    return suffix.color;
-}

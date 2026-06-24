@@ -1,4 +1,4 @@
-#include "train_common.slang"
+#include "../common/train_common.slang"
 
 [[vk::binding(0, 0)]]
 RWStructuredBuffer<GaussianTrainParam> gaussianParams;
@@ -12,14 +12,9 @@ RWStructuredBuffer<AdamState> adamStates;
 [[vk::binding(9, 0)]]
 RWStructuredBuffer<uint4> counters;
 
-static const float OPTIMIZER_LEARNING_RATE = 1e-3;
-static const float OPTIMIZER_BETA1 = 0.9;
-static const float OPTIMIZER_BETA2 = 0.999;
-static const float OPTIMIZER_EPSILON = 1e-8;
-static const float OPTIMIZER_GRAD_CLIP = 1e3;
-
 float4 clipGrad(float4 grad) {
-    return clamp(grad, float4(-OPTIMIZER_GRAD_CLIP), float4(OPTIMIZER_GRAD_CLIP));
+    float gradClip = max(params.optimizerGradClip, 1e-8);
+    return clamp(grad, float4(-gradClip), float4(gradClip));
 }
 
 float4 safeNormalizeQuaternion(float4 rotation) {
@@ -32,14 +27,18 @@ float4 safeNormalizeQuaternion(float4 rotation) {
 
 float4 adamUpdate(inout float4 firstMoment, inout float4 secondMoment, float4 grad, float step) {
     grad = clipGrad(grad);
-    firstMoment = OPTIMIZER_BETA1 * firstMoment + (1.0 - OPTIMIZER_BETA1) * grad;
-    secondMoment = OPTIMIZER_BETA2 * secondMoment + (1.0 - OPTIMIZER_BETA2) * grad * grad;
+    float beta1 = clamp(params.optimizerBeta1, 0.0, 0.999999);
+    float beta2 = clamp(params.optimizerBeta2, 0.0, 0.999999);
+    firstMoment = beta1 * firstMoment + (1.0 - beta1) * grad;
+    secondMoment = beta2 * secondMoment + (1.0 - beta2) * grad * grad;
 
-    float firstMomentCorrection = 1.0 - pow(OPTIMIZER_BETA1, step);
-    float secondMomentCorrection = 1.0 - pow(OPTIMIZER_BETA2, step);
+    float firstMomentCorrection = 1.0 - pow(beta1, step);
+    float secondMomentCorrection = 1.0 - pow(beta2, step);
     float4 correctedFirstMoment = firstMoment / max(firstMomentCorrection, 1e-8);
     float4 correctedSecondMoment = secondMoment / max(secondMomentCorrection, 1e-8);
-    return OPTIMIZER_LEARNING_RATE * correctedFirstMoment / (sqrt(correctedSecondMoment) + float4(OPTIMIZER_EPSILON));
+    return max(params.optimizerLearningRate, 0.0) *
+           correctedFirstMoment /
+           (sqrt(correctedSecondMoment) + float4(max(params.optimizerEpsilon, 1e-12)));
 }
 
 void updateGaussianParam(inout GaussianTrainParam gaussian,
@@ -59,8 +58,6 @@ void updateGaussianParam(inout GaussianTrainParam gaussian,
                                     grad.rotation,
                                     step);
 
-    gaussian.positionOpacity.w = clamp(gaussian.positionOpacity.w, 0.0, 1.0);
-    gaussian.scale.xyz = max(abs(gaussian.scale.xyz), float3(1e-6));
     gaussian.rotation = safeNormalizeQuaternion(gaussian.rotation);
 
     for (uint i = 0; i < 16; ++i) {

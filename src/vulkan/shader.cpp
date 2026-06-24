@@ -45,7 +45,7 @@ void Shader::createFromSpv(vk::Device device, const std::string& filepath, vk::S
     LOG_DEBUG("Loading shader module: {}", filepath);
     
     // 加载SPIR-V文件
-    auto shaderCode = FileUtils::loadBinaryFile(filepath);
+    auto shaderCode = FileUtils::readBinaryFile(filepath);
     
     // 创建着色器模块
     vk::ShaderModuleCreateInfo createInfo{};

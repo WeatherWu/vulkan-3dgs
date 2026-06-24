@@ -31,11 +31,19 @@ struct TrainingCameraFrame {
     std::string imageName;
 };
 
+struct TrainingSparsePoint {
+    glm::vec3 position{0.0f};
+    glm::vec3 color{1.0f};
+    float error = 0.0f;
+    uint32_t trackLength = 0;
+};
+
 struct TrainingDataset {
     std::filesystem::path sceneRoot;
     std::filesystem::path imageDirectory;
     uint32_t imageDownscale = 1;
     std::vector<TrainingCameraFrame> frames;
+    std::vector<TrainingSparsePoint> sparsePoints;
 
     bool empty() const { return frames.empty(); }
     size_t size() const { return frames.size(); }

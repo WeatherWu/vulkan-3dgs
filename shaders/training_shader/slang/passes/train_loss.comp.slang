@@ -1,5 +1,5 @@
-#include "train_common.slang"
-#include "train_loss_common.slang"
+#include "../common/train_common.slang"
+#include "../common/train_loss_common.slang"
 
 [[vk::binding(6, 0)]]
 StructuredBuffer<float4> renderedColor;

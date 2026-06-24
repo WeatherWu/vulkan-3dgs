@@ -1,4 +1,4 @@
-#include "train_forward_tile_common.slang"
+#include "../common/train_forward_tile_common.slang"
 
 [[vk::binding(5, 0)]]
 RWStructuredBuffer<uint4> tileRanges;

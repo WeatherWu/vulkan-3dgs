@@ -1,5 +1,6 @@
 #include "gaussian_training/training_dataset.hpp"
 
+#include "utils/file_utils.hpp"
 #include "utils/logger.hpp"
 
 #include <stb_image.h>
@@ -34,29 +35,6 @@ struct ColmapImageData {
     std::string name;
 };
 
-template <typename T>
-T readBinary(std::istream& stream) {
-    T value{};
-    stream.read(reinterpret_cast<char*>(&value), sizeof(T));
-    if (!stream) {
-        throw std::runtime_error("Unexpected end of COLMAP binary file");
-    }
-    return value;
-}
-
-std::string readNullTerminatedString(std::istream& stream) {
-    std::string value;
-    char ch = '\0';
-    while (stream.get(ch)) {
-        if (ch == '\0') {
-            return value;
-        }
-        value.push_back(ch);
-    }
-
-    throw std::runtime_error("Unexpected end of COLMAP binary string");
-}
-
 uint32_t colmapCameraParamCount(int modelId) {
     switch (modelId) {
         case 0: return 3;   // SIMPLE_PINHOLE
@@ -81,21 +59,21 @@ std::unordered_map<uint32_t, ColmapCameraData> readColmapCameras(const std::file
         throw std::runtime_error("Failed to open COLMAP cameras file: " + path.string());
     }
 
-    const auto cameraCount = readBinary<uint64_t>(file);
+    const auto cameraCount = FileUtils::readBinaryValue<uint64_t>(file);
     std::unordered_map<uint32_t, ColmapCameraData> cameras;
     cameras.reserve(static_cast<size_t>(cameraCount));
 
     for (uint64_t i = 0; i < cameraCount; ++i) {
         ColmapCameraData camera{};
-        camera.id = readBinary<uint32_t>(file);
-        camera.modelId = readBinary<int32_t>(file);
-        camera.width = readBinary<uint64_t>(file);
-        camera.height = readBinary<uint64_t>(file);
+        camera.id = FileUtils::readBinaryValue<uint32_t>(file);
+        camera.modelId = FileUtils::readBinaryValue<int32_t>(file);
+        camera.width = FileUtils::readBinaryValue<uint64_t>(file);
+        camera.height = FileUtils::readBinaryValue<uint64_t>(file);
 
         const uint32_t paramCount = colmapCameraParamCount(camera.modelId);
         camera.params.resize(paramCount);
         for (uint32_t paramIndex = 0; paramIndex < paramCount; ++paramIndex) {
-            camera.params[paramIndex] = readBinary<double>(file);
+            camera.params[paramIndex] = FileUtils::readBinaryValue<double>(file);
         }
 
         cameras.emplace(camera.id, std::move(camera));
@@ -110,27 +88,27 @@ std::vector<ColmapImageData> readColmapImages(const std::filesystem::path& path)
         throw std::runtime_error("Failed to open COLMAP images file: " + path.string());
     }
 
-    const auto imageCount = readBinary<uint64_t>(file);
+    const auto imageCount = FileUtils::readBinaryValue<uint64_t>(file);
     std::vector<ColmapImageData> images;
     images.reserve(static_cast<size_t>(imageCount));
 
     for (uint64_t i = 0; i < imageCount; ++i) {
         ColmapImageData image{};
-        image.id = readBinary<uint32_t>(file);
+        image.id = FileUtils::readBinaryValue<uint32_t>(file);
 
-        const double qw = readBinary<double>(file);
-        const double qx = readBinary<double>(file);
-        const double qy = readBinary<double>(file);
-        const double qz = readBinary<double>(file);
+        const double qw = FileUtils::readBinaryValue<double>(file);
+        const double qx = FileUtils::readBinaryValue<double>(file);
+        const double qy = FileUtils::readBinaryValue<double>(file);
+        const double qz = FileUtils::readBinaryValue<double>(file);
         image.rotationWorldToCamera = glm::normalize(glm::dquat(qw, qx, qy, qz));
 
-        image.translationWorldToCamera.x = readBinary<double>(file);
-        image.translationWorldToCamera.y = readBinary<double>(file);
-        image.translationWorldToCamera.z = readBinary<double>(file);
-        image.cameraId = readBinary<uint32_t>(file);
-        image.name = readNullTerminatedString(file);
+        image.translationWorldToCamera.x = FileUtils::readBinaryValue<double>(file);
+        image.translationWorldToCamera.y = FileUtils::readBinaryValue<double>(file);
+        image.translationWorldToCamera.z = FileUtils::readBinaryValue<double>(file);
+        image.cameraId = FileUtils::readBinaryValue<uint32_t>(file);
+        image.name = FileUtils::readNullTerminatedString(file);
 
-        const auto point2DCount = readBinary<uint64_t>(file);
+        const auto point2DCount = FileUtils::readBinaryValue<uint64_t>(file);
         file.seekg(static_cast<std::streamoff>(point2DCount * (sizeof(double) * 2 + sizeof(uint64_t))),
                    std::ios::cur);
         if (!file) {
@@ -141,6 +119,47 @@ std::vector<ColmapImageData> readColmapImages(const std::filesystem::path& path)
     }
 
     return images;
+}
+
+std::vector<TrainingSparsePoint> readColmapPoints3D(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open COLMAP points3D file: " + path.string());
+    }
+
+    const auto pointCount = FileUtils::readBinaryValue<uint64_t>(file);
+    std::vector<TrainingSparsePoint> points;
+    points.reserve(static_cast<size_t>(pointCount));
+
+    constexpr float inv255 = 1.0f / 255.0f;
+    for (uint64_t i = 0; i < pointCount; ++i) {
+        (void)FileUtils::readBinaryValue<uint64_t>(file); // point3D_id
+
+        TrainingSparsePoint point{};
+        point.position.x = static_cast<float>(FileUtils::readBinaryValue<double>(file));
+        point.position.y = static_cast<float>(FileUtils::readBinaryValue<double>(file));
+        point.position.z = static_cast<float>(FileUtils::readBinaryValue<double>(file));
+
+        const auto r = FileUtils::readBinaryValue<uint8_t>(file);
+        const auto g = FileUtils::readBinaryValue<uint8_t>(file);
+        const auto b = FileUtils::readBinaryValue<uint8_t>(file);
+        point.color = glm::vec3(static_cast<float>(r) * inv255,
+                                static_cast<float>(g) * inv255,
+                                static_cast<float>(b) * inv255);
+        point.error = static_cast<float>(FileUtils::readBinaryValue<double>(file));
+
+        const auto trackLength = FileUtils::readBinaryValue<uint64_t>(file);
+        point.trackLength = static_cast<uint32_t>(std::min<uint64_t>(trackLength, UINT32_MAX));
+        file.seekg(static_cast<std::streamoff>(trackLength * (sizeof(uint32_t) + sizeof(uint32_t))),
+                   std::ios::cur);
+        if (!file) {
+            throw std::runtime_error("Failed to skip COLMAP point3D track data");
+        }
+
+        points.push_back(point);
+    }
+
+    return points;
 }
 
 std::filesystem::path findSparseDirectory(const std::filesystem::path& sceneRoot) {
@@ -340,8 +359,13 @@ TrainingDataset TrainingDatasetLoader::loadMipNeRF360Scene(const std::filesystem
         throw std::runtime_error("MipNeRF360 scene contains no loadable training frames: " + sceneRoot.string());
     }
 
-    LOG_INFO("Loaded MipNeRF360 scene {} with {} frames from {}",
-             sceneRoot.string(), dataset.frames.size(), imageDirectory.string());
+    const auto points3DPath = sparseDirectory / "points3D.bin";
+    if (std::filesystem::exists(points3DPath)) {
+        dataset.sparsePoints = readColmapPoints3D(points3DPath);
+    }
+
+    LOG_INFO("Loaded MipNeRF360 scene {} with {} frames and {} sparse points from {}",
+             sceneRoot.string(), dataset.frames.size(), dataset.sparsePoints.size(), imageDirectory.string());
     return dataset;
 }
 

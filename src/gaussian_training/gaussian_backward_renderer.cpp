@@ -146,6 +146,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(5),
         storageBinding(12),
         storageBinding(13),
+        storageBinding(14),
     };
     pixelTo2DGSConfig.pushConstantSize = sizeof(TrainingPushConstants);
 
@@ -154,6 +155,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(0),
         storageBinding(1),
         storageBinding(13),
+        storageBinding(16),
         uniformBinding(11),
     };
     twoDGSTo3DGSConfig.pushConstantSize = sizeof(TrainingPushConstants);
@@ -176,7 +178,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(21);
+                .setDescriptorCount(23);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
@@ -396,8 +398,9 @@ void GaussianBackwardRenderer::backpropPixelTo2DGS() {
     const auto tileRangesInfo = trainingBuffers_->tileRangesInfo();
     const auto pixelGradsInfo = trainingBuffers_->pixelGradsInfo();
     const auto projectedGradsInfo = trainingBuffers_->projectedGradsInfo();
+    const auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
 
-    std::array<vk::WriteDescriptorSet, 5> writes{};
+    std::array<vk::WriteDescriptorSet, 6> writes{};
     writes[0].setDstSet(pixelTo2DGSDescriptorSet_)
              .setDstBinding(3)
              .setDescriptorCount(1)
@@ -423,6 +426,11 @@ void GaussianBackwardRenderer::backpropPixelTo2DGS() {
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&projectedGradsInfo);
+    writes[5].setDstSet(pixelTo2DGSDescriptorSet_)
+             .setDstBinding(14)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&pixelBlendStatesInfo);
     device_.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
     commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, pixelTo2DGSPipeline_.getPipeline());
@@ -453,9 +461,10 @@ void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
     const auto gaussianParamsInfo = trainingBuffers_->gaussianParamsInfo();
     const auto gaussianGradsInfo = trainingBuffers_->gaussianGradsInfo();
     const auto projectedGradsInfo = trainingBuffers_->projectedGradsInfo();
+    const auto densificationStatesInfo = trainingBuffers_->densificationStatesInfo();
     const auto cameraInfo = trainingBuffers_->cameraInfo();
 
-    std::array<vk::WriteDescriptorSet, 4> writes{};
+    std::array<vk::WriteDescriptorSet, 5> writes{};
     writes[0].setDstSet(twoDGSTo3DGSDescriptorSet_)
              .setDstBinding(0)
              .setDescriptorCount(1)
@@ -472,6 +481,11 @@ void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&projectedGradsInfo);
     writes[3].setDstSet(twoDGSTo3DGSDescriptorSet_)
+             .setDstBinding(16)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&densificationStatesInfo);
+    writes[4].setDstSet(twoDGSTo3DGSDescriptorSet_)
              .setDstBinding(11)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eUniformBuffer)
@@ -496,7 +510,7 @@ void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
     }
 
     commandBuffer_.dispatch((pushConstants_.gaussianCount + 255u) / 256u, 1, 1);
-    shaderBufferBarrier({gaussianGradsInfo},
+    shaderBufferBarrier({gaussianGradsInfo, densificationStatesInfo},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead);
 }
 

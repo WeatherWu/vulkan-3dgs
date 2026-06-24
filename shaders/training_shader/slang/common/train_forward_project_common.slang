@@ -5,6 +5,7 @@ struct TrainingForwardCamera {
     float4x4 projection;
     float4x4 model;
     float4 viewport;
+    float4 focalTan;
     float4 cameraPosition;
 };
 
@@ -51,8 +52,25 @@ float3x3 trainQuatToMat3(float4 q) {
     );
 }
 
+float trainOpacityActivation(float rawOpacity) {
+    return 1.0 / (1.0 + exp(-rawOpacity));
+}
+
+float trainOpacityActivationBackward(float rawOpacity) {
+    float opacity = trainOpacityActivation(rawOpacity);
+    return opacity * (1.0 - opacity);
+}
+
+float3 trainScaleActivation(float3 rawScale) {
+    return exp(rawScale);
+}
+
+float3 trainScaleActivationBackward(float3 rawScale) {
+    return trainScaleActivation(rawScale);
+}
+
 float3x3 trainCovariance3D(GaussianTrainParam gaussian) {
-    float3 scale = max(abs(gaussian.scale.xyz), float3(1e-6));
+    float3 scale = max(trainScaleActivation(gaussian.scale.xyz), float3(1e-6));
     float3x3 rotation = trainQuatToMat3(normalize(gaussian.rotation));
     float3x3 scaleMatrix = float3x3(
         scale.x * scale.x, 0.0, 0.0,
@@ -65,37 +83,37 @@ float3x3 trainCovariance3D(GaussianTrainParam gaussian) {
 float3x3 trainProjectionJacobian(float3 cameraPosition) {
     float cameraZ = cameraPosition.z;
     float cameraZ2 = max(cameraZ * cameraZ, 1e-12);
-    float cameraRadius = max(length(cameraPosition), 1e-6);
+    float fx = trainingCamera.focalTan.x;
+    float fy = trainingCamera.focalTan.y;
     return float3x3(
-        -1.0 / cameraZ, 0.0, cameraPosition.x / cameraZ2,
-        0.0, -1.0 / cameraZ, cameraPosition.y / cameraZ2,
-        -2.0 * cameraPosition.x / cameraRadius,
-        -2.0 * cameraPosition.y / cameraRadius,
-        -2.0 * cameraPosition.z / cameraRadius
+        fx / cameraZ, 0.0, -fx * cameraPosition.x / cameraZ2,
+        0.0, fy / cameraZ, -fy * cameraPosition.y / cameraZ2,
+        0.0, 0.0, 0.0
     );
+}
+
+float3 trainClampCameraPositionForProjection(float3 cameraPosition) {
+    float3 clampedCameraPosition = cameraPosition;
+    float limX = 1.3 * trainingCamera.focalTan.z;
+    float limY = 1.3 * trainingCamera.focalTan.w;
+    float invZ = 1.0 / max(cameraPosition.z, 1e-6);
+    float txtz = cameraPosition.x * invZ;
+    float tytz = cameraPosition.y * invZ;
+    clampedCameraPosition.x = clamp(txtz, -limX, limX) * cameraPosition.z;
+    clampedCameraPosition.y = clamp(tytz, -limY, limY) * cameraPosition.z;
+    return clampedCameraPosition;
 }
 
 float2x2 trainCovariance2DPixel(float3 cameraPosition, float3x3 covarianceWorld) {
     float3x3 viewMatrix = trainMat3FromMat4(trainingCamera.view);
     float3x3 covarianceCamera = mul(mul(viewMatrix, covarianceWorld), transpose(viewMatrix));
-    float3x3 jacobian = trainProjectionJacobian(cameraPosition);
+    float3x3 jacobian = trainProjectionJacobian(trainClampCameraPositionForProjection(cameraPosition));
     float3x3 projectedCovariance = mul(mul(jacobian, covarianceCamera), transpose(jacobian));
 
-    float2x2 projectionScale = float2x2(
-        trainingCamera.projection[0][0], trainingCamera.projection[0][1],
-        trainingCamera.projection[1][0], trainingCamera.projection[1][1]
-    );
-    float2x2 covNdc = mul(mul(projectionScale, trainMat2FromMat3(projectedCovariance)), projectionScale);
-
-    float2 screenSize = max(trainingCamera.viewport.zw, float2(1.0));
-    covNdc[0][0] += 1.0 / (screenSize.x * screenSize.x);
-    covNdc[1][1] += 1.0 / (screenSize.y * screenSize.y);
-
-    float2x2 ndcToPixel = float2x2(
-        0.5 * screenSize.x, 0.0,
-        0.0, 0.5 * screenSize.y
-    );
-    return mul(mul(ndcToPixel, covNdc), ndcToPixel);
+    float2x2 covariancePixel = trainMat2FromMat3(projectedCovariance);
+    covariancePixel[0][0] += 0.3;
+    covariancePixel[1][1] += 0.3;
+    return covariancePixel;
 }
 
 float4 trainConicOpacity(float2x2 covariancePixel, float opacity) {
@@ -127,7 +145,7 @@ float4 trainProjectedColor(GaussianTrainParam gaussian, float3 modelPosition) {
     float3 viewVector = modelPosition - trainingCamera.cameraPosition.xyz;
     float3 viewDirection = dot(viewVector, viewVector) > 1e-12 ? normalize(viewVector) : float3(0.0, 0.0, 1.0);
     float4 color = evaluateSH(gaussian, viewDirection);
-    return float4(max(color.xyz, float3(0.0)), 1.0);
+    return float4(max(color.xyz + float3(0.5), float3(0.0)), 1.0);
 }
 
 ProjectionResult trainProjectGaussian(GaussianTrainParam gaussian) {
@@ -155,7 +173,8 @@ ProjectionResult trainProjectGaussian(GaussianTrainParam gaussian) {
     float3x3 covarianceWorld = mul(mul(modelMatrix, trainCovariance3D(gaussian)), transpose(modelMatrix));
     float2x2 covariancePixel = trainCovariance2DPixel(cameraPosition4.xyz, covarianceWorld);
     float radius = trainGaussianRadius(covariancePixel);
-    if (radius <= 0.0 || gaussian.positionOpacity.w <= 0.0) {
+    float opacity = trainOpacityActivation(gaussian.positionOpacity.w);
+    if (radius <= 0.0 || opacity <= 0.0) {
         return result;
     }
 
@@ -163,7 +182,7 @@ ProjectionResult trainProjectGaussian(GaussianTrainParam gaussian) {
     result.center = trainNdcToPixel(ndc.xy);
     result.depth = cameraPosition4.z;
     result.radius = radius;
-    result.conicOpacity = trainConicOpacity(covariancePixel, gaussian.positionOpacity.w);
+    result.conicOpacity = trainConicOpacity(covariancePixel, opacity);
     result.color = trainProjectedColor(gaussian, gaussian.positionOpacity.xyz);
     return result;
 }

@@ -1,4 +1,4 @@
-#include "train_backward_common.slang"
+#include "../common/train_backward_common.slang"
 
 [[vk::binding(6, 0)]]
 StructuredBuffer<float4> renderedColor;
