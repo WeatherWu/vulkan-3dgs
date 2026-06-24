@@ -68,4 +68,24 @@ public:
     virtual bool isInitialized() const = 0;
 };
 
+// ============================================================================
+// ForwardTrainingRenderer — 训练前向传播器基类
+// ============================================================================
+class ForwardTrainingRenderer {
+public:
+    virtual ~ForwardTrainingRenderer() = default;
+
+    virtual void initialize(vk::Device device,
+                            vk::PhysicalDevice physicalDevice,
+                            vk::Queue computeQueue,
+                            uint32_t computeQueueFamilyIndex,
+                            uint32_t gaussianCount,
+                            TrainingExtent extent) = 0;
+    virtual void cleanup() = 0;
+
+    virtual void forward() = 0;
+
+    virtual bool isInitialized() const = 0;
+};
+
 } // namespace vk_gs

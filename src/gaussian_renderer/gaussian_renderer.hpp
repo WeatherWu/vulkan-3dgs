@@ -38,8 +38,6 @@ public:
     PresentModePreference getPresentModePreference() const { return presentModePreference_; }
 
     void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix);
-    vk::DescriptorBufferInfo renderBufferInfo() const { return renderBuffer_.getDescriptorInfo(); }
-    vk::Extent2D renderBufferExtent() const { return renderBufferExtent_; }
 
 private:
     // ---- ImGui ----
@@ -55,7 +53,8 @@ private:
     void createDescriptorSets();
     void destroyDescriptorPool();
     void updateDescriptorSets();
-    void updateUniformBuffer(const glm::mat4& view, const glm::mat4& projection);
+    void updateUniformBuffer(const glm::mat4& view, const glm::mat4& projection, vk::Extent2D extent);
+    void prepareFrameData(vk::Extent2D extent);
 
     // ---- Swapchain ----
     void recreateSwapchain(uint32_t width, uint32_t height);
@@ -67,8 +66,12 @@ private:
     // ---- 数据上传 ----
     void updateVertexBuffer();
     void recordCommandBuffer(uint32_t imageIndex);
-    void ensureRenderBuffer();
-    void copyRenderedImageToBuffer();
+    void recordRenderCommands(vk::CommandBuffer commandBuffer,
+                              vk::RenderPass renderPass,
+                              vk::Framebuffer framebuffer,
+                              vk::Extent2D extent,
+                              Pipeline& pipeline,
+                              bool drawImGui);
 
     // ---- Swapchain ----
     std::unique_ptr<Swapchain> swapchain_;
@@ -85,9 +88,7 @@ private:
     Buffer gpuKeyBuffer_;
     Buffer radixSortStorageBuffer_;
     Buffer drawIndirectBuffer_;
-    Buffer renderBuffer_;
     uint32_t sortBufferCapacity_ = 0;
-    vk::Extent2D renderBufferExtent_{0, 0};
 
     // ---- Descriptor ----
     vk::DescriptorPool descriptorPool_;

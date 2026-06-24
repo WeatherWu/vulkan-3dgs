@@ -105,6 +105,17 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     extent_ = {safeWidth, safeHeight};
 }
 
+void TrainingBuffers::uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount) {
+    if (!params) {
+        throw std::runtime_error("Training gaussian params are null");
+    }
+    if (gaussianCount > gaussianCapacity_) {
+        throw std::runtime_error("Training gaussian param upload exceeds buffer capacity");
+    }
+
+    gaussianParams_.upload(params, static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianTrainParam));
+}
+
 void TrainingBuffers::uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height) {
     if (!pixels) {
         throw std::runtime_error("Training target pixels are null");

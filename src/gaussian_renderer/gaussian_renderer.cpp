@@ -154,9 +154,7 @@ void GaussianRenderer::cleanup() {
     gpuKeyBuffer_.cleanup();
     radixSortStorageBuffer_.cleanup();
     drawIndirectBuffer_.cleanup();
-    renderBuffer_.cleanup();
     sortBufferCapacity_ = 0;
-    renderBufferExtent_ = vk::Extent2D{};
     
     // 4. 清理Pipelines
     pipeline_.reset();
@@ -321,40 +319,7 @@ void GaussianRenderer::renderToImage() {
             LOG_INFO("Suboptimal swapchain detected, consider recreating");
         }
     }
-    if (current_model_ && !current_model_->isEmpty()) {
-        // 3. 更新Instance Buffer（仅在首次或模型变化时重建）
-        if (!instanceBuffer_.getBuffer()) {
-            updateVertexBuffer();
-        }
-
-        // 4. 更新Uniform Buffer，GPU key generation reads it in the sort pass.
-        updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection);
-
-        // 5. GPU排序。透明Gaussian需要随相机变化保持远到近顺序。
-        uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
-        
-        const float matrixEpsilon = 1e-5f;
-        bool needResort = !gpu_sort_completed_ ||
-                          current_model_ != last_sorted_model_ ||
-                          currentPointCount != last_sorted_point_count_ ||
-                          matrixChanged(ubo_[currentFrame_].view, last_view_matrix_, matrixEpsilon) ||
-                          matrixChanged(ubo_[currentFrame_].projection, last_projection_matrix_, matrixEpsilon) ||
-                          matrixChanged(ubo_[currentFrame_].model, last_model_matrix_, matrixEpsilon);
-        
-        if (needResort) {
-            ensureSortBuffers(currentPointCount);
-            record_sort_this_frame_ = true;
-            sort_point_count_this_frame_ = currentPointCount;
-            
-            gpu_sort_completed_ = true;
-            last_sorted_point_count_ = currentPointCount;
-            last_sorted_model_ = current_model_;
-            last_camera_position_ = camera_.get_position();
-            last_view_matrix_ = ubo_[currentFrame_].view;
-            last_projection_matrix_ = ubo_[currentFrame_].projection;
-            last_model_matrix_ = ubo_[currentFrame_].model;
-        }
-    }
+    prepareFrameData(swapchain_->getExtent());
 
     beginImGuiFrame();
     
@@ -420,13 +385,7 @@ void GaussianRenderer::presentImage() {
 }
 
 void GaussianRenderer::renderToBuffer() {
-    renderToImage();
-    if (!imageReadyForPresent_) {
-        return;
-    }
-
-    ensureRenderBuffer();
-    copyRenderedImageToBuffer();
+    throw std::runtime_error("GaussianRenderer does not support training renderToBuffer; use GaussianForwardRenderer");
 }
 
 void GaussianRenderer::onResize(uint32_t width, uint32_t height) {
@@ -493,9 +452,7 @@ void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4
     gpuKeyBuffer_.cleanup();
     radixSortStorageBuffer_.cleanup();
     drawIndirectBuffer_.cleanup();
-    renderBuffer_.cleanup();
     sortBufferCapacity_ = 0;
-    renderBufferExtent_ = vk::Extent2D{};
     gpu_sort_completed_ = false;
         last_sorted_point_count_ = 0;
         last_sorted_model_ = nullptr;
@@ -551,140 +508,6 @@ void GaussianRenderer::createBuffers() {
                                 vk::BufferUsageFlagBits::eUniformBuffer,
                                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
     }
-}
-
-void GaussianRenderer::ensureRenderBuffer() {
-    auto extent = swapchain_->getExtent();
-    if (renderBuffer_.getBuffer() &&
-        renderBufferExtent_.width == extent.width &&
-        renderBufferExtent_.height == extent.height) {
-        return;
-    }
-
-    auto device = getDevice();
-    auto& context = Context::Instance();
-    auto physicalDevice = context.PhysicalDevice();
-    auto transferQueue = context.getDevice().getGraphicsQueue();
-    uint32_t transferQueueFamilyIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
-
-    if (renderBuffer_.getBuffer()) {
-        device.waitIdle();
-        renderBuffer_.cleanup();
-    }
-
-    vk::DeviceSize bufferSize =
-        static_cast<vk::DeviceSize>(extent.width) *
-        static_cast<vk::DeviceSize>(extent.height) *
-        4u;
-
-    renderBuffer_.create(device,
-                         physicalDevice,
-                         transferQueue,
-                         transferQueueFamilyIndex,
-                         nullptr,
-                         bufferSize,
-                         vk::BufferUsageFlagBits::eStorageBuffer |
-                             vk::BufferUsageFlagBits::eTransferDst |
-                             vk::BufferUsageFlagBits::eTransferSrc,
-                         vk::MemoryPropertyFlagBits::eDeviceLocal);
-    renderBufferExtent_ = extent;
-}
-
-void GaussianRenderer::copyRenderedImageToBuffer() {
-    auto device = getDevice();
-    auto& context = Context::Instance();
-
-    vk::Result waitResult = device.waitForFences(1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
-    if (waitResult != vk::Result::eSuccess) {
-        LOG_ERROR("waitForFences before render buffer copy failed: {}", vk::to_string(waitResult));
-        throw std::runtime_error("Failed to wait for render completion before buffer copy");
-    }
-
-    vk::CommandBuffer commandBuffer = commandBuffers_[currentFrame_];
-    commandBuffer.reset();
-
-    vk::CommandBufferBeginInfo beginInfo{};
-    beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
-    commandBuffer.begin(beginInfo);
-
-    vk::ImageMemoryBarrier toTransferSrc{};
-    toTransferSrc.setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
-                 .setDstAccessMask(vk::AccessFlagBits::eTransferRead)
-                 .setOldLayout(vk::ImageLayout::ePresentSrcKHR)
-                 .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
-                 .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                 .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                 .setImage(swapchain_->getImages()[acquiredImageIndex_].image)
-                 .setSubresourceRange(vk::ImageSubresourceRange(
-                     vk::ImageAspectFlagBits::eColor,
-                     0, 1, 0, 1
-                 ));
-    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                                  vk::PipelineStageFlagBits::eTransfer,
-                                  vk::DependencyFlagBits{},
-                                  0, nullptr,
-                                  0, nullptr,
-                                  1, &toTransferSrc);
-
-    vk::BufferImageCopy copyRegion{};
-    copyRegion.setBufferOffset(0)
-              .setBufferRowLength(0)
-              .setBufferImageHeight(0)
-              .setImageSubresource(vk::ImageSubresourceLayers(
-                  vk::ImageAspectFlagBits::eColor,
-                  0, 0, 1
-              ))
-              .setImageOffset(vk::Offset3D(0, 0, 0))
-              .setImageExtent(vk::Extent3D(renderBufferExtent_.width, renderBufferExtent_.height, 1));
-    commandBuffer.copyImageToBuffer(swapchain_->getImages()[acquiredImageIndex_].image,
-                                    vk::ImageLayout::eTransferSrcOptimal,
-                                    renderBuffer_.getBuffer(),
-                                    1,
-                                    &copyRegion);
-
-    vk::ImageMemoryBarrier toPresent{};
-    toPresent.setSrcAccessMask(vk::AccessFlagBits::eTransferRead)
-             .setDstAccessMask(vk::AccessFlagBits::eNone)
-             .setOldLayout(vk::ImageLayout::eTransferSrcOptimal)
-             .setNewLayout(vk::ImageLayout::ePresentSrcKHR)
-             .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-             .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-             .setImage(swapchain_->getImages()[acquiredImageIndex_].image)
-             .setSubresourceRange(vk::ImageSubresourceRange(
-                 vk::ImageAspectFlagBits::eColor,
-                 0, 1, 0, 1
-             ));
-
-    vk::BufferMemoryBarrier bufferReady{};
-    bufferReady.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-               .setDstAccessMask(vk::AccessFlagBits::eShaderRead)
-               .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-               .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-               .setBuffer(renderBuffer_.getBuffer())
-               .setOffset(0)
-               .setSize(VK_WHOLE_SIZE);
-
-    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                  vk::PipelineStageFlagBits::eBottomOfPipe | vk::PipelineStageFlagBits::eComputeShader,
-                                  vk::DependencyFlagBits{},
-                                  0, nullptr,
-                                  1, &bufferReady,
-                                  1, &toPresent);
-
-    commandBuffer.end();
-
-    vk::PipelineStageFlags waitStage = vk::PipelineStageFlagBits::eTransfer;
-    vk::Semaphore waitSemaphore = renderFinishedSemaphores_[acquiredImageIndex_];
-    vk::SubmitInfo submitInfo{};
-    submitInfo.setWaitSemaphoreCount(1)
-              .setPWaitSemaphores(&waitSemaphore)
-              .setPWaitDstStageMask(&waitStage)
-              .setCommandBufferCount(1)
-              .setPCommandBuffers(&commandBuffer);
-
-    context.getDevice().getGraphicsQueue().submit(submitInfo);
-    context.getDevice().getGraphicsQueue().waitIdle();
-    presentWaitSemaphoreConsumed_ = true;
 }
 
 void GaussianRenderer::createSyncObjects() {
@@ -1164,7 +987,47 @@ void GaussianRenderer::updateVertexBuffer() {
     }
 }
 
-void GaussianRenderer::updateUniformBuffer(const glm::mat4& view, const glm::mat4& projection) {
+void GaussianRenderer::prepareFrameData(vk::Extent2D extent) {
+    record_sort_this_frame_ = false;
+    sort_point_count_this_frame_ = 0;
+
+    if (!current_model_ || current_model_->isEmpty()) {
+        return;
+    }
+
+    if (!instanceBuffer_.getBuffer()) {
+        updateVertexBuffer();
+    }
+
+    updateUniformBuffer(ubo_[currentFrame_].view, ubo_[currentFrame_].projection, extent);
+
+    uint32_t currentPointCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
+    const float matrixEpsilon = 1e-5f;
+    bool needResort = !gpu_sort_completed_ ||
+                      current_model_ != last_sorted_model_ ||
+                      currentPointCount != last_sorted_point_count_ ||
+                      matrixChanged(ubo_[currentFrame_].view, last_view_matrix_, matrixEpsilon) ||
+                      matrixChanged(ubo_[currentFrame_].projection, last_projection_matrix_, matrixEpsilon) ||
+                      matrixChanged(ubo_[currentFrame_].model, last_model_matrix_, matrixEpsilon);
+
+    if (!needResort) {
+        return;
+    }
+
+    ensureSortBuffers(currentPointCount);
+    record_sort_this_frame_ = true;
+    sort_point_count_this_frame_ = currentPointCount;
+
+    gpu_sort_completed_ = true;
+    last_sorted_point_count_ = currentPointCount;
+    last_sorted_model_ = current_model_;
+    last_camera_position_ = camera_.get_position();
+    last_view_matrix_ = ubo_[currentFrame_].view;
+    last_projection_matrix_ = ubo_[currentFrame_].projection;
+    last_model_matrix_ = ubo_[currentFrame_].model;
+}
+
+void GaussianRenderer::updateUniformBuffer(const glm::mat4& view, const glm::mat4& projection, vk::Extent2D extent) {
     auto device = getDevice();
     
     // 1. 更新主Uniform Buffer
@@ -1175,7 +1038,6 @@ void GaussianRenderer::updateUniformBuffer(const glm::mat4& view, const glm::mat
         static_cast<float>(glfwGetTime())
     );
     
-    auto extent = swapchain_->getExtent();
     ubo_[currentFrame_].focal = glm::vec4(
         0.5f * static_cast<float>(extent.width) * projection[0][0],
         0.5f * static_cast<float>(extent.height) * projection[1][1],
@@ -1207,102 +1069,106 @@ void GaussianRenderer::updateUniformBuffer(const glm::mat4& view, const glm::mat
 }
 
 void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
-    auto device = getDevice();
     auto commandBuffer = commandBuffers_[currentFrame_];
     
     // 开始记录命令缓冲区
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
-    commandBuffer.begin(beginInfo);{
-        if (record_sort_this_frame_ && sort_point_count_this_frame_ > 0) {
-            recordSortCommands(commandBuffer, sort_point_count_this_frame_);
-        }
+    commandBuffer.begin(beginInfo);
+    recordRenderCommands(commandBuffer,
+                         renderPass_->getRenderPass(),
+                         swapchain_->getFramebuffer(image_index),
+                         swapchain_->getExtent(),
+                         *pipeline_,
+                         true);
+    commandBuffer.end();
+}
 
-        if (gpuIndexBuffer_.getBuffer()) {
-            vk::MemoryBarrier sortedIndexBarrier{};
-            sortedIndexBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
-                              .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eIndirectCommandRead);
+void GaussianRenderer::recordRenderCommands(vk::CommandBuffer commandBuffer,
+                                            vk::RenderPass renderPass,
+                                            vk::Framebuffer framebuffer,
+                                            vk::Extent2D extent,
+                                            Pipeline& pipeline,
+                                            bool drawImGui) {
+    if (record_sort_this_frame_ && sort_point_count_this_frame_ > 0) {
+        recordSortCommands(commandBuffer, sort_point_count_this_frame_);
+    }
 
-            commandBuffer.pipelineBarrier(
-                vk::PipelineStageFlagBits::eComputeShader,
-                vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eDrawIndirect,
-                vk::DependencyFlagBits{},
-                1, &sortedIndexBarrier,
-                0, nullptr,
-                0, nullptr
+    if (gpuIndexBuffer_.getBuffer()) {
+        vk::MemoryBarrier sortedIndexBarrier{};
+        sortedIndexBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
+                          .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eIndirectCommandRead);
+
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eComputeShader,
+            vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eDrawIndirect,
+            vk::DependencyFlagBits{},
+            1, &sortedIndexBarrier,
+            0, nullptr,
+            0, nullptr
+        );
+    }
+
+    std::array<vk::ClearValue, 2> clearValues{};
+    clearValues[0].setColor(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}));
+    clearValues[1].setDepthStencil(vk::ClearDepthStencilValue(1.0f, 0));
+
+    vk::RenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.setRenderPass(renderPass)
+                  .setFramebuffer(framebuffer)
+                  .setRenderArea(vk::Rect2D({0, 0}, extent))
+                  .setClearValueCount(static_cast<uint32_t>(clearValues.size()))
+                  .setPClearValues(clearValues.data());
+
+    commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+    vk::Viewport viewport(0.0f, 0.0f,
+                          static_cast<float>(extent.width),
+                          static_cast<float>(extent.height),
+                          0.0f, 1.0f);
+    commandBuffer.setViewport(0, 1, &viewport);
+
+    vk::Rect2D scissor({0, 0}, extent);
+    commandBuffer.setScissor(0, 1, &scissor);
+
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.getPipeline());
+
+    vk::Buffer vertexBuffers[] = { pipeline.getQuadVertexBuffer() };
+    vk::DeviceSize offsets[] = { 0 };
+    commandBuffer.bindVertexBuffers(0, 1, vertexBuffers, offsets);
+    commandBuffer.bindIndexBuffer(pipeline.getQuadIndexBuffer(), 0, vk::IndexType::eUint16);
+
+    if (!descriptorSets_.empty()) {
+        commandBuffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics,
+            pipeline.getPipelineLayout(),
+            0,
+            1,
+            &descriptorSets_[currentFrame_],
+            0,
+            nullptr
+        );
+    }
+
+    if (current_model_ && instanceBuffer_.getBuffer()) {
+        if (drawIndirectBuffer_.getBuffer()) {
+            commandBuffer.drawIndexedIndirect(
+                drawIndirectBuffer_.getBuffer(),
+                0,
+                1,
+                sizeof(VkDrawIndexedIndirectCommand)
             );
+        } else {
+            uint32_t instanceCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
+            commandBuffer.drawIndexed(4, instanceCount, 0, 0, 0);
         }
-        
-        // 开始渲染通道
-        std::array<vk::ClearValue, 2> clearValues{};
-        clearValues[0].setColor(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}));
-        clearValues[1].setDepthStencil(vk::ClearDepthStencilValue(1.0f, 0));
-        
-        vk::RenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.setRenderPass(renderPass_->getRenderPass())
-                    .setFramebuffer(swapchain_->getFramebuffer(image_index))
-                    .setRenderArea(vk::Rect2D({0, 0}, swapchain_->getExtent()))
-                    .setClearValueCount(static_cast<uint32_t>(clearValues.size()))
-                    .setPClearValues(clearValues.data());
-        
-        commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);{
-            
-            // 设置动态视口和裁剪矩形
-            vk::Viewport viewport(0.0f, 0.0f, 
-                                 static_cast<float>(swapchain_->getExtent().width),
-                                 static_cast<float>(swapchain_->getExtent().height),
-                                 0.0f, 1.0f);
-            commandBuffer.setViewport(0, 1, &viewport);
-            
-            vk::Rect2D scissor({0, 0}, swapchain_->getExtent());
-            commandBuffer.setScissor(0, 1, &scissor);
-            
-            // 绑定图形管线
-            commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_->getPipeline());
-            
-            // 绑定顶点缓冲区（只绑定四边形顶点，实例数据通过SSBO访问）
-            vk::Buffer vertexBuffers[] = { pipeline_->getQuadVertexBuffer() };
-            vk::DeviceSize offsets[] = { 0 };
-            commandBuffer.bindVertexBuffers(0, 1, vertexBuffers, offsets);
-            
-            // 绑定索引缓冲区
-            commandBuffer.bindIndexBuffer(pipeline_->getQuadIndexBuffer(), 0, vk::IndexType::eUint16);
-            
-            // 绑定 Uniform Buffer Descriptor Set
-            if (!descriptorSets_.empty()) {
-                commandBuffer.bindDescriptorSets(
-                    vk::PipelineBindPoint::eGraphics,
-                    pipeline_->getPipelineLayout(),
-                    0,
-                    1,
-                    &descriptorSets_[currentFrame_],
-                    0,
-                    nullptr
-                );
-            }
-            
-            // 使用索引绘制四边形（每个高斯点一个实例）
-            if (current_model_ && instanceBuffer_.getBuffer()) {
-                if (drawIndirectBuffer_.getBuffer()) {
-                    commandBuffer.drawIndexedIndirect(
-                        drawIndirectBuffer_.getBuffer(),
-                        0,
-                        1,
-                        sizeof(VkDrawIndexedIndirectCommand)
-                    );
-                } else {
-                    uint32_t instanceCount = static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end()));
-                    commandBuffer.drawIndexed(4, instanceCount, 0, 0, 0);
-                }
-            }
+    }
 
-            if (imguiInitialized_) {
-                ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
-            }
-        }commandBuffer.endRenderPass();
-        
-    // 结束记录
-    }commandBuffer.end();
+    if (drawImGui && imguiInitialized_) {
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+    }
+
+    commandBuffer.endRenderPass();
 }
 
 } // namespace vk_gs

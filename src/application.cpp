@@ -734,13 +734,12 @@ void Application::initializeTrainingIfNeeded() {
                          context.PhysicalDevice(),
                          context.getTransferQueue(),
                          transferFamily);
-    training_.setForwardRenderer(*renderer_);
-    training_.initializeBackward(context.Device(),
-                                 context.PhysicalDevice(),
-                                 device.getComputeQueue(),
-                                 computeFamily,
-                                 current_model_ ? static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end())) : 1u,
-                                 TrainingExtent{std::max(training_width_, 1u), std::max(training_height_, 1u)});
+    training_.initializeTrainingRenderers(context.Device(),
+                                          context.PhysicalDevice(),
+                                          device.getComputeQueue(),
+                                          computeFamily,
+                                          current_model_ ? static_cast<uint32_t>(std::distance(current_model_->begin(), current_model_->end())) : 1u,
+                                          TrainingExtent{std::max(training_width_, 1u), std::max(training_height_, 1u)});
     training_initialized_ = true;
 }
 
@@ -752,7 +751,6 @@ void Application::runTrainingStepFromUi() {
         throw std::runtime_error("Load a .ply model before starting training");
     }
 
-    training_.setForwardModel(current_model_);
     training_.trainStep();
     ++training_steps_done_;
 }

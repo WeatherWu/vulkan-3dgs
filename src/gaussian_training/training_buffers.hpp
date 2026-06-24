@@ -16,6 +16,7 @@ public:
     void cleanup();
 
     void resize(uint32_t gaussianCount, TrainingExtent extent);
+    void uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount);
     void uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height);
     void uploadCamera(const TrainingForwardCamera& camera);
 

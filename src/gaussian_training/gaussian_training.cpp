@@ -1,13 +1,13 @@
 #include "gaussian_training.hpp"
 
-#include "gaussian_renderer/gaussian_renderer.hpp"
+#include "gaussian_renderer/gaussian_model.hpp"
 #include "utils/logger.hpp"
-#include "utils/camera.hpp"
 
 #include <algorithm>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
+#include <vector>
 
 namespace vk_gs {
 
@@ -26,7 +26,6 @@ void GaussianTraining::initialize(vk::Device device,
     }
 
     buffers_.initialize(device, physicalDevice, transferQueue, transferQueueFamilyIndex);
-    pipelines_.initialize(device);
     initialized_ = true;
 }
 
@@ -36,59 +35,39 @@ void GaussianTraining::cleanup() {
         backward_.reset();
     }
 
-    if (ownedForward_) {
-        ownedForward_->cleanup();
-        ownedForward_.reset();
+    if (forward_) {
+        forward_->cleanup();
+        forward_.reset();
     }
-    forward_ = nullptr;
     rendererInitialized_ = false;
 
     destroyTrainingCommandResources();
-    pipelines_.cleanup();
     buffers_.cleanup();
     initialized_ = false;
 }
 
 void GaussianTraining::resize(uint32_t gaussianCount, TrainingExtent extent) {
     buffers_.resize(gaussianCount, extent);
+    uploadForwardModelToBuffers();
 }
 
-void GaussianTraining::initializeRenderer(GLFWwindow* window,
-                                          vk::Device device,
-                                          vk::PhysicalDevice physicalDevice,
-                                          vk::Queue computeQueue,
-                                          uint32_t computeQueueFamilyIndex,
-                                          uint32_t gaussianCount,
-                                          TrainingExtent extent) {
+void GaussianTraining::initializeTrainingRenderers(vk::Device device,
+                                                   vk::PhysicalDevice physicalDevice,
+                                                   vk::Queue computeQueue,
+                                                   uint32_t computeQueueFamilyIndex,
+                                                   uint32_t gaussianCount,
+                                                   TrainingExtent extent) {
     if (rendererInitialized_) {
         return;
     }
 
-    ownedForward_ = std::make_unique<GaussianRenderer>();
-    ownedForward_->initialize(window);
-    forward_ = ownedForward_.get();
-
-    backward_ = std::make_unique<GaussianBackwardRenderer>();
-    backward_->initialize(device,
-                          physicalDevice,
-                          computeQueue,
-                          computeQueueFamilyIndex,
-                          gaussianCount,
-                          extent);
-
-    createTrainingCommandResources(device, computeQueue, computeQueueFamilyIndex);
-    rendererInitialized_ = true;
-}
-
-void GaussianTraining::initializeBackward(vk::Device device,
-                                          vk::PhysicalDevice physicalDevice,
-                                          vk::Queue computeQueue,
-                                          uint32_t computeQueueFamilyIndex,
-                                          uint32_t gaussianCount,
-                                          TrainingExtent extent) {
-    if (rendererInitialized_) {
-        return;
-    }
+    forward_ = std::make_unique<GaussianForwardRenderer>();
+    forward_->initialize(device,
+                         physicalDevice,
+                         computeQueue,
+                         computeQueueFamilyIndex,
+                         gaussianCount,
+                         extent);
 
     backward_ = std::make_unique<GaussianBackwardRenderer>();
     backward_->initialize(device,
@@ -114,15 +93,15 @@ void GaussianTraining::initializeTraining(GLFWwindow* window,
     initialize(device,
                physicalDevice,
                transferQueue,
-               transferQueueFamilyIndex);
+                       transferQueueFamilyIndex);
     resize(gaussianCount, extent);
-    initializeRenderer(window,
-                       device,
-                       physicalDevice,
-                       computeQueue,
-                       computeQueueFamilyIndex,
-                       gaussianCount,
-                       extent);
+    (void)window;
+    initializeTrainingRenderers(device,
+                                physicalDevice,
+                                computeQueue,
+                                computeQueueFamilyIndex,
+                                gaussianCount,
+                                extent);
     createTrainingCommandResources(device, computeQueue, computeQueueFamilyIndex);
 }
 
@@ -144,18 +123,14 @@ void GaussianTraining::trainStep() {
 
     if (hasDataset()) {
         uploadCurrentTrainingFrame();
-        syncForwardRendererToCurrentFrame();
     }
 
-    forward_->renderToBuffer();
-
-    auto* gaussianRenderer = dynamic_cast<GaussianRenderer*>(forward_);
+    auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get());
     auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get());
-    if (!gaussianRenderer || !gaussianBackward) {
-        throw std::runtime_error("GaussianTraining currently requires GaussianRenderer and GaussianBackwardRenderer");
+    if (!gaussianForward || !gaussianBackward) {
+        throw std::runtime_error("GaussianTraining currently requires GaussianForwardRenderer and GaussianBackwardRenderer");
     }
 
-    auto forwardBufferInfo = gaussianRenderer->renderBufferInfo();
     auto pushConstants = createPushConstants();
 
     trainingCommandPool_.reset();
@@ -163,7 +138,8 @@ void GaussianTraining::trainStep() {
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
     trainingCommandBuffer_.begin(beginInfo);
 
-    copyForwardRenderToTrainingBuffer(trainingCommandBuffer_, forwardBufferInfo);
+    gaussianForward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
+    gaussianForward->forward();
     gaussianBackward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
     gaussianBackward->backward();
     gaussianBackward->gradientDescent();
@@ -207,14 +183,7 @@ void GaussianTraining::setTrainingFrameIndex(size_t frameIndex) {
 
 void GaussianTraining::setForwardModel(const GaussianModel* model) {
     forwardModel_ = model;
-}
-
-void GaussianTraining::setForwardRenderer(Renderer& renderer) {
-    if (ownedForward_) {
-        ownedForward_->cleanup();
-        ownedForward_.reset();
-    }
-    forward_ = &renderer;
+    uploadForwardModelToBuffers();
 }
 
 TrainingPushConstants GaussianTraining::createPushConstants() const {
@@ -245,6 +214,42 @@ void GaussianTraining::uploadCurrentTrainingFrame() {
     buffers_.uploadCamera(createTrainingCamera(frame));
 }
 
+void GaussianTraining::uploadForwardModelToBuffers() {
+    if (!forwardModel_ || forwardModel_->isEmpty() || buffers_.gaussianCapacity() == 0) {
+        return;
+    }
+
+    const uint32_t gaussianCount = static_cast<uint32_t>(std::distance(forwardModel_->begin(), forwardModel_->end()));
+    if (gaussianCount > buffers_.gaussianCapacity()) {
+        throw std::runtime_error("Forward model has more gaussians than training buffer capacity");
+    }
+
+    std::vector<GaussianTrainParam> params(gaussianCount);
+    uint32_t index = 0;
+    for (const auto& point : *forwardModel_) {
+        GaussianTrainParam param{};
+        param.positionOpacity = glm::vec4(point.position, point.alpha);
+        param.scale = glm::vec4(point.scale, 0.0f);
+        param.rotation = glm::vec4(point.rotation.x,
+                                   point.rotation.y,
+                                   point.rotation.z,
+                                   point.rotation.w);
+        param.sh[0] = glm::vec4(point.color.sh0, 0.0f);
+        for (int i = 0; i < 3; ++i) {
+            param.sh[1 + i] = glm::vec4(point.color.sh1[i], 0.0f);
+        }
+        for (int i = 0; i < 5; ++i) {
+            param.sh[4 + i] = glm::vec4(point.color.sh2[i], 0.0f);
+        }
+        for (int i = 0; i < 7; ++i) {
+            param.sh[9 + i] = glm::vec4(point.color.sh3[i], 0.0f);
+        }
+        params[index++] = param;
+    }
+
+    buffers_.uploadGaussianParams(params.data(), gaussianCount);
+}
+
 TrainingForwardCamera GaussianTraining::createTrainingCamera(const TrainingCameraFrame& frame) const {
     TrainingForwardCamera camera{};
     camera.view = frame.worldToCamera;
@@ -256,35 +261,6 @@ TrainingForwardCamera GaussianTraining::createTrainingCamera(const TrainingCamer
     camera.viewport = glm::vec4(0.0f, 0.0f, width, height);
     camera.cameraPosition = glm::vec4(frame.position, 1.0f);
     return camera;
-}
-
-void GaussianTraining::syncForwardRendererToCurrentFrame() {
-    if (!forwardModel_) {
-        LOG_WARN("GaussianTraining has a dataset but no forward model; render target may not match training data");
-        return;
-    }
-
-    auto* gaussianRenderer = dynamic_cast<GaussianRenderer*>(forward_);
-    if (!gaussianRenderer) {
-        return;
-    }
-
-    const auto& frame = dataset_.frames[currentDatasetFrameIndex_];
-    Camera camera;
-    camera.set_position(frame.position);
-
-    glm::mat3 cameraToWorldRotation(frame.cameraToWorld);
-    glm::vec3 forward = cameraToWorldRotation * glm::vec3(0.0f, 0.0f, -1.0f);
-    glm::vec3 up = cameraToWorldRotation * glm::vec3(0.0f, 1.0f, 0.0f);
-    forward = glm::length(forward) > 1e-6f ? glm::normalize(forward) : glm::vec3(0.0f, 0.0f, -1.0f);
-    up = glm::length(up) > 1e-6f ? glm::normalize(up) : glm::vec3(0.0f, 1.0f, 0.0f);
-    camera.look_at(frame.position + forward, up);
-
-    gaussianRenderer->setRenderData(forwardModel_,
-                                    frame.worldToCamera,
-                                    createProjectionMatrix(frame),
-                                    camera,
-                                    glm::mat4(1.0f));
 }
 
 glm::mat4 GaussianTraining::createProjectionMatrix(const TrainingCameraFrame& frame) const {
@@ -328,70 +304,6 @@ void GaussianTraining::destroyTrainingCommandResources() {
     trainingCommandPool_.cleanup();
     computeQueue_ = nullptr;
     computeQueueFamilyIndex_ = 0;
-}
-
-void GaussianTraining::copyForwardRenderToTrainingBuffer(vk::CommandBuffer commandBuffer,
-                                                         const vk::DescriptorBufferInfo& sourceInfo) {
-    auto destinationInfo = buffers_.renderedColorInfo();
-    if (!sourceInfo.buffer || !destinationInfo.buffer) {
-        LOG_WARN("GaussianTraining::copyForwardRenderToTrainingBuffer skipped because buffers are not ready");
-        return;
-    }
-
-    vk::DeviceSize copySize = std::min(sourceInfo.range, destinationInfo.range);
-    if (copySize == 0 || copySize == VK_WHOLE_SIZE) {
-        auto extent = buffers_.extent();
-        copySize = static_cast<vk::DeviceSize>(extent.width) *
-                   static_cast<vk::DeviceSize>(extent.height) *
-                   sizeof(glm::vec4);
-    }
-
-    vk::BufferMemoryBarrier sourceReady{};
-    sourceReady.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eShaderWrite)
-               .setDstAccessMask(vk::AccessFlagBits::eTransferRead)
-               .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-               .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-               .setBuffer(sourceInfo.buffer)
-               .setOffset(sourceInfo.offset)
-               .setSize(sourceInfo.range);
-
-    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader,
-                                  vk::PipelineStageFlagBits::eTransfer,
-                                  vk::DependencyFlagBits{},
-                                  0,
-                                  nullptr,
-                                  1,
-                                  &sourceReady,
-                                  0,
-                                  nullptr);
-
-    vk::BufferCopy copyRegion{};
-    copyRegion.setSrcOffset(sourceInfo.offset)
-              .setDstOffset(destinationInfo.offset)
-              .setSize(copySize);
-    commandBuffer.copyBuffer(sourceInfo.buffer,
-                             destinationInfo.buffer,
-                             1,
-                             &copyRegion);
-
-    vk::BufferMemoryBarrier destinationReady{};
-    destinationReady.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-                    .setDstAccessMask(vk::AccessFlagBits::eShaderRead)
-                    .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                    .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                    .setBuffer(destinationInfo.buffer)
-                    .setOffset(destinationInfo.offset)
-                    .setSize(destinationInfo.range);
-
-    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                  vk::PipelineStageFlagBits::eComputeShader,
-                                  vk::DependencyFlagBits{},
-                                  0,
-                                  nullptr,
-                                  1,
-                                  &destinationReady,
-                                  0,
-                                  nullptr);
 }
 
 } // namespace vk_gs
