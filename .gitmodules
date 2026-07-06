@@ -1,0 +1,7 @@
+[submodule "third_party/ImGuiFileDialog"]
+	path = third_party/ImGuiFileDialog
+	url = https://github.com/aiekick/ImGuiFileDialog.git
+
+[submodule "third_party/vulkan_radix_sort"]
+	path = third_party/vulkan_radix_sort
+	url = https://github.com/jaesung-cs/vulkan_radix_sort.git

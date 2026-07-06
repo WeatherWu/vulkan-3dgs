@@ -1,6 +1,8 @@
 /build
 /CHANGELOG
 /.**
+!/.gitmodules
+!/.gitignore
 !/.codex/
 !/.codex/skills/
 !/.codex/skills/**
