@@ -15,12 +15,24 @@ struct TrainingPushConstants {
     uint32_t pixelCount = 0;
     uint32_t width = 0;
     uint32_t height = 0;
-    float optimizerLearningRate = 1e-3f;
+    uint32_t trainingIteration = 0;
+    uint32_t activeSHDegree = 0;
+    uint32_t maxSHDegree = 3;
+    uint32_t tileItemCount = 0;
+    float positionLearningRate = 0.00016f;
+    float positionLearningRateFinal = 0.0000016f;
+    float positionLearningRateDelayMult = 0.01f;
+    float positionLearningRateMaxSteps = 30000.0f;
+    float featureLearningRate = 0.0025f;
+    float featureRestLearningRate = 0.000125f;
+    float opacityLearningRate = 0.05f;
+    float scaleLearningRate = 0.005f;
+    float rotationLearningRate = 0.001f;
     float optimizerBeta1 = 0.9f;
     float optimizerBeta2 = 0.999f;
     float optimizerEpsilon = 1e-8f;
     float optimizerGradClip = 1e3f;
-    float padding0 = 0.0f;
+    float lossDssimWeight = 0.2f;
     float padding1 = 0.0f;
     float padding2 = 0.0f;
 };
@@ -34,11 +46,35 @@ struct TrainingInitializationConfig {
 };
 
 struct TrainingOptimizerConfig {
-    float learningRate = 1e-3f;
+    float positionLearningRate = 0.00016f;
+    float positionLearningRateFinal = 0.0000016f;
+    float positionLearningRateDelayMult = 0.01f;
+    float positionLearningRateMaxSteps = 30000.0f;
+    float featureLearningRate = 0.0025f;
+    float featureRestLearningRate = 0.000125f;
+    float opacityLearningRate = 0.05f;
+    float scaleLearningRate = 0.005f;
+    float rotationLearningRate = 0.001f;
     float beta1 = 0.9f;
     float beta2 = 0.999f;
     float epsilon = 1e-8f;
     float gradClip = 1e3f;
+    float lossDssimWeight = 0.2f;
+    uint32_t maxSHDegree = 3;
+    uint32_t shDegreeInterval = 1000;
+};
+
+struct TrainingValidationStats {
+    float meanLoss = 0.0f;
+    float maxLoss = 0.0f;
+    float meanRenderedAlpha = 0.0f;
+    float meanRenderedLuminance = 0.0f;
+    uint32_t invalidLossCount = 0;
+    uint32_t invalidRenderedPixelCount = 0;
+    uint32_t nonFiniteGaussianCount = 0;
+    uint32_t tileItemCount = 0;
+    bool renderedNonEmpty = false;
+    bool valid = true;
 };
 
 struct TrainingDensificationConfig {
@@ -53,6 +89,7 @@ struct TrainingDensificationConfig {
     float minOpacity = 0.005f;
     float percentDense = 0.01f;
     float screenSizePruneThreshold = 20.0f;
+    float worldSizePruneThreshold = 0.1f;
 };
 
 struct alignas(16) TrainingDensificationPushConstants {
@@ -67,6 +104,7 @@ struct alignas(16) TrainingDensificationPushConstants {
     float screenSizePruneThreshold = 20.0f;
     uint32_t randomSeed = 1;
     uint32_t resetOpacity = 0;
+    float worldSizePruneThreshold = 0.1f;
     uint32_t padding1 = 0;
 };
 
@@ -145,6 +183,7 @@ static_assert(sizeof(ProjectedGaussianGrad) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(GaussianGrad) == sizeof(glm::vec4) * 19);
 static_assert(sizeof(TrainingForwardCamera) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(AdamState) == sizeof(GaussianGrad) * 2);
-static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 3);
+static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 4);
+static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 6);
 
 } // namespace vk_gs

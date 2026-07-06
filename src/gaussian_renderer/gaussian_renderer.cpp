@@ -449,11 +449,11 @@ void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4
 
         instanceBuffer_.cleanup();
         gpuIndexBuffer_.cleanup();
-    gpuKeyBuffer_.cleanup();
-    radixSortStorageBuffer_.cleanup();
-    drawIndirectBuffer_.cleanup();
-    sortBufferCapacity_ = 0;
-    gpu_sort_completed_ = false;
+        gpuKeyBuffer_.cleanup();
+        radixSortStorageBuffer_.cleanup();
+        drawIndirectBuffer_.cleanup();
+        sortBufferCapacity_ = 0;
+        gpu_sort_completed_ = false;
         last_sorted_point_count_ = 0;
         last_sorted_model_ = nullptr;
         last_model_matrix_ = glm::mat4(1.0f);

@@ -1,6 +1,9 @@
 /build
 /CHANGELOG
 /.**
+!/.codex/
+!/.codex/skills/
+!/.codex/skills/**
 /data
 
 # Ignore all spv folders under any shaders directory

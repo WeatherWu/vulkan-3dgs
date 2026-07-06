@@ -13,8 +13,12 @@ RWStructuredBuffer<float> lossBuffer;
 static const int SSIM_RADIUS = 5;
 static const float SSIM_C1 = 0.0001;
 static const float SSIM_C2 = 0.0009;
-static const float L1_WEIGHT = 0.8;
-static const float DSSIM_WEIGHT = 0.2;
+static const float SSIM_SIGMA = 1.5;
+
+float ssimWindowWeight(int2 offset) {
+    float2 value = float2(offset);
+    return exp(-dot(value, value) / (2.0 * SSIM_SIGMA * SSIM_SIGMA));
+}
 
 uint clampedPixelIndex(int2 pixel) {
     int width = int(params.width);
@@ -33,28 +37,29 @@ float ssimColor(uint centerIndex) {
     float3 renderedSqMean = float3(0.0);
     float3 targetSqMean = float3(0.0);
     float3 renderedTargetMean = float3(0.0);
-    float sampleCount = 0.0;
+    float weightSum = 0.0;
 
     for (int dy = -SSIM_RADIUS; dy <= SSIM_RADIUS; ++dy) {
         for (int dx = -SSIM_RADIUS; dx <= SSIM_RADIUS; ++dx) {
+            float weight = ssimWindowWeight(int2(dx, dy));
             uint sampleIndex = clampedPixelIndex(center + int2(dx, dy));
             float3 rendered = renderedColor[sampleIndex].xyz;
             float3 target = targetColor[sampleIndex].xyz;
 
-            renderedMean += rendered;
-            targetMean += target;
-            renderedSqMean += rendered * rendered;
-            targetSqMean += target * target;
-            renderedTargetMean += rendered * target;
-            sampleCount += 1.0;
+            renderedMean += rendered * weight;
+            targetMean += target * weight;
+            renderedSqMean += rendered * rendered * weight;
+            targetSqMean += target * target * weight;
+            renderedTargetMean += rendered * target * weight;
+            weightSum += weight;
         }
     }
 
-    renderedMean /= sampleCount;
-    targetMean /= sampleCount;
-    renderedSqMean /= sampleCount;
-    targetSqMean /= sampleCount;
-    renderedTargetMean /= sampleCount;
+    renderedMean /= weightSum;
+    targetMean /= weightSum;
+    renderedSqMean /= weightSum;
+    targetSqMean /= weightSum;
+    renderedTargetMean /= weightSum;
 
     float3 renderedVariance = max(renderedSqMean - renderedMean * renderedMean, float3(0.0));
     float3 targetVariance = max(targetSqMean - targetMean * targetMean, float3(0.0));
@@ -78,6 +83,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     float l1 = l1Color(renderedColor[index].xyz, targetColor[index].xyz);
-    float dssim = clamp((1.0 - ssimColor(index)) * 0.5, 0.0, 1.0);
-    lossBuffer[index] = L1_WEIGHT * l1 + DSSIM_WEIGHT * dssim;
+    float dssim = clamp(1.0 - ssimColor(index), 0.0, 1.0);
+    float dssimWeight = clamp(params.lossDssimWeight, 0.0, 1.0);
+    lossBuffer[index] = ((1.0 - dssimWeight) * l1 + dssimWeight * dssim) /
+                        max(float(params.pixelCount), 1.0);
 }

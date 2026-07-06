@@ -206,14 +206,26 @@ void backwardProjectedColorToSH(inout GaussianGrad gaussianGrad,
     float xz = x * z;
 
     gaussianGrad.sh[0].xyz += gradColor * SH_C0;
+    if (params.activeSHDegree < 1) {
+        return;
+    }
+
     gaussianGrad.sh[1].xyz += gradColor * (-viewDirection.y * SH_C1);
     gaussianGrad.sh[2].xyz += gradColor * ( viewDirection.z * SH_C1);
     gaussianGrad.sh[3].xyz += gradColor * (-viewDirection.x * SH_C1);
+    if (params.activeSHDegree < 2) {
+        return;
+    }
+
     gaussianGrad.sh[4].xyz += gradColor * (SH_C2[0] * xy);
     gaussianGrad.sh[5].xyz += gradColor * (SH_C2[1] * yz);
     gaussianGrad.sh[6].xyz += gradColor * (SH_C2[2] * (2.0 * zz - xx - yy));
     gaussianGrad.sh[7].xyz += gradColor * (SH_C2[3] * xz);
     gaussianGrad.sh[8].xyz += gradColor * (SH_C2[4] * (xx - yy));
+    if (params.activeSHDegree < 3) {
+        return;
+    }
+
     gaussianGrad.sh[9].xyz += gradColor * (SH_C3[0] * y * (3.0 * xx - yy));
     gaussianGrad.sh[10].xyz += gradColor * (SH_C3[1] * xy * z);
     gaussianGrad.sh[11].xyz += gradColor * (SH_C3[2] * y * (4.0 * zz - xx - yy));
@@ -244,6 +256,10 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
 
     float3 viewDirection;
     float3 gradColor = activeProjectedColorGrad(gaussian, dLoss_dColor, viewDirection);
+    if (params.activeSHDegree < 1) {
+        return float3(0.0);
+    }
+
     float3 dLoss_dViewDirection = float3(
         dot(gradColor, -gaussian.sh[3].xyz * SH_C1),
         dot(gradColor, -gaussian.sh[1].xyz * SH_C1),
@@ -257,6 +273,7 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
     float yy = y * y;
     float zz = z * z;
 
+    if (params.activeSHDegree >= 2) {
     dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[4].xyz) * (SH_C2[0] * y);
     dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[4].xyz) * (SH_C2[0] * x);
 
@@ -272,7 +289,9 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
 
     dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[8].xyz) * (2.0 * SH_C2[4] * x);
     dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[8].xyz) * (-2.0 * SH_C2[4] * y);
+    }
 
+    if (params.activeSHDegree >= 3) {
     dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[9].xyz) * (6.0 * SH_C3[0] * x * y);
     dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[9].xyz) * (3.0 * SH_C3[0] * (xx - yy));
 
@@ -298,6 +317,7 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
 
     dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[15].xyz) * (3.0 * SH_C3[6] * (xx - yy));
     dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[15].xyz) * (-6.0 * SH_C3[6] * x * y);
+    }
 
     float3 viewVector = gaussian.positionOpacity.xyz - trainingCamera.cameraPosition.xyz;
     float viewLength = length(viewVector);

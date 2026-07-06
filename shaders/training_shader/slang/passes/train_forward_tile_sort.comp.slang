@@ -1,38 +1,69 @@
 #include "../common/train_forward_tile_common.slang"
 
-[[vk::binding(3, 0)]]
-StructuredBuffer<ProjectedGaussian> projectedGaussians;
-
 [[vk::binding(4, 0)]]
-RWStructuredBuffer<uint> tileItems;
+StructuredBuffer<uint> tileItems;
 
 [[vk::binding(5, 0)]]
-StructuredBuffer<uint4> tileRanges;
+RWStructuredBuffer<uint4> tileRanges;
+
+[[vk::binding(21, 0)]]
+StructuredBuffer<uint> tileKeyHigh;
+
+[[vk::binding(22, 0)]]
+StructuredBuffer<uint> tileSortIndices;
 
 [shader("compute")]
-[numthreads(1, 1, 1)]
+[numthreads(256, 1, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint tileIndex = dispatchThreadID.x;
     if (tileIndex >= trainTileCount()) {
         return;
     }
 
-    TileRange range = unpackTileRange(tileRanges[tileIndex]);
-    if (range.count <= 1) {
+    uint4 oldRange = tileRanges[tileIndex];
+    uint expectedCount = oldRange.y;
+    if (expectedCount == 0 || params.tileItemCount == 0) {
+        tileRanges[tileIndex] = uint4(0, 0, 0, 0);
+        return;
+    }
+    if (oldRange.x >= params.tileItemCount) {
+        tileRanges[tileIndex] = uint4(params.tileItemCount, 0, 0, 0);
         return;
     }
 
-    for (uint i = 1; i < range.count; ++i) {
-        uint current = tileItems[range.start + i];
-        uint j = i;
-        while (j > 0) {
-            uint previous = tileItems[range.start + j - 1];
-            if (trainGaussianDepthBefore(previous, current, projectedGaussians)) {
-                break;
-            }
-            tileItems[range.start + j] = previous;
-            --j;
+    uint searchBegin = oldRange.x;
+    while (searchBegin > 0) {
+        uint sourceIndex = tileSortIndices[searchBegin - 1u];
+        if (tileKeyHigh[sourceIndex] != tileIndex) {
+            break;
         }
-        tileItems[range.start + j] = current;
+        --searchBegin;
     }
+
+    while (searchBegin < params.tileItemCount) {
+        uint sourceIndex = tileSortIndices[searchBegin];
+        if (tileKeyHigh[sourceIndex] >= tileIndex) {
+            break;
+        }
+        ++searchBegin;
+    }
+
+    uint searchEnd = min(searchBegin + expectedCount, params.tileItemCount);
+    while (searchEnd < params.tileItemCount) {
+        uint sourceIndex = tileSortIndices[searchEnd];
+        if (tileKeyHigh[sourceIndex] != tileIndex) {
+            break;
+        }
+        ++searchEnd;
+    }
+
+    uint count = 0;
+    if (searchBegin < params.tileItemCount) {
+        uint sourceIndex = tileSortIndices[searchBegin];
+        if (tileKeyHigh[sourceIndex] == tileIndex) {
+            count = searchEnd - searchBegin;
+        }
+    }
+
+    tileRanges[tileIndex] = uint4(searchBegin, count, 0, 0);
 }

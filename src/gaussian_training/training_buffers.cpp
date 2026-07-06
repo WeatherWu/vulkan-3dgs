@@ -35,6 +35,12 @@ void TrainingBuffers::cleanup() {
     targetColor_.cleanup();
     renderedColor_.cleanup();
     tileRanges_.cleanup();
+    tileSortStorage_.cleanup();
+    tileItemsSorted_.cleanup();
+    tileSortScratch_.cleanup();
+    tileSortIndices_.cleanup();
+    tileKeyHigh_.cleanup();
+    tileKeyLow_.cleanup();
     tileItems_.cleanup();
     projected_.cleanup();
     adamStates_.cleanup();
@@ -67,6 +73,12 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     adamStates_.cleanup();
     projected_.cleanup();
     tileItems_.cleanup();
+    tileKeyLow_.cleanup();
+    tileKeyHigh_.cleanup();
+    tileSortIndices_.cleanup();
+    tileSortScratch_.cleanup();
+    tileItemsSorted_.cleanup();
+    tileSortStorage_.cleanup();
     tileRanges_.cleanup();
     renderedColor_.cleanup();
     targetColor_.cleanup();
@@ -101,6 +113,11 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
         std::min<uint64_t>(std::max<uint64_t>(static_cast<uint64_t>(safeGaussianCount) * 8ull, 1ull),
                            std::numeric_limits<uint32_t>::max()));
     createStorageBuffer(tileItems_, sizeof(uint32_t) * tileItemCapacity_);
+    createStorageBuffer(tileKeyLow_, sizeof(uint32_t) * tileItemCapacity_);
+    createStorageBuffer(tileKeyHigh_, sizeof(uint32_t) * tileItemCapacity_);
+    createStorageBuffer(tileSortIndices_, sizeof(uint32_t) * tileItemCapacity_);
+    createStorageBuffer(tileSortScratch_, sizeof(uint32_t) * tileItemCapacity_);
+    createStorageBuffer(tileItemsSorted_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileRanges_, sizeof(glm::uvec4) * tileCount);
     createStorageBuffer(renderedColor_, sizeof(glm::vec4) * pixelCount);
     createStorageBuffer(targetColor_, sizeof(glm::vec4) * pixelCount);
@@ -140,8 +157,57 @@ void TrainingBuffers::resizeTileItems(uint32_t tileItemCapacity) {
     }
 
     tileItems_.cleanup();
+    tileKeyLow_.cleanup();
+    tileKeyHigh_.cleanup();
+    tileSortIndices_.cleanup();
+    tileSortScratch_.cleanup();
+    tileItemsSorted_.cleanup();
+    tileSortStorage_.cleanup();
     createStorageBuffer(tileItems_, sizeof(uint32_t) * safeCapacity);
+    createStorageBuffer(tileKeyLow_, sizeof(uint32_t) * safeCapacity);
+    createStorageBuffer(tileKeyHigh_, sizeof(uint32_t) * safeCapacity);
+    createStorageBuffer(tileSortIndices_, sizeof(uint32_t) * safeCapacity);
+    createStorageBuffer(tileSortScratch_, sizeof(uint32_t) * safeCapacity);
+    createStorageBuffer(tileItemsSorted_, sizeof(uint32_t) * safeCapacity);
     tileItemCapacity_ = safeCapacity;
+}
+
+void TrainingBuffers::ensureTileSortStorage(uint32_t tileItemCapacity,
+                                            vk::DeviceSize sortStorageSize,
+                                            vk::BufferUsageFlags sortStorageUsage) {
+    if (!device_) {
+        throw std::runtime_error("TrainingBuffers must be initialized before resizing tile sort storage");
+    }
+
+    const uint32_t safeCapacity = std::max(tileItemCapacity, 1u);
+    if (safeCapacity > tileItemCapacity_ ||
+        !tileItems_.getBuffer() ||
+        !tileKeyLow_.getBuffer() ||
+        !tileKeyHigh_.getBuffer() ||
+        !tileSortIndices_.getBuffer() ||
+        !tileSortScratch_.getBuffer() ||
+        !tileItemsSorted_.getBuffer()) {
+        resizeTileItems(safeCapacity);
+    }
+
+    if (sortStorageSize == 0) {
+        return;
+    }
+
+    const auto currentInfo = tileSortStorage_.getDescriptorInfo();
+    if (tileSortStorage_.getBuffer() && currentInfo.range >= sortStorageSize) {
+        return;
+    }
+
+    tileSortStorage_.cleanup();
+    tileSortStorage_.create(device_,
+                            physicalDevice_,
+                            transferQueue_,
+                            transferQueueFamilyIndex_,
+                            nullptr,
+                            sortStorageSize,
+                            sortStorageUsage,
+                            vk::MemoryPropertyFlagBits::eDeviceLocal);
 }
 
 void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
@@ -245,6 +311,36 @@ std::vector<GaussianVisibilityState> TrainingBuffers::downloadGaussianVisibility
     gaussianVisibility_.download(visibility.data(),
                                  static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianVisibilityState));
     return visibility;
+}
+
+std::vector<float> TrainingBuffers::downloadLoss(uint32_t pixelCount) {
+    const uint64_t capacity = static_cast<uint64_t>(extent_.width) * static_cast<uint64_t>(extent_.height);
+    if (pixelCount > capacity) {
+        throw std::runtime_error("Training loss download exceeds buffer capacity");
+    }
+
+    std::vector<float> loss(pixelCount);
+    if (pixelCount == 0) {
+        return loss;
+    }
+
+    loss_.download(loss.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(float));
+    return loss;
+}
+
+std::vector<glm::vec4> TrainingBuffers::downloadRenderedColor(uint32_t pixelCount) {
+    const uint64_t capacity = static_cast<uint64_t>(extent_.width) * static_cast<uint64_t>(extent_.height);
+    if (pixelCount > capacity) {
+        throw std::runtime_error("Training rendered color download exceeds buffer capacity");
+    }
+
+    std::vector<glm::vec4> rendered(pixelCount);
+    if (pixelCount == 0) {
+        return rendered;
+    }
+
+    renderedColor_.download(rendered.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(glm::vec4));
+    return rendered;
 }
 
 void TrainingBuffers::uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height) {

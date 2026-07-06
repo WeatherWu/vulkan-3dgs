@@ -12,6 +12,7 @@ struct TrainingDensificationPushConstants {
     float screenSizePruneThreshold;
     uint randomSeed;
     uint resetOpacity;
+    float worldSizePruneThreshold;
     uint padding1;
 };
 
@@ -79,6 +80,17 @@ float randomSigned(uint seed, uint axis) {
     return (float(value & 0x00ffffffu) / float(0x00ffffffu)) * 2.0 - 1.0;
 }
 
+float randomUnit(uint seed, uint axis) {
+    uint value = hashUint(seed ^ (axis * 0x85ebca6bu) ^ densifyParams.randomSeed);
+    return max(float(value & 0x00ffffffu) / float(0x01000000u), 1e-6);
+}
+
+float randomNormal(uint seed, uint axis) {
+    float u1 = randomUnit(seed, axis * 2u + 0u);
+    float u2 = randomUnit(seed, axis * 2u + 1u);
+    return sqrt(-2.0 * log(u1)) * cos(6.28318530718 * u2);
+}
+
 GaussianGrad zeroGaussianGrad() {
     GaussianGrad grad;
     grad.positionOpacity = 0.0;
@@ -94,6 +106,22 @@ AdamState makeZeroAdamState() {
     AdamState state;
     state.firstMoment = zeroGaussianGrad();
     state.secondMoment = zeroGaussianGrad();
+    return state;
+}
+
+GaussianGrad scaleGaussianGrad(GaussianGrad source, float factor) {
+    source.positionOpacity *= factor;
+    source.scale *= factor;
+    source.rotation *= factor;
+    for (uint i = 0; i < 16; ++i) {
+        source.sh[i] *= factor;
+    }
+    return source;
+}
+
+AdamState scaleAdamState(AdamState state, float factor) {
+    state.firstMoment = scaleGaussianGrad(state.firstMoment, factor);
+    state.secondMoment = scaleGaussianGrad(state.secondMoment, factor * factor);
     return state;
 }
 
@@ -117,6 +145,11 @@ bool shouldPrune(GaussianTrainParam gaussian,
         return true;
     }
 
+    if (densifyParams.pruneByScreenSize != 0u &&
+        maxActivatedScale(gaussian) > densifyParams.worldSizePruneThreshold * densifyParams.sceneExtent) {
+        return true;
+    }
+
     return false;
 }
 
@@ -134,6 +167,15 @@ bool shouldDensify(GaussianTrainParam gaussian,
     }
 
     return maxActivatedScale(gaussian) > 0.0;
+}
+
+bool shouldClone(GaussianTrainParam gaussian,
+                 GaussianDensificationState densification) {
+    if (!shouldDensify(gaussian, densification)) {
+        return false;
+    }
+
+    return maxActivatedScale(gaussian) <= densifyParams.percentDense * densifyParams.sceneExtent;
 }
 
 bool shouldSplit(GaussianTrainParam gaussian,
@@ -163,12 +205,10 @@ GaussianTrainParam makeSplitChild(GaussianTrainParam source, uint sourceIndex, u
     GaussianTrainParam child = source;
     float3 scale = trainScaleActivationForDensify(source.scale.xyz);
     float3 randomOffset = float3(
-        randomSigned(sourceIndex * 17u + childIndex, 0u),
-        randomSigned(sourceIndex * 17u + childIndex, 1u),
-        randomSigned(sourceIndex * 17u + childIndex, 2u)
+        randomNormal(sourceIndex * 17u + childIndex, 0u),
+        randomNormal(sourceIndex * 17u + childIndex, 1u),
+        randomNormal(sourceIndex * 17u + childIndex, 2u)
     );
-    float randomLength = max(length(randomOffset), 1e-6);
-    randomOffset /= randomLength;
 
     float4 normalizedRotation = normalize(source.rotation);
     float3 offset = mul(trainQuatToMat3ForDensify(normalizedRotation), randomOffset * scale);
@@ -205,17 +245,19 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     bool prune = shouldPrune(gaussian, densification);
     if (!prune) {
         bool split = shouldSplit(gaussian, densification);
-        bool densify = shouldDensify(gaussian, densification);
+        bool clone = shouldClone(gaussian, densification);
         if (split) {
             uint children = max(densifyParams.splitChildren, 2u);
+            AdamState childAdamState = scaleAdamState(adamState, 1.0 / float(children));
             for (uint childIndex = 0; childIndex < children; ++childIndex) {
-                appendGaussian(makeSplitChild(gaussian, gaussianIndex, childIndex), makeZeroAdamState());
+                appendGaussian(makeSplitChild(gaussian, gaussianIndex, childIndex), childAdamState);
             }
+        } else if (clone) {
+            AdamState clonedAdamState = scaleAdamState(adamState, 0.5);
+            appendGaussian(applyOpacityReset(makeClone(gaussian)), clonedAdamState);
+            appendGaussian(applyOpacityReset(makeClone(gaussian)), clonedAdamState);
         } else {
             appendGaussian(applyOpacityReset(makeClone(gaussian)), adamState);
-            if (densify) {
-                appendGaussian(applyOpacityReset(makeClone(gaussian)), makeZeroAdamState());
-            }
         }
     }
 

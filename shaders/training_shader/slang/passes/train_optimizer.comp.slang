@@ -25,7 +25,25 @@ float4 safeNormalizeQuaternion(float4 rotation) {
     return rotation * rsqrt(lengthSquared);
 }
 
-float4 adamUpdate(inout float4 firstMoment, inout float4 secondMoment, float4 grad, float step) {
+float positionLearningRate(float step) {
+    float maxSteps = max(params.positionLearningRateMaxSteps, 1.0);
+    float t = clamp((step - 1.0) / maxSteps, 0.0, 1.0);
+    float lrInit = max(params.positionLearningRate, 0.0);
+    float lrFinal = max(params.positionLearningRateFinal, 0.0);
+    float lr = exp(lerp(log(max(lrInit, 1e-12)), log(max(lrFinal, 1e-12)), t));
+    float delayMult = clamp(params.positionLearningRateDelayMult, 0.0, 1.0);
+    if (delayMult < 1.0) {
+        float delayRate = delayMult + (1.0 - delayMult) * sin(0.5 * 3.141592653589793 * t);
+        lr *= delayRate;
+    }
+    return lr;
+}
+
+float4 adamUpdate(inout float4 firstMoment,
+                  inout float4 secondMoment,
+                  float4 grad,
+                  float step,
+                  float learningRate) {
     grad = clipGrad(grad);
     float beta1 = clamp(params.optimizerBeta1, 0.0, 0.999999);
     float beta2 = clamp(params.optimizerBeta2, 0.0, 0.999999);
@@ -36,7 +54,7 @@ float4 adamUpdate(inout float4 firstMoment, inout float4 secondMoment, float4 gr
     float secondMomentCorrection = 1.0 - pow(beta2, step);
     float4 correctedFirstMoment = firstMoment / max(firstMomentCorrection, 1e-8);
     float4 correctedSecondMoment = secondMoment / max(secondMomentCorrection, 1e-8);
-    return max(params.optimizerLearningRate, 0.0) *
+    return max(learningRate, 0.0) *
            correctedFirstMoment /
            (sqrt(correctedSecondMoment) + float4(max(params.optimizerEpsilon, 1e-12)));
 }
@@ -45,26 +63,44 @@ void updateGaussianParam(inout GaussianTrainParam gaussian,
                          inout AdamState adamState,
                          GaussianGrad grad,
                          float step) {
+    float4 positionOpacityLearningRate = float4(
+        positionLearningRate(step),
+        positionLearningRate(step),
+        positionLearningRate(step),
+        max(params.opacityLearningRate, 0.0)
+    );
     gaussian.positionOpacity -= adamUpdate(adamState.firstMoment.positionOpacity,
                                            adamState.secondMoment.positionOpacity,
                                            grad.positionOpacity,
-                                           step);
+                                           step,
+                                           1.0) * positionOpacityLearningRate;
     gaussian.scale -= adamUpdate(adamState.firstMoment.scale,
                                  adamState.secondMoment.scale,
                                  grad.scale,
-                                 step);
+                                 step,
+                                 max(params.scaleLearningRate, 0.0));
     gaussian.rotation -= adamUpdate(adamState.firstMoment.rotation,
                                     adamState.secondMoment.rotation,
                                     grad.rotation,
-                                    step);
+                                    step,
+                                    max(params.rotationLearningRate, 0.0));
 
     gaussian.rotation = safeNormalizeQuaternion(gaussian.rotation);
 
     for (uint i = 0; i < 16; ++i) {
+        if ((params.activeSHDegree < 1 && i >= 1) ||
+            (params.activeSHDegree < 2 && i >= 4) ||
+            (params.activeSHDegree < 3 && i >= 9)) {
+            continue;
+        }
+        float shLearningRate = i == 0
+            ? max(params.featureLearningRate, 0.0)
+            : max(params.featureRestLearningRate, 0.0);
         gaussian.sh[i] -= adamUpdate(adamState.firstMoment.sh[i],
                                      adamState.secondMoment.sh[i],
                                      grad.sh[i],
-                                     step);
+                                     step,
+                                     shLearningRate);
     }
 }
 

@@ -7,6 +7,7 @@
 #include "gaussian_training/training_types.hpp"
 #include "renderer.hpp"
 #include "vulkan/compute_pipeline.hpp"
+#include <vk_radix_sort.h>
 
 namespace vk_gs {
 
@@ -20,7 +21,7 @@ public:
                     TrainingExtent extent) override;
     void cleanup() override;
 
-    void setTrainingBuffers(const TrainingBuffers& trainingBuffers,
+    void setTrainingBuffers(TrainingBuffers& trainingBuffers,
                             vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void forward() override;
@@ -39,12 +40,17 @@ private:
     void prefixTileRanges();
     void emitTileItems();
     void sortTileItems();
+    void gatherHighTileKeys(uint32_t tileItemCount);
+    void gatherSortedTileItems(uint32_t tileItemCount);
+    void rebuildTileRanges();
+    void ensureTileSortResources(uint32_t tileItemCount);
     void compositePixels();
     void bindAndDispatch(ComputePipeline& pipeline,
                          vk::DescriptorSet descriptorSet,
                          uint32_t groupCountX,
                          uint32_t groupCountY = 1,
                          uint32_t groupCountZ = 1);
+    void shaderMemoryBarrier();
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
     void updateDescriptorSet(vk::DescriptorSet descriptorSet,
@@ -63,8 +69,11 @@ private:
     ComputePipeline tileCountPipeline_;
     ComputePipeline tilePrefixPipeline_;
     ComputePipeline tileEmitPipeline_;
-    ComputePipeline tileSortPipeline_;
+    ComputePipeline tileGatherHighPipeline_;
+    ComputePipeline tileGatherItemsPipeline_;
+    ComputePipeline tileRangeBuildPipeline_;
     ComputePipeline forwardPipeline_;
+    VrdxSorter radixSorter_ = VK_NULL_HANDLE;
 
     vk::DescriptorPool descriptorPool_ = nullptr;
     vk::DescriptorSet clearDescriptorSet_ = nullptr;
@@ -73,10 +82,12 @@ private:
     vk::DescriptorSet tileCountDescriptorSet_ = nullptr;
     vk::DescriptorSet tilePrefixDescriptorSet_ = nullptr;
     vk::DescriptorSet tileEmitDescriptorSet_ = nullptr;
-    vk::DescriptorSet tileSortDescriptorSet_ = nullptr;
+    vk::DescriptorSet tileGatherHighDescriptorSet_ = nullptr;
+    vk::DescriptorSet tileGatherItemsDescriptorSet_ = nullptr;
+    vk::DescriptorSet tileRangeBuildDescriptorSet_ = nullptr;
     vk::DescriptorSet forwardDescriptorSet_ = nullptr;
 
-    const TrainingBuffers* trainingBuffers_ = nullptr;
+    TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
     TrainingPushConstants pushConstants_{};
     bool initialized_ = false;

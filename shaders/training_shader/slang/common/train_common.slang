@@ -3,12 +3,24 @@ struct TrainingPushConstants {
     uint pixelCount;
     uint width;
     uint height;
-    float optimizerLearningRate;
+    uint trainingIteration;
+    uint activeSHDegree;
+    uint maxSHDegree;
+    uint tileItemCount;
+    float positionLearningRate;
+    float positionLearningRateFinal;
+    float positionLearningRateDelayMult;
+    float positionLearningRateMaxSteps;
+    float featureLearningRate;
+    float featureRestLearningRate;
+    float opacityLearningRate;
+    float scaleLearningRate;
+    float rotationLearningRate;
     float optimizerBeta1;
     float optimizerBeta2;
     float optimizerEpsilon;
     float optimizerGradClip;
-    float padding0;
+    float lossDssimWeight;
     float padding1;
     float padding2;
 };
@@ -93,17 +105,31 @@ float4 evaluateSH(GaussianTrainParam gaussian, float3 viewDirection) {
     float yz = y * z;
     float xz = x * z;
 
+    if (params.activeSHDegree < 1) {
+        return result;
+    }
+
     result += SH_C1 * (
         -y * gaussian.sh[1] +
          z * gaussian.sh[2] -
          x * gaussian.sh[3]
     );
+
+    if (params.activeSHDegree < 2) {
+        return result;
+    }
+
     result +=
         SH_C2[0] * xy * gaussian.sh[4] +
         SH_C2[1] * yz * gaussian.sh[5] +
         SH_C2[2] * (2.0 * zz - xx - yy) * gaussian.sh[6] +
         SH_C2[3] * xz * gaussian.sh[7] +
         SH_C2[4] * (xx - yy) * gaussian.sh[8];
+
+    if (params.activeSHDegree < 3) {
+        return result;
+    }
+
     result +=
         SH_C3[0] * y * (3.0 * xx - yy) * gaussian.sh[9] +
         SH_C3[1] * xy * z * gaussian.sh[10] +

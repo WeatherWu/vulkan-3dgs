@@ -258,8 +258,22 @@ std::filesystem::path resolveImagePath(const std::filesystem::path& imageDirecto
     return imagePath;
 }
 
+glm::uvec2 readImageDimensions(const std::filesystem::path& path) {
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (!stbi_info(path.string().c_str(), &width, &height, &channels)) {
+        throw std::runtime_error("Failed to read training image size: " + path.string());
+    }
+    if (width <= 0 || height <= 0) {
+        throw std::runtime_error("Training image has invalid size: " + path.string());
+    }
+    return glm::uvec2(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+}
+
 void fillIntrinsics(const ColmapCameraData& camera,
-                    float downscale,
+                    float scaleX,
+                    float scaleY,
                     float& fx,
                     float& fy,
                     float& cx,
@@ -275,16 +289,16 @@ void fillIntrinsics(const ColmapCameraData& camera,
         case 7:
         case 8:
         case 9:
-            fx = static_cast<float>(camera.params[0] / downscale);
-            fy = fx;
-            cx = static_cast<float>(camera.params[1] / downscale);
-            cy = static_cast<float>(camera.params[2] / downscale);
+            fx = static_cast<float>(camera.params[0]) * scaleX;
+            fy = static_cast<float>(camera.params[0]) * scaleY;
+            cx = static_cast<float>(camera.params[1]) * scaleX;
+            cy = static_cast<float>(camera.params[2]) * scaleY;
             break;
         default:
-            fx = static_cast<float>(camera.params[0] / downscale);
-            fy = static_cast<float>(camera.params[1] / downscale);
-            cx = static_cast<float>(camera.params[2] / downscale);
-            cy = static_cast<float>(camera.params[3] / downscale);
+            fx = static_cast<float>(camera.params[0]) * scaleX;
+            fy = static_cast<float>(camera.params[1]) * scaleY;
+            cx = static_cast<float>(camera.params[2]) * scaleX;
+            cy = static_cast<float>(camera.params[3]) * scaleY;
             break;
     }
 }
@@ -326,6 +340,7 @@ TrainingDataset TrainingDatasetLoader::loadMipNeRF360Scene(const std::filesystem
     dataset.imageDirectory = imageDirectory;
     dataset.imageDownscale = selectedDownscale;
     dataset.frames.reserve(images.size());
+    glm::uvec2 datasetImageSize(0u);
 
     for (const auto& image : images) {
         auto cameraIt = cameras.find(image.cameraId);
@@ -341,12 +356,29 @@ TrainingDataset TrainingDatasetLoader::loadMipNeRF360Scene(const std::filesystem
         }
 
         const ColmapCameraData& camera = cameraIt->second;
+        const glm::uvec2 imageSize = readImageDimensions(resolvedImagePath);
+        if (datasetImageSize.x == 0u || datasetImageSize.y == 0u) {
+            datasetImageSize = imageSize;
+        } else if (imageSize != datasetImageSize) {
+            throw std::runtime_error("Training images must have a consistent size. Expected " +
+                                     std::to_string(datasetImageSize.x) + "x" +
+                                     std::to_string(datasetImageSize.y) + " but found " +
+                                     std::to_string(imageSize.x) + "x" +
+                                     std::to_string(imageSize.y) + ": " +
+                                     resolvedImagePath.string());
+        }
+
+        const float scaleX = static_cast<float>(imageSize.x) /
+                             static_cast<float>(std::max<uint64_t>(camera.width, 1u));
+        const float scaleY = static_cast<float>(imageSize.y) /
+                             static_cast<float>(std::max<uint64_t>(camera.height, 1u));
+
         TrainingCameraFrame frame{};
         frame.imageId = image.id;
         frame.cameraId = image.cameraId;
-        frame.width = static_cast<uint32_t>(std::max<uint64_t>(camera.width / selectedDownscale, 1));
-        frame.height = static_cast<uint32_t>(std::max<uint64_t>(camera.height / selectedDownscale, 1));
-        fillIntrinsics(camera, static_cast<float>(selectedDownscale), frame.fx, frame.fy, frame.cx, frame.cy);
+        frame.width = imageSize.x;
+        frame.height = imageSize.y;
+        fillIntrinsics(camera, scaleX, scaleY, frame.fx, frame.fy, frame.cx, frame.cy);
         frame.worldToCamera = makeWorldToCamera(image);
         frame.cameraToWorld = glm::inverse(frame.worldToCamera);
         frame.position = glm::vec3(frame.cameraToWorld[3]);

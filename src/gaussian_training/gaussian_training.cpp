@@ -9,7 +9,10 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 #include <random>
+#include <queue>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace vk_gs {
@@ -25,6 +28,114 @@ float logit(float value) {
 glm::vec3 colorToSH0(const glm::vec3& color) {
     constexpr float shC0 = 0.28209479177387814f;
     return (color - glm::vec3(0.5f)) / shC0;
+}
+
+struct KdNode {
+    uint32_t pointIndex = 0;
+    int axis = 0;
+    int left = -1;
+    int right = -1;
+};
+
+int buildKdTreeRecursive(const std::vector<TrainingSparsePoint>& points,
+                         std::vector<uint32_t>& indices,
+                         std::vector<KdNode>& nodes,
+                         size_t begin,
+                         size_t end,
+                         int depth) {
+    if (begin >= end) {
+        return -1;
+    }
+
+    const int axis = depth % 3;
+    const size_t mid = begin + (end - begin) / 2;
+    std::nth_element(indices.begin() + static_cast<std::ptrdiff_t>(begin),
+                     indices.begin() + static_cast<std::ptrdiff_t>(mid),
+                     indices.begin() + static_cast<std::ptrdiff_t>(end),
+                     [&](uint32_t lhs, uint32_t rhs) {
+                         return points[lhs].position[axis] < points[rhs].position[axis];
+                     });
+
+    const int nodeIndex = static_cast<int>(nodes.size());
+    nodes.push_back(KdNode{indices[mid], axis, -1, -1});
+    nodes[nodeIndex].left = buildKdTreeRecursive(points, indices, nodes, begin, mid, depth + 1);
+    nodes[nodeIndex].right = buildKdTreeRecursive(points, indices, nodes, mid + 1, end, depth + 1);
+    return nodeIndex;
+}
+
+void queryNearestSquaredDistances(const std::vector<TrainingSparsePoint>& points,
+                                  const std::vector<KdNode>& nodes,
+                                  int nodeIndex,
+                                  uint32_t queryIndex,
+                                  std::priority_queue<float>& nearestSquaredDistances,
+                                  uint32_t neighborCount) {
+    if (nodeIndex < 0) {
+        return;
+    }
+
+    const KdNode& node = nodes[static_cast<size_t>(nodeIndex)];
+    const glm::vec3 query = points[queryIndex].position;
+    const glm::vec3 candidate = points[node.pointIndex].position;
+    if (node.pointIndex != queryIndex) {
+        const float dist2 = glm::dot(query - candidate, query - candidate);
+        if (nearestSquaredDistances.size() < neighborCount) {
+            nearestSquaredDistances.push(dist2);
+        } else if (dist2 < nearestSquaredDistances.top()) {
+            nearestSquaredDistances.pop();
+            nearestSquaredDistances.push(dist2);
+        }
+    }
+
+    const float axisDelta = query[node.axis] - candidate[node.axis];
+    const int nearChild = axisDelta <= 0.0f ? node.left : node.right;
+    const int farChild = axisDelta <= 0.0f ? node.right : node.left;
+    queryNearestSquaredDistances(points, nodes, nearChild, queryIndex, nearestSquaredDistances, neighborCount);
+
+    const float worstDist2 = nearestSquaredDistances.empty()
+        ? std::numeric_limits<float>::infinity()
+        : nearestSquaredDistances.top();
+    if (nearestSquaredDistances.size() < neighborCount || axisDelta * axisDelta < worstDist2) {
+        queryNearestSquaredDistances(points, nodes, farChild, queryIndex, nearestSquaredDistances, neighborCount);
+    }
+}
+
+std::vector<float> estimateSparsePointScaleDistances(const std::vector<TrainingSparsePoint>& points,
+                                                     float fallbackScale) {
+    std::vector<float> scales(points.size(), fallbackScale);
+    if (points.size() < 2) {
+        return scales;
+    }
+
+    std::vector<uint32_t> indices(points.size());
+    for (uint32_t i = 0; i < indices.size(); ++i) {
+        indices[i] = i;
+    }
+
+    std::vector<KdNode> nodes;
+    nodes.reserve(points.size());
+    const int root = buildKdTreeRecursive(points, indices, nodes, 0, indices.size(), 0);
+    const uint32_t neighborCount = std::min<uint32_t>(3u, static_cast<uint32_t>(points.size() - 1u));
+
+    for (uint32_t i = 0; i < points.size(); ++i) {
+        std::priority_queue<float> nearestSquaredDistances;
+        queryNearestSquaredDistances(points, nodes, root, i, nearestSquaredDistances, neighborCount);
+        if (nearestSquaredDistances.empty()) {
+            continue;
+        }
+
+        float dist2Sum = 0.0f;
+        uint32_t count = 0;
+        while (!nearestSquaredDistances.empty()) {
+            dist2Sum += nearestSquaredDistances.top();
+            nearestSquaredDistances.pop();
+            ++count;
+        }
+
+        const float meanDist2 = dist2Sum / static_cast<float>(std::max(count, 1u));
+        scales[i] = std::sqrt(std::max(meanDist2, 1e-12f));
+    }
+
+    return scales;
 }
 
 } // namespace
@@ -242,6 +353,13 @@ void GaussianTraining::trainStep() {
     computeQueue_.submit(submitInfo);
     computeQueue_.waitIdle();
 
+    const uint32_t completedTileItems = requiredTileItems;
+    const uint32_t nextIteration = trainingIteration_ + 1u;
+    if (nextIteration <= 5u ||
+        (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u)) {
+        validateTrainingStep(completedTileItems);
+    }
+
     if (runDensificationThisStep) {
         const uint32_t newGaussianCount = std::min(buffers_.densifiedGaussianCount(),
                                                    densificationConfig_.maxGaussianCount);
@@ -416,11 +534,24 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.width = extent.width;
     pushConstants.height = extent.height;
     pushConstants.pixelCount = extent.width * extent.height;
-    pushConstants.optimizerLearningRate = optimizerConfig_.learningRate;
+    pushConstants.trainingIteration = trainingIteration_;
+    const uint32_t shInterval = std::max(optimizerConfig_.shDegreeInterval, 1u);
+    pushConstants.maxSHDegree = std::min(optimizerConfig_.maxSHDegree, 3u);
+    pushConstants.activeSHDegree = std::min(trainingIteration_ / shInterval, pushConstants.maxSHDegree);
+    pushConstants.positionLearningRate = optimizerConfig_.positionLearningRate;
+    pushConstants.positionLearningRateFinal = optimizerConfig_.positionLearningRateFinal;
+    pushConstants.positionLearningRateDelayMult = optimizerConfig_.positionLearningRateDelayMult;
+    pushConstants.positionLearningRateMaxSteps = optimizerConfig_.positionLearningRateMaxSteps;
+    pushConstants.featureLearningRate = optimizerConfig_.featureLearningRate;
+    pushConstants.featureRestLearningRate = optimizerConfig_.featureRestLearningRate;
+    pushConstants.opacityLearningRate = optimizerConfig_.opacityLearningRate;
+    pushConstants.scaleLearningRate = optimizerConfig_.scaleLearningRate;
+    pushConstants.rotationLearningRate = optimizerConfig_.rotationLearningRate;
     pushConstants.optimizerBeta1 = optimizerConfig_.beta1;
     pushConstants.optimizerBeta2 = optimizerConfig_.beta2;
     pushConstants.optimizerEpsilon = optimizerConfig_.epsilon;
     pushConstants.optimizerGradClip = optimizerConfig_.gradClip;
+    pushConstants.lossDssimWeight = std::clamp(optimizerConfig_.lossDssimWeight, 0.0f, 1.0f);
     return pushConstants;
 }
 
@@ -439,6 +570,7 @@ TrainingDensificationPushConstants GaussianTraining::createDensificationPushCons
     pushConstants.randomSeed = trainingIteration_ + 1u;
     const uint32_t opacityResetInterval = std::max(densificationConfig_.opacityResetInterval, 1u);
     pushConstants.resetOpacity = ((trainingIteration_ + 1u) % opacityResetInterval == 0) ? 1u : 0u;
+    pushConstants.worldSizePruneThreshold = densificationConfig_.worldSizePruneThreshold;
     return pushConstants;
 }
 
@@ -476,6 +608,95 @@ void GaussianTraining::uploadCurrentTrainingFrame() {
     buffers_.uploadCamera(createTrainingCamera(frame));
 }
 
+void GaussianTraining::validateTrainingStep(uint32_t tileItemCount) {
+    TrainingValidationStats stats{};
+    stats.tileItemCount = tileItemCount;
+
+    const auto extent = buffers_.extent();
+    const uint32_t pixelCount = extent.width * extent.height;
+    if (pixelCount == 0 || trainableGaussianCount_ == 0) {
+        stats.valid = false;
+        validationStats_ = stats;
+        LOG_WARN("Training validation failed: empty pixel or gaussian count");
+        return;
+    }
+
+    std::vector<float> loss = buffers_.downloadLoss(pixelCount);
+    double lossSum = 0.0;
+    for (float value : loss) {
+        if (!std::isfinite(value)) {
+            ++stats.invalidLossCount;
+            continue;
+        }
+        lossSum += static_cast<double>(value);
+        stats.maxLoss = std::max(stats.maxLoss, value);
+    }
+    stats.meanLoss = static_cast<float>(lossSum);
+
+    std::vector<glm::vec4> rendered = buffers_.downloadRenderedColor(pixelCount);
+    double alphaSum = 0.0;
+    double luminanceSum = 0.0;
+    uint32_t validRenderedCount = 0;
+    for (const auto& pixel : rendered) {
+        if (!std::isfinite(pixel.x) ||
+            !std::isfinite(pixel.y) ||
+            !std::isfinite(pixel.z) ||
+            !std::isfinite(pixel.w)) {
+            ++stats.invalidRenderedPixelCount;
+            continue;
+        }
+        alphaSum += static_cast<double>(pixel.w);
+        luminanceSum += static_cast<double>((pixel.x + pixel.y + pixel.z) / 3.0f);
+        ++validRenderedCount;
+    }
+    if (validRenderedCount > 0) {
+        stats.meanRenderedAlpha = static_cast<float>(alphaSum / static_cast<double>(validRenderedCount));
+        stats.meanRenderedLuminance = static_cast<float>(luminanceSum / static_cast<double>(validRenderedCount));
+    }
+    stats.renderedNonEmpty = stats.meanRenderedAlpha > 1e-5f ||
+                             std::abs(stats.meanRenderedLuminance) > 1e-5f;
+
+    std::vector<GaussianTrainParam> params = buffers_.downloadGaussianParams(trainableGaussianCount_);
+    for (const auto& gaussian : params) {
+        const glm::vec4 values[] = {
+            gaussian.positionOpacity,
+            gaussian.scale,
+            gaussian.rotation,
+        };
+        bool finite = true;
+        for (const auto& value : values) {
+            finite = finite &&
+                     std::isfinite(value.x) &&
+                     std::isfinite(value.y) &&
+                     std::isfinite(value.z) &&
+                     std::isfinite(value.w);
+        }
+        if (!finite) {
+            ++stats.nonFiniteGaussianCount;
+        }
+    }
+
+    stats.valid = stats.invalidLossCount == 0 &&
+                  stats.invalidRenderedPixelCount == 0 &&
+                  stats.nonFiniteGaussianCount == 0 &&
+                  stats.renderedNonEmpty &&
+                  stats.tileItemCount > 0 &&
+                  trainableGaussianCount_ <= buffers_.gaussianCapacity();
+    validationStats_ = stats;
+
+    if (!stats.valid) {
+        LOG_WARN("Training validation issue at iteration {}: loss={} invalidLoss={} invalidPixels={} nonFiniteGaussians={} tileItems={} alpha={} luminance={}",
+                 trainingIteration_ + 1u,
+                 stats.meanLoss,
+                 stats.invalidLossCount,
+                 stats.invalidRenderedPixelCount,
+                 stats.nonFiniteGaussianCount,
+                 stats.tileItemCount,
+                 stats.meanRenderedAlpha,
+                 stats.meanRenderedLuminance);
+    }
+}
+
 std::vector<GaussianTrainParam> GaussianTraining::createSparsePointInitialGaussians() const {
     std::vector<GaussianTrainParam> params;
     params.reserve(dataset_.sparsePoints.size());
@@ -489,12 +710,16 @@ std::vector<GaussianTrainParam> GaussianTraining::createSparsePointInitialGaussi
 
     const float sceneRadius = std::max(glm::length(maxPosition - minPosition) * 0.5f, 1.0f);
     const float pointCount = std::max(static_cast<float>(dataset_.sparsePoints.size()), 1.0f);
-    const float initialScale = std::clamp(sceneRadius / std::cbrt(pointCount), 1e-4f, sceneRadius * 0.05f);
+    const float fallbackScale = std::clamp(sceneRadius / std::cbrt(pointCount), 1e-4f, sceneRadius * 0.05f);
+    const std::vector<float> initialScales =
+        estimateSparsePointScaleDistances(dataset_.sparsePoints, fallbackScale);
     constexpr float initialOpacity = 0.1f;
     const float rawOpacity = logit(initialOpacity);
-    const float rawScale = std::log(std::max(initialScale, 1e-6f));
 
-    for (const auto& point : dataset_.sparsePoints) {
+    for (size_t i = 0; i < dataset_.sparsePoints.size(); ++i) {
+        const auto& point = dataset_.sparsePoints[i];
+        const float initialScale = std::clamp(initialScales[i], 1e-6f, sceneRadius);
+        const float rawScale = std::log(initialScale);
         GaussianTrainParam param{};
         param.positionOpacity = glm::vec4(point.position, rawOpacity);
         param.scale = glm::vec4(glm::vec3(rawScale), 0.0f);

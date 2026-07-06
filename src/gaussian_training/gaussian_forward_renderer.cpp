@@ -79,7 +79,7 @@ void GaussianForwardRenderer::cleanup() {
     initialized_ = false;
 }
 
-void GaussianForwardRenderer::setTrainingBuffers(const TrainingBuffers& trainingBuffers,
+void GaussianForwardRenderer::setTrainingBuffers(TrainingBuffers& trainingBuffers,
                                                  vk::CommandBuffer commandBuffer,
                                                  TrainingPushConstants pushConstants) {
     trainingBuffers_ = &trainingBuffers;
@@ -116,6 +116,7 @@ void GaussianForwardRenderer::prepareTileItems() {
 void GaussianForwardRenderer::renderPreparedTiles() {
     emitTileItems();
     sortTileItems();
+    rebuildTileRanges();
     compositePixels();
 }
 
@@ -131,32 +132,44 @@ void GaussianForwardRenderer::createForwardResources() {
     tilePrefixPipeline_.initialize(device_, "shaders/train_forward_tile_prefix.comp.spv",
                                    pipelineConfig({storageBinding(5), storageBinding(9)}));
     tileEmitPipeline_.initialize(device_, "shaders/train_forward_tile_emit.comp.spv",
-                                 pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5)}));
-    tileSortPipeline_.initialize(device_, "shaders/train_forward_tile_sort.comp.spv",
-                                 pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5)}));
+                                 pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(20), storageBinding(21), storageBinding(22)}));
+    tileGatherHighPipeline_.initialize(device_, "shaders/train_forward_tile_gather_high.comp.spv",
+                                       pipelineConfig({storageBinding(21), storageBinding(22), storageBinding(23)}));
+    tileGatherItemsPipeline_.initialize(device_, "shaders/train_forward_tile_gather_items.comp.spv",
+                                        pipelineConfig({storageBinding(4), storageBinding(22), storageBinding(24)}));
+    tileRangeBuildPipeline_.initialize(device_, "shaders/train_forward_tile_sort.comp.spv",
+                                       pipelineConfig({storageBinding(4), storageBinding(5), storageBinding(21), storageBinding(22)}));
     forwardPipeline_.initialize(device_, "shaders/train_forward.comp.spv",
                                 pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14), storageBinding(15), storageBinding(16)}));
 
+    VrdxSorterCreateInfo sorterInfo{};
+    sorterInfo.physicalDevice = physicalDevice_;
+    sorterInfo.device = device_;
+    sorterInfo.pipelineCache = VK_NULL_HANDLE;
+    vrdxCreateSorter(&sorterInfo, &radixSorter_);
+
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(29);
+                .setDescriptorCount(40);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(8);
+            .setMaxSets(10);
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
-    std::array<vk::DescriptorSetLayout, 8> layouts = {
+    std::array<vk::DescriptorSetLayout, 10> layouts = {
         clearPipeline_.getDescriptorSetLayout(),
         projectPipeline_.getDescriptorSetLayout(),
         tileClearPipeline_.getDescriptorSetLayout(),
         tileCountPipeline_.getDescriptorSetLayout(),
         tilePrefixPipeline_.getDescriptorSetLayout(),
         tileEmitPipeline_.getDescriptorSetLayout(),
-        tileSortPipeline_.getDescriptorSetLayout(),
+        tileGatherHighPipeline_.getDescriptorSetLayout(),
+        tileGatherItemsPipeline_.getDescriptorSetLayout(),
+        tileRangeBuildPipeline_.getDescriptorSetLayout(),
         forwardPipeline_.getDescriptorSetLayout(),
     };
 
@@ -172,8 +185,10 @@ void GaussianForwardRenderer::createForwardResources() {
     tileCountDescriptorSet_ = sets[3];
     tilePrefixDescriptorSet_ = sets[4];
     tileEmitDescriptorSet_ = sets[5];
-    tileSortDescriptorSet_ = sets[6];
-    forwardDescriptorSet_ = sets[7];
+    tileGatherHighDescriptorSet_ = sets[6];
+    tileGatherItemsDescriptorSet_ = sets[7];
+    tileRangeBuildDescriptorSet_ = sets[8];
+    forwardDescriptorSet_ = sets[9];
 }
 
 void GaussianForwardRenderer::destroyForwardResources() {
@@ -186,12 +201,21 @@ void GaussianForwardRenderer::destroyForwardResources() {
         tileCountDescriptorSet_ = nullptr;
         tilePrefixDescriptorSet_ = nullptr;
         tileEmitDescriptorSet_ = nullptr;
-        tileSortDescriptorSet_ = nullptr;
+        tileGatherHighDescriptorSet_ = nullptr;
+        tileGatherItemsDescriptorSet_ = nullptr;
+        tileRangeBuildDescriptorSet_ = nullptr;
         forwardDescriptorSet_ = nullptr;
     }
 
+    if (radixSorter_) {
+        vrdxDestroySorter(radixSorter_);
+        radixSorter_ = VK_NULL_HANDLE;
+    }
+
     forwardPipeline_.cleanup();
-    tileSortPipeline_.cleanup();
+    tileRangeBuildPipeline_.cleanup();
+    tileGatherItemsPipeline_.cleanup();
+    tileGatherHighPipeline_.cleanup();
     tileEmitPipeline_.cleanup();
     tilePrefixPipeline_.cleanup();
     tileCountPipeline_.cleanup();
@@ -244,17 +268,86 @@ void GaussianForwardRenderer::prefixTileRanges() {
 }
 
 void GaussianForwardRenderer::emitTileItems() {
-    updateDescriptorSet(tileEmitDescriptorSet_, {3, 4, 5});
+    updateDescriptorSet(tileEmitDescriptorSet_, {3, 4, 5, 20, 21, 22});
     bindAndDispatch(tileEmitPipeline_, tileEmitDescriptorSet_, ceilDiv(pushConstants_.gaussianCount, 256u));
-    shaderBufferBarrier({trainingBuffers_->tileItemsInfo(), trainingBuffers_->tileRangesInfo()},
+    shaderBufferBarrier({trainingBuffers_->tileItemsUnsortedInfo(),
+                         trainingBuffers_->tileKeyLowInfo(),
+                         trainingBuffers_->tileKeyHighInfo(),
+                         trainingBuffers_->tileSortIndicesInfo(),
+                         trainingBuffers_->tileRangesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
 void GaussianForwardRenderer::sortTileItems() {
-    updateDescriptorSet(tileSortDescriptorSet_, {3, 4, 5});
-    bindAndDispatch(tileSortPipeline_, tileSortDescriptorSet_, tileCount(extent_));
+    const uint32_t tileItemCount = trainingBuffers_->requiredTileItemCount();
+    if (tileItemCount <= 1) {
+        return;
+    }
+
+    ensureTileSortResources(tileItemCount);
+    pushConstants_.tileItemCount = tileItemCount;
+
+    vrdxCmdSortKeyValue(commandBuffer_,
+                        radixSorter_,
+                        tileItemCount,
+                        trainingBuffers_->tileKeyLowBuffer(),
+                        0,
+                        trainingBuffers_->tileSortIndicesBuffer(),
+                        0,
+                        trainingBuffers_->tileSortStorageBuffer(),
+                        0,
+                        VK_NULL_HANDLE,
+                        0);
+
+    shaderMemoryBarrier();
+    gatherHighTileKeys(tileItemCount);
+    shaderMemoryBarrier();
+
+    vrdxCmdSortKeyValue(commandBuffer_,
+                        radixSorter_,
+                        tileItemCount,
+                        trainingBuffers_->tileSortScratchBuffer(),
+                        0,
+                        trainingBuffers_->tileSortIndicesBuffer(),
+                        0,
+                        trainingBuffers_->tileSortStorageBuffer(),
+                        0,
+                        VK_NULL_HANDLE,
+                        0);
+
+    shaderMemoryBarrier();
+    gatherSortedTileItems(tileItemCount);
     shaderBufferBarrier({trainingBuffers_->tileItemsInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+}
+
+void GaussianForwardRenderer::gatherHighTileKeys(uint32_t tileItemCount) {
+    updateDescriptorSet(tileGatherHighDescriptorSet_, {21, 22, 23});
+    bindAndDispatch(tileGatherHighPipeline_, tileGatherHighDescriptorSet_, ceilDiv(tileItemCount, 256u));
+}
+
+void GaussianForwardRenderer::gatherSortedTileItems(uint32_t tileItemCount) {
+    updateDescriptorSet(tileGatherItemsDescriptorSet_, {4, 22, 24});
+    bindAndDispatch(tileGatherItemsPipeline_, tileGatherItemsDescriptorSet_, ceilDiv(tileItemCount, 256u));
+}
+
+void GaussianForwardRenderer::rebuildTileRanges() {
+    updateDescriptorSet(tileRangeBuildDescriptorSet_, {4, 5, 21, 22});
+    bindAndDispatch(tileRangeBuildPipeline_, tileRangeBuildDescriptorSet_, ceilDiv(tileCount(extent_), 256u));
+    shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+}
+
+void GaussianForwardRenderer::ensureTileSortResources(uint32_t tileItemCount) {
+    if (!radixSorter_) {
+        throw std::runtime_error("Training tile radix sorter is not initialized");
+    }
+
+    VrdxSorterStorageRequirements sorterRequirements{};
+    vrdxGetSorterKeyValueStorageRequirements(radixSorter_, tileItemCount, &sorterRequirements);
+    trainingBuffers_->ensureTileSortStorage(tileItemCount,
+                                            sorterRequirements.size,
+                                            vk::BufferUsageFlags(sorterRequirements.usage));
 }
 
 void GaussianForwardRenderer::compositePixels() {
@@ -330,12 +423,30 @@ void GaussianForwardRenderer::shaderBufferBarrier(std::initializer_list<vk::Desc
                                    nullptr);
 }
 
+void GaussianForwardRenderer::shaderMemoryBarrier() {
+    vk::MemoryBarrier barrier{};
+    barrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
+           .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    commandBuffer_.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                   vk::PipelineStageFlagBits::eComputeShader,
+                                   vk::DependencyFlagBits{},
+                                   1,
+                                   &barrier,
+                                   0,
+                                   nullptr,
+                                   0,
+                                   nullptr);
+}
+
 void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSet,
                                                   std::initializer_list<uint32_t> bindings) {
     auto gaussianParamsInfo = trainingBuffers_->gaussianParamsInfo();
     auto gaussianGradsInfo = trainingBuffers_->gaussianGradsInfo();
     auto projectedInfo = trainingBuffers_->projectedInfo();
-    auto tileItemsInfo = trainingBuffers_->tileItemsInfo();
+    auto tileItemsInfo = (descriptorSet == tileEmitDescriptorSet_ ||
+                          descriptorSet == tileGatherItemsDescriptorSet_)
+        ? trainingBuffers_->tileItemsUnsortedInfo()
+        : trainingBuffers_->tileItemsInfo();
     auto tileRangesInfo = trainingBuffers_->tileRangesInfo();
     auto renderedColorInfo = trainingBuffers_->renderedColorInfo();
     auto lossInfo = trainingBuffers_->lossInfo();
@@ -345,7 +456,7 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     auto gaussianVisibilityInfo = trainingBuffers_->gaussianVisibilityInfo();
     auto densificationStatesInfo = trainingBuffers_->densificationStatesInfo();
 
-    std::array<vk::DescriptorBufferInfo, 20> infos{};
+    std::array<vk::DescriptorBufferInfo, 25> infos{};
     infos[0] = gaussianParamsInfo;
     infos[1] = gaussianGradsInfo;
     infos[3] = projectedInfo;
@@ -358,8 +469,13 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     infos[14] = pixelBlendStatesInfo;
     infos[15] = gaussianVisibilityInfo;
     infos[16] = densificationStatesInfo;
+    infos[20] = trainingBuffers_->tileKeyLowInfo();
+    infos[21] = trainingBuffers_->tileKeyHighInfo();
+    infos[22] = trainingBuffers_->tileSortIndicesInfo();
+    infos[23] = trainingBuffers_->tileSortScratchInfo();
+    infos[24] = trainingBuffers_->tileItemsSortedInfo();
 
-    std::array<vk::WriteDescriptorSet, 12> writes{};
+    std::array<vk::WriteDescriptorSet, 16> writes{};
     uint32_t writeCount = 0;
     for (uint32_t binding : bindings) {
         if (!infos[binding].buffer) {

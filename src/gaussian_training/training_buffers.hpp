@@ -18,11 +18,14 @@ public:
 
     void resize(uint32_t gaussianCount, TrainingExtent extent);
     void resizeTileItems(uint32_t tileItemCapacity);
+    void ensureTileSortStorage(uint32_t tileItemCapacity, vk::DeviceSize sortStorageSize, vk::BufferUsageFlags sortStorageUsage);
     void ensureDensificationCapacity(uint32_t gaussianCapacity);
     void adoptDensifiedGaussians(uint32_t gaussianCount);
     void uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount);
     std::vector<GaussianTrainParam> downloadGaussianParams(uint32_t gaussianCount);
     std::vector<GaussianVisibilityState> downloadGaussianVisibility(uint32_t gaussianCount);
+    std::vector<float> downloadLoss(uint32_t pixelCount);
+    std::vector<glm::vec4> downloadRenderedColor(uint32_t pixelCount);
     void uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height);
     void uploadCamera(const TrainingForwardCamera& camera);
     uint32_t requiredTileItemCount();
@@ -37,7 +40,19 @@ public:
     vk::DescriptorBufferInfo gaussianGradsInfo() const { return gaussianGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo adamStatesInfo() const { return adamStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo projectedInfo() const { return projected_.getDescriptorInfo(); }
-    vk::DescriptorBufferInfo tileItemsInfo() const { return tileItems_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo tileItemsInfo() const { return tileItemsSorted_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo tileItemsUnsortedInfo() const { return tileItems_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo tileKeyLowInfo() const { return tileKeyLow_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo tileKeyHighInfo() const { return tileKeyHigh_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo tileSortIndicesInfo() const { return tileSortIndices_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo tileSortScratchInfo() const { return tileSortScratch_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo tileItemsSortedInfo() const { return tileItemsSorted_.getDescriptorInfo(); }
+    vk::Buffer tileItemsBuffer() const { return tileItems_.getBuffer(); }
+    vk::Buffer tileKeyLowBuffer() const { return tileKeyLow_.getBuffer(); }
+    vk::Buffer tileKeyHighBuffer() const { return tileKeyHigh_.getBuffer(); }
+    vk::Buffer tileSortIndicesBuffer() const { return tileSortIndices_.getBuffer(); }
+    vk::Buffer tileSortScratchBuffer() const { return tileSortScratch_.getBuffer(); }
+    vk::Buffer tileSortStorageBuffer() const { return tileSortStorage_.getBuffer(); }
     vk::DescriptorBufferInfo tileRangesInfo() const { return tileRanges_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo renderedColorInfo() const { return renderedColor_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo targetColorInfo() const { return targetColor_.getDescriptorInfo(); }
@@ -74,6 +89,12 @@ private:
     Buffer adamStates_;
     Buffer projected_;
     Buffer tileItems_;
+    Buffer tileKeyLow_;
+    Buffer tileKeyHigh_;
+    Buffer tileSortIndices_;
+    Buffer tileSortScratch_;
+    Buffer tileItemsSorted_;
+    Buffer tileSortStorage_;
     Buffer tileRanges_;
     Buffer renderedColor_;
     Buffer targetColor_;

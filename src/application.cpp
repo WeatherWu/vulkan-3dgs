@@ -586,13 +586,33 @@ void Application::drawTrainingControls() {
         ImGui::BeginDisabled();
     }
 
-    ImGui::InputText("Dataset Folder", training_dataset_path_.data(), training_dataset_path_.size());
+    if (ImGui::InputText("Dataset Folder", training_dataset_path_.data(), training_dataset_path_.size())) {
+        training_dataset_valid_ = false;
+        training_dataset_loaded_ = false;
+        training_initialized_ = false;
+        training_running_ = false;
+        training_frame_count_ = 0;
+        training_width_ = 0;
+        training_height_ = 0;
+        training_status_ = "Dataset path changed. Validate or start training to load it.";
+    }
     ImGui::SameLine();
     if (ImGui::Button("Browse##DatasetFolder")) {
         chooseTrainingDatasetFolderFromUi();
     }
+    const int previousDownscale = training_downscale_;
     ImGui::InputInt("Downscale", &training_downscale_);
     training_downscale_ = std::clamp(training_downscale_, 1, 16);
+    if (training_downscale_ != previousDownscale) {
+        training_dataset_valid_ = false;
+        training_dataset_loaded_ = false;
+        training_initialized_ = false;
+        training_running_ = false;
+        training_frame_count_ = 0;
+        training_width_ = 0;
+        training_height_ = 0;
+        training_status_ = "Dataset downscale changed. Validate or start training to load it.";
+    }
 
     const bool canEditTrainingSetup = !training_running_;
 
@@ -637,8 +657,28 @@ void Application::drawTrainingControls() {
         if (!canEditTrainingSetup) {
             ImGui::BeginDisabled();
         }
-        ImGui::InputFloat("Learning Rate", &training_learning_rate_, 0.0001f, 0.001f, "%.6g");
-        training_learning_rate_ = std::max(training_learning_rate_, 0.0f);
+        ImGui::InputFloat("Position LR", &training_position_lr_, 0.00001f, 0.0001f, "%.6g");
+        training_position_lr_ = std::max(training_position_lr_, 0.0f);
+        ImGui::InputFloat("Position LR Final", &training_position_lr_final_, 0.000001f, 0.00001f, "%.6g");
+        training_position_lr_final_ = std::max(training_position_lr_final_, 0.0f);
+        ImGui::InputFloat("Position LR Delay", &training_position_lr_delay_mult_, 0.01f, 0.05f, "%.6g");
+        training_position_lr_delay_mult_ = std::clamp(training_position_lr_delay_mult_, 0.0f, 1.0f);
+        ImGui::InputFloat("Position LR Steps", &training_position_lr_max_steps_, 1000.0f, 5000.0f, "%.0f");
+        training_position_lr_max_steps_ = std::max(training_position_lr_max_steps_, 1.0f);
+        ImGui::InputFloat("Feature LR", &training_feature_lr_, 0.0001f, 0.001f, "%.6g");
+        training_feature_lr_ = std::max(training_feature_lr_, 0.0f);
+        ImGui::InputFloat("Feature Rest LR", &training_feature_rest_lr_, 0.00001f, 0.0001f, "%.6g");
+        training_feature_rest_lr_ = std::max(training_feature_rest_lr_, 0.0f);
+        ImGui::InputFloat("Opacity LR", &training_opacity_lr_, 0.001f, 0.01f, "%.6g");
+        training_opacity_lr_ = std::max(training_opacity_lr_, 0.0f);
+        ImGui::InputFloat("Scale LR", &training_scale_lr_, 0.0001f, 0.001f, "%.6g");
+        training_scale_lr_ = std::max(training_scale_lr_, 0.0f);
+        ImGui::InputFloat("Rotation LR", &training_rotation_lr_, 0.0001f, 0.001f, "%.6g");
+        training_rotation_lr_ = std::max(training_rotation_lr_, 0.0f);
+        ImGui::InputScalar("Max SH Degree", ImGuiDataType_U32, &training_max_sh_degree_);
+        training_max_sh_degree_ = std::min(training_max_sh_degree_, 3u);
+        ImGui::InputScalar("SH Degree Interval", ImGuiDataType_U32, &training_sh_degree_interval_);
+        training_sh_degree_interval_ = std::max(training_sh_degree_interval_, 1u);
         ImGui::InputFloat("Adam Beta1", &training_adam_beta1_, 0.01f, 0.05f, "%.6g");
         training_adam_beta1_ = std::clamp(training_adam_beta1_, 0.0f, 0.999999f);
         ImGui::InputFloat("Adam Beta2", &training_adam_beta2_, 0.001f, 0.01f, "%.6g");
@@ -647,6 +687,8 @@ void Application::drawTrainingControls() {
         training_adam_epsilon_ = std::max(training_adam_epsilon_, 1e-12f);
         ImGui::InputFloat("Gradient Clip", &training_grad_clip_, 10.0f, 100.0f, "%.6g");
         training_grad_clip_ = std::max(training_grad_clip_, 1e-8f);
+        ImGui::InputFloat("DSSIM Weight", &training_loss_dssim_weight_, 0.01f, 0.05f, "%.6g");
+        training_loss_dssim_weight_ = std::clamp(training_loss_dssim_weight_, 0.0f, 1.0f);
         if (!canEditTrainingSetup) {
             ImGui::EndDisabled();
         }
@@ -677,12 +719,15 @@ void Application::drawTrainingControls() {
         training_percent_dense_ = std::clamp(training_percent_dense_, 0.0f, 1.0f);
         ImGui::InputFloat("Screen Prune Size", &training_screen_size_prune_threshold_, 1.0f, 10.0f, "%.3f");
         training_screen_size_prune_threshold_ = std::max(training_screen_size_prune_threshold_, 0.0f);
+        ImGui::InputFloat("World Prune Size", &training_world_size_prune_threshold_, 0.001f, 0.01f, "%.6g");
+        training_world_size_prune_threshold_ = std::max(training_world_size_prune_threshold_, 0.0f);
         if (!canEditTrainingSetup) {
             ImGui::EndDisabled();
         }
     }
 
-    bool canTrain = training_dataset_loaded_;
+    const bool hasDatasetPath = !inputBufferString(training_dataset_path_).empty();
+    bool canTrain = hasDatasetPath;
     if (!canTrain) {
         ImGui::BeginDisabled();
     }
@@ -690,11 +735,19 @@ void Application::drawTrainingControls() {
     if (ImGui::Button(training_running_ ? "Pause Training" : "Start Training")) {
         if (training_running_) {
             training_running_ = false;
+            setTrainingStatus("Training paused.");
         } else {
             try {
+                if (!training_dataset_loaded_) {
+                    loadTrainingDatasetFromUi();
+                    if (!training_dataset_loaded_) {
+                        return;
+                    }
+                }
                 applyTrainingConfigFromUi();
                 initializeTrainingIfNeeded();
                 training_running_ = true;
+                setTrainingStatus("Training started.");
             } catch (const std::exception& error) {
                 training_running_ = false;
                 setTrainingError(error.what());
@@ -706,8 +759,32 @@ void Application::drawTrainingControls() {
         ImGui::EndDisabled();
     }
 
+    ImGui::Text("Dataset valid %s, loaded %s",
+                training_dataset_valid_ ? "yes" : "no",
+                training_dataset_loaded_ ? "yes" : "no");
+    ImGui::Text("Training initialized %s, running %s",
+                training_initialized_ ? "yes" : "no",
+                training_running_ ? "yes" : "no");
+    if (!hasDatasetPath) {
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.25f, 1.0f),
+                           "Choose a dataset folder before starting training.");
+    } else if (!training_dataset_loaded_) {
+        ImGui::TextWrapped("Start Training will validate and load the dataset first.");
+    }
+
     ImGui::Text("Steps %llu", static_cast<unsigned long long>(training_steps_done_));
     ImGui::Text("Gaussians %u", training_.gaussianCount());
+    const auto& validation = training_.validationStats();
+    ImGui::Text("Loss %.6g", validation.meanLoss);
+    ImGui::Text("Render alpha %.6g", validation.meanRenderedAlpha);
+    ImGui::Text("Tile items %u", validation.tileItemCount);
+    if (!validation.valid && training_steps_done_ > 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f),
+                           "Validation issue: invalid loss %u, invalid pixels %u, non-finite gaussians %u",
+                           validation.invalidLossCount,
+                           validation.invalidRenderedPixelCount,
+                           validation.nonFiniteGaussianCount);
+    }
     ImGui::Text("Frame %llu / %u",
                 static_cast<unsigned long long>(training_.hasDataset() ? training_.currentFrameIndex() : 0),
                 training_frame_count_);
@@ -756,6 +833,9 @@ void Application::validateTrainingDatasetFromUi() {
         training_width_ = validation.width;
         training_height_ = validation.height;
         if (!validation.valid) {
+            training_dataset_loaded_ = false;
+            training_initialized_ = false;
+            training_running_ = false;
             setTrainingError(validation.message);
             return;
         }
@@ -765,11 +845,21 @@ void Application::validateTrainingDatasetFromUi() {
                           "x" + std::to_string(training_height_));
     } catch (const std::exception& error) {
         training_dataset_valid_ = false;
+        training_dataset_loaded_ = false;
+        training_initialized_ = false;
+        training_running_ = false;
+        training_frame_count_ = 0;
+        training_width_ = 0;
+        training_height_ = 0;
         setTrainingError(error.what());
     }
 }
 
 void Application::loadTrainingDatasetFromUi() {
+    training_running_ = false;
+    training_dataset_loaded_ = false;
+    training_initialized_ = false;
+
     validateTrainingDatasetFromUi();
     if (!training_dataset_valid_) {
         return;
@@ -793,9 +883,14 @@ void Application::loadTrainingDatasetFromUi() {
         training_initialized_ = false;
         training_dataset_loaded_ = true;
         training_steps_done_ = 0;
-        setTrainingStatus("Dataset loaded. Press Start Training to initialize and train.");
+        setTrainingStatus("Dataset loaded: " + std::to_string(training_frame_count_) +
+                          " frames, " + std::to_string(training_width_) +
+                          "x" + std::to_string(training_height_) +
+                          ". Press Start Training to initialize and train.");
     } catch (const std::exception& error) {
         training_dataset_loaded_ = false;
+        training_initialized_ = false;
+        training_running_ = false;
         setTrainingError(error.what());
     }
 }
@@ -965,11 +1060,22 @@ void Application::applyTrainingConfigFromUi() {
     }
 
     TrainingOptimizerConfig optimizerConfig{};
-    optimizerConfig.learningRate = training_learning_rate_;
+    optimizerConfig.positionLearningRate = training_position_lr_;
+    optimizerConfig.positionLearningRateFinal = training_position_lr_final_;
+    optimizerConfig.positionLearningRateDelayMult = training_position_lr_delay_mult_;
+    optimizerConfig.positionLearningRateMaxSteps = training_position_lr_max_steps_;
+    optimizerConfig.featureLearningRate = training_feature_lr_;
+    optimizerConfig.featureRestLearningRate = training_feature_rest_lr_;
+    optimizerConfig.opacityLearningRate = training_opacity_lr_;
+    optimizerConfig.scaleLearningRate = training_scale_lr_;
+    optimizerConfig.rotationLearningRate = training_rotation_lr_;
     optimizerConfig.beta1 = training_adam_beta1_;
     optimizerConfig.beta2 = training_adam_beta2_;
     optimizerConfig.epsilon = training_adam_epsilon_;
     optimizerConfig.gradClip = training_grad_clip_;
+    optimizerConfig.lossDssimWeight = training_loss_dssim_weight_;
+    optimizerConfig.maxSHDegree = std::min(training_max_sh_degree_, 3u);
+    optimizerConfig.shDegreeInterval = std::max(training_sh_degree_interval_, 1u);
     training_.setOptimizerConfig(optimizerConfig);
 
     applyTrainingDensificationConfigFromUi();
@@ -989,6 +1095,7 @@ void Application::applyTrainingDensificationConfigFromUi() {
     config.minOpacity = std::clamp(training_min_opacity_, 0.0f, 0.99f);
     config.percentDense = std::clamp(training_percent_dense_, 0.0f, 1.0f);
     config.screenSizePruneThreshold = std::max(training_screen_size_prune_threshold_, 0.0f);
+    config.worldSizePruneThreshold = std::max(training_world_size_prune_threshold_, 0.0f);
     training_.setDensificationConfig(config);
 }
 

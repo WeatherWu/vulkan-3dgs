@@ -12,6 +12,7 @@ struct TrainingDensificationPushConstants {
     float screenSizePruneThreshold;
     uint randomSeed;
     uint resetOpacity;
+    float worldSizePruneThreshold;
     uint padding1;
 };
 

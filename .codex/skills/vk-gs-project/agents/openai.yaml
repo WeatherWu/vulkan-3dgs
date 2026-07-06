@@ -1,0 +1,4 @@
+interface:
+  display_name: "VK-GS Project"
+  short_description: "Guide for vk-gs renderer and training"
+  default_prompt: "Use $vk-gs-project to inspect, modify, debug, or extend the vk-gs Vulkan Gaussian Splatting project."

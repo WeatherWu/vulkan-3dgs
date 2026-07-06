@@ -53,6 +53,7 @@ public:
     void setTrainingFrameIndex(size_t frameIndex);
     void setDensificationConfig(const TrainingDensificationConfig& config) { densificationConfig_ = config; }
     void setOptimizerConfig(const TrainingOptimizerConfig& config) { optimizerConfig_ = config; }
+    void setValidationInterval(uint32_t interval) { validationInterval_ = interval; }
 
     bool isInitialized() const { return initialized_; }
     bool isRendererInitialized() const { return rendererInitialized_; }
@@ -60,6 +61,8 @@ public:
     bool hasTrainableModel() const { return trainableGaussianCount_ > 0; }
     bool usedRandomInitialization() const { return usedRandomInitialization_; }
     uint32_t gaussianCount() const { return trainableGaussianCount_; }
+    uint32_t trainingIteration() const { return trainingIteration_; }
+    const TrainingValidationStats& validationStats() const { return validationStats_; }
     size_t datasetFrameCount() const { return dataset_.size(); }
     size_t currentFrameIndex() const { return currentDatasetFrameIndex_; }
     TrainingBuffers& buffers() { return buffers_; }
@@ -77,6 +80,7 @@ private:
                                         uint32_t computeQueueFamilyIndex);
     void destroyTrainingCommandResources();
     void uploadCurrentTrainingFrame();
+    void validateTrainingStep(uint32_t tileItemCount);
     std::vector<GaussianTrainParam> createSparsePointInitialGaussians() const;
     std::vector<GaussianTrainParam> createRandomInitialGaussians(const TrainingInitializationConfig& config) const;
     TrainingForwardCamera createTrainingCamera(const TrainingCameraFrame& frame) const;
@@ -101,6 +105,8 @@ private:
     TrainingDensificationConfig densificationConfig_{};
     TrainingOptimizerConfig optimizerConfig_{};
     uint32_t trainingIteration_ = 0;
+    uint32_t validationInterval_ = 10;
+    TrainingValidationStats validationStats_{};
     float sceneExtent_ = 1.0f;
 
 };

@@ -136,6 +136,8 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_clear.
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_count.comp.slang" "train_forward_tile_count.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_prefix.comp.slang" "train_forward_tile_prefix.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_emit.comp.slang" "train_forward_tile_emit.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather_high.comp.slang" "train_forward_tile_gather_high.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather_items.comp.slang" "train_forward_tile_gather_items.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_sort.comp.slang" "train_forward_tile_sort.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang" "train_forward.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_loss.comp.slang" "train_loss.comp")
