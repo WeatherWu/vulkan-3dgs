@@ -3,6 +3,9 @@ project(vk_gs_windows VERSION 1.0.0 LANGUAGES CXX)
 
 # 创建示例应用程序
 add_executable(vk_gs_windows main.cpp)
+if(NOT WIN32)
+    set_target_properties(vk_gs_windows PROPERTIES OUTPUT_NAME vk_gs)
+endif()
 
 find_package(imgui CONFIG REQUIRED)
 

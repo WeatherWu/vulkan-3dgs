@@ -58,6 +58,13 @@ void Device::createDevice() {
     deviceFeatures.setSamplerAnisotropy(VK_TRUE);
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.setShaderDrawParameters(VK_TRUE);
+    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
+    atomicFloatFeatures.setShaderBufferFloat32Atomics(VK_TRUE)
+                       .setShaderBufferFloat32AtomicAdd(VK_TRUE);
+    vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
+    atomicFloat2Features.setShaderBufferFloat32AtomicMinMax(VK_TRUE);
+    vulkan11Features.setPNext(&atomicFloatFeatures);
+    atomicFloatFeatures.setPNext(&atomicFloat2Features);
     createInfo.setPEnabledFeatures(&deviceFeatures);
     createInfo.setPNext(&vulkan11Features);
 
@@ -203,14 +210,21 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
     // 检查特性支持
     vk::PhysicalDeviceFeatures supported_features = device.getFeatures();
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
+    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
+    vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
     vk::PhysicalDeviceFeatures2 features2{};
     features2.setPNext(&vulkan11Features);
+    vulkan11Features.setPNext(&atomicFloatFeatures);
+    atomicFloatFeatures.setPNext(&atomicFloat2Features);
     device.getFeatures2(&features2);
     
     return queueFamilyIndices_ && 
            extensions_supported && swapchain_adequate && 
            supported_features.samplerAnisotropy &&
-           vulkan11Features.shaderDrawParameters;
+           vulkan11Features.shaderDrawParameters &&
+           atomicFloatFeatures.shaderBufferFloat32Atomics &&
+           atomicFloatFeatures.shaderBufferFloat32AtomicAdd &&
+           atomicFloat2Features.shaderBufferFloat32AtomicMinMax;
 }
 
 void Device::cleanup() {

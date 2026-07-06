@@ -179,6 +179,7 @@ void GaussianTraining::cleanup() {
     buffers_.cleanup();
     trainableGaussianCount_ = 0;
     usedRandomInitialization_ = false;
+    randomFrameStack_.clear();
     initialized_ = false;
 }
 
@@ -280,7 +281,12 @@ void GaussianTraining::trainStep() {
         throw std::runtime_error("GaussianTraining::trainStep called without initialized training gaussians");
     }
 
+    if (isTrainingComplete()) {
+        return;
+    }
+
     if (hasDataset()) {
+        selectTrainingFrameForIteration();
         uploadCurrentTrainingFrame();
     }
 
@@ -376,7 +382,8 @@ void GaussianTraining::trainStep() {
     }
 
     ++trainingIteration_;
-    if (hasDataset()) {
+    if (hasDataset() &&
+        scheduleConfig_.imageSelectionMode == TrainingImageSelectionMode::Sequential) {
         currentDatasetFrameIndex_ = (currentDatasetFrameIndex_ + 1) % dataset_.size();
     }
 }
@@ -385,6 +392,7 @@ void GaussianTraining::loadMipNeRF360Dataset(const std::filesystem::path& sceneR
                                              uint32_t preferredDownscale) {
     dataset_ = TrainingDatasetLoader::loadMipNeRF360Scene(sceneRoot, preferredDownscale);
     currentDatasetFrameIndex_ = 0;
+    randomFrameStack_.clear();
 
     const auto& firstFrame = dataset_.frames.front();
     LOG_INFO("GaussianTraining loaded dataset {} ({} frames, {} sparse points, {}x{}, downscale {})",
@@ -416,6 +424,8 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     buffers_.uploadGaussianParams(params.data(), static_cast<uint32_t>(params.size()));
     trainableGaussianCount_ = static_cast<uint32_t>(params.size());
     trainingIteration_ = 0;
+    frameRng_.seed(scheduleConfig_.randomSeed);
+    randomFrameStack_.clear();
     sceneExtent_ = estimateSceneExtent();
 
     if (usedRandomInitialization_) {
@@ -527,6 +537,17 @@ void GaussianTraining::setTrainingFrameIndex(size_t frameIndex) {
     currentDatasetFrameIndex_ = frameIndex;
 }
 
+void GaussianTraining::setScheduleConfig(const TrainingScheduleConfig& config) {
+    scheduleConfig_ = config;
+    frameRng_.seed(scheduleConfig_.randomSeed);
+    randomFrameStack_.clear();
+}
+
+bool GaussianTraining::isTrainingComplete() const {
+    return scheduleConfig_.totalIterations > 0 &&
+           trainingIteration_ >= scheduleConfig_.totalIterations;
+}
+
 TrainingPushConstants GaussianTraining::createPushConstants() const {
     TrainingPushConstants pushConstants{};
     pushConstants.gaussianCount = trainableGaussianCount_;
@@ -606,6 +627,26 @@ void GaussianTraining::uploadCurrentTrainingFrame() {
     TrainingImage targetImage = TrainingDatasetLoader::loadImage(frame);
     buffers_.uploadTargetColor(targetImage.pixels.data(), targetImage.width, targetImage.height);
     buffers_.uploadCamera(createTrainingCamera(frame));
+}
+
+void GaussianTraining::selectTrainingFrameForIteration() {
+    if (dataset_.empty() ||
+        scheduleConfig_.imageSelectionMode != TrainingImageSelectionMode::Random) {
+        return;
+    }
+
+    if (randomFrameStack_.empty()) {
+        randomFrameStack_.reserve(dataset_.size());
+        for (size_t frameIndex = 0; frameIndex < dataset_.size(); ++frameIndex) {
+            randomFrameStack_.push_back(frameIndex);
+        }
+    }
+
+    std::uniform_int_distribution<size_t> distribution(0, randomFrameStack_.size() - 1u);
+    const size_t stackIndex = distribution(frameRng_);
+    currentDatasetFrameIndex_ = randomFrameStack_[stackIndex];
+    randomFrameStack_[stackIndex] = randomFrameStack_.back();
+    randomFrameStack_.pop_back();
 }
 
 void GaussianTraining::validateTrainingStep(uint32_t tileItemCount) {

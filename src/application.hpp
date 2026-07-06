@@ -142,6 +142,8 @@ private:
     uint32_t training_random_seed_ = 1;
     float training_initial_opacity_ = 0.1f;
     float training_scene_radius_scale_ = 1.0f;
+    int training_mode_ = 0;
+    uint32_t training_total_iterations_ = 30000;
     uint32_t training_steps_per_frame_ = 1;
     float training_position_lr_ = 0.00016f;
     float training_position_lr_final_ = 0.0000016f;

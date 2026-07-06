@@ -45,6 +45,17 @@ struct TrainingInitializationConfig {
     float sceneRadiusScale = 1.0f;
 };
 
+enum class TrainingImageSelectionMode : uint32_t {
+    Sequential = 0,
+    Random = 1,
+};
+
+struct TrainingScheduleConfig {
+    TrainingImageSelectionMode imageSelectionMode = TrainingImageSelectionMode::Sequential;
+    uint32_t totalIterations = 0;
+    uint32_t randomSeed = 1;
+};
+
 struct TrainingOptimizerConfig {
     float positionLearningRate = 0.00016f;
     float positionLearningRateFinal = 0.0000016f;

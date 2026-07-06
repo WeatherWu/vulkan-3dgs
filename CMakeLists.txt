@@ -32,7 +32,15 @@ option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
 # === 着色器编译配置 ===
 set(SLANG_HINTS)
 if(DEFINED ENV{VCPKG_ROOT})
-    list(APPEND SLANG_HINTS "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/shader-slang")
+    if(DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND SLANG_HINTS "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/tools/shader-slang")
+    endif()
+    if(DEFINED ENV{VCPKG_DEFAULT_TRIPLET})
+        list(APPEND SLANG_HINTS "$ENV{VCPKG_ROOT}/installed/$ENV{VCPKG_DEFAULT_TRIPLET}/tools/shader-slang")
+    endif()
+    list(APPEND SLANG_HINTS
+        "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/shader-slang"
+        "$ENV{VCPKG_ROOT}/installed/x64-linux/tools/shader-slang")
 endif()
 
 find_program(SLANGC_EXECUTABLE slangc HINTS ${SLANG_HINTS} REQUIRED)

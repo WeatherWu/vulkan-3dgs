@@ -207,7 +207,7 @@ void Application::update(float delta_time) {
 
     if (training_running_) {
         try {
-            for (uint32_t i = 0; i < std::max(training_steps_per_frame_, 1u); ++i) {
+            for (uint32_t i = 0; training_running_ && i < std::max(training_steps_per_frame_, 1u); ++i) {
                 runTrainingStepFromUi();
             }
         } catch (const std::exception& error) {
@@ -652,6 +652,24 @@ void Application::drawTrainingControls() {
 
     ImGui::Separator();
     if (ImGui::CollapsingHeader("Training", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!canEditTrainingSetup) {
+            ImGui::BeginDisabled();
+        }
+        const char* trainingModes[] = {
+            "Sequential",
+            "3DGS Random"
+        };
+        ImGui::Combo("Mode", &training_mode_, trainingModes, IM_ARRAYSIZE(trainingModes));
+        training_mode_ = std::clamp(training_mode_, 0, 1);
+        if (training_mode_ == 1) {
+            training_total_iterations_ = 30000;
+            ImGui::BeginDisabled();
+            ImGui::InputScalar("Total Iterations", ImGuiDataType_U32, &training_total_iterations_);
+            ImGui::EndDisabled();
+        }
+        if (!canEditTrainingSetup) {
+            ImGui::EndDisabled();
+        }
         ImGui::InputScalar("Steps/Frame", ImGuiDataType_U32, &training_steps_per_frame_);
         training_steps_per_frame_ = std::max(training_steps_per_frame_, 1u);
         if (!canEditTrainingSetup) {
@@ -772,6 +790,11 @@ void Application::drawTrainingControls() {
         ImGui::TextWrapped("Start Training will validate and load the dataset first.");
     }
 
+    if (training_.totalIterations() > 0) {
+        ImGui::Text("Iterations %u / %u", training_.trainingIteration(), training_.totalIterations());
+    } else {
+        ImGui::Text("Iterations %u", training_.trainingIteration());
+    }
     ImGui::Text("Steps %llu", static_cast<unsigned long long>(training_steps_done_));
     ImGui::Text("Gaussians %u", training_.gaussianCount());
     const auto& validation = training_.validationStats();
@@ -928,8 +951,21 @@ void Application::runTrainingStepFromUi() {
     if (!training_dataset_loaded_) {
         throw std::runtime_error("Load a training dataset before starting training");
     }
+    if (training_.isTrainingComplete()) {
+        training_running_ = false;
+        setTrainingStatus("Training completed at " +
+                          std::to_string(training_.trainingIteration()) +
+                          " iterations.");
+        return;
+    }
     training_.trainStep();
     ++training_steps_done_;
+    if (training_.isTrainingComplete()) {
+        training_running_ = false;
+        setTrainingStatus("Training completed at " +
+                          std::to_string(training_.trainingIteration()) +
+                          " iterations.");
+    }
 }
 
 void Application::exportTrainingModelFromUi() {
@@ -1041,6 +1077,15 @@ void Application::applyTrainingConfigFromUi() {
     if (!training_dataset_loaded_) {
         throw std::runtime_error("Load a training dataset before starting training");
     }
+
+    TrainingScheduleConfig scheduleConfig{};
+    scheduleConfig.imageSelectionMode = training_mode_ == 1
+        ? TrainingImageSelectionMode::Random
+        : TrainingImageSelectionMode::Sequential;
+    scheduleConfig.totalIterations = training_mode_ == 1 ? 30000u : 0u;
+    scheduleConfig.randomSeed = training_random_seed_;
+    training_total_iterations_ = scheduleConfig.totalIterations > 0 ? scheduleConfig.totalIterations : 30000u;
+    training_.setScheduleConfig(scheduleConfig);
 
     if (!training_.hasTrainableModel()) {
         TrainingInitializationConfig initConfig{};

@@ -56,7 +56,9 @@ private:
     
     const std::vector<const char*> deviceExtensions_ = {
         vk::KHRSwapchainExtensionName,
-        vk::KHRPushDescriptorExtensionName
+        vk::KHRPushDescriptorExtensionName,
+        vk::EXTShaderAtomicFloatExtensionName,
+        vk::EXTShaderAtomicFloat2ExtensionName
     };
 };
 

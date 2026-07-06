@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <filesystem>
+#include <random>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 #include <GLFW/glfw3.h>
@@ -53,15 +54,18 @@ public:
     void setTrainingFrameIndex(size_t frameIndex);
     void setDensificationConfig(const TrainingDensificationConfig& config) { densificationConfig_ = config; }
     void setOptimizerConfig(const TrainingOptimizerConfig& config) { optimizerConfig_ = config; }
+    void setScheduleConfig(const TrainingScheduleConfig& config);
     void setValidationInterval(uint32_t interval) { validationInterval_ = interval; }
 
     bool isInitialized() const { return initialized_; }
     bool isRendererInitialized() const { return rendererInitialized_; }
     bool hasDataset() const { return !dataset_.empty(); }
     bool hasTrainableModel() const { return trainableGaussianCount_ > 0; }
+    bool isTrainingComplete() const;
     bool usedRandomInitialization() const { return usedRandomInitialization_; }
     uint32_t gaussianCount() const { return trainableGaussianCount_; }
     uint32_t trainingIteration() const { return trainingIteration_; }
+    uint32_t totalIterations() const { return scheduleConfig_.totalIterations; }
     const TrainingValidationStats& validationStats() const { return validationStats_; }
     size_t datasetFrameCount() const { return dataset_.size(); }
     size_t currentFrameIndex() const { return currentDatasetFrameIndex_; }
@@ -79,6 +83,7 @@ private:
                                         vk::Queue computeQueue,
                                         uint32_t computeQueueFamilyIndex);
     void destroyTrainingCommandResources();
+    void selectTrainingFrameForIteration();
     void uploadCurrentTrainingFrame();
     void validateTrainingStep(uint32_t tileItemCount);
     std::vector<GaussianTrainParam> createSparsePointInitialGaussians() const;
@@ -104,6 +109,9 @@ private:
     std::unique_ptr<GaussianDensificationRenderer> densification_;
     TrainingDensificationConfig densificationConfig_{};
     TrainingOptimizerConfig optimizerConfig_{};
+    TrainingScheduleConfig scheduleConfig_{};
+    std::mt19937 frameRng_{1u};
+    std::vector<size_t> randomFrameStack_;
     uint32_t trainingIteration_ = 0;
     uint32_t validationInterval_ = 10;
     TrainingValidationStats validationStats_{};
