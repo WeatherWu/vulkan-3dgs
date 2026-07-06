@@ -1,14 +1,14 @@
 # vk-gs
 
-Vulkan + 3D Gaussian Splatting 实验项目。当前仓库主要包含一个核心静态库、一个最小应用入口，以及一个用于加载 `insect.ply` 的 Debug 沙盒程序。
+Vulkan + Slang 3D Gaussian Splatting 实验项目。当前仓库包含普通 PLY 渲染路径和 MipNeRF360/COLMAP 数据集训练路径，训练端支持 compute forward/backward、Adam 优化、稠密化/修剪和 PLY 导出。
 
 ## 当前目标
 
 - `vk_gs_core`: 核心静态库，包含 Vulkan 上下文、资源封装、相机、PLY 读取和 Gaussian 渲染器。
-- `vk_gs_windows`: `apps/main.cpp` 的最小应用模板，只保留 `main()` 入口。
+- `vk_gs_windows`: `apps/main.cpp` 的主应用入口。Windows 输出为 `vk_gs_windows.exe`，非 Windows 平台输出名为 `vk_gs`。
 - `vk_gs_sandbox`: `sandbox/sandbox.cpp` 的调试入口，加载根目录下的 `insect.ply` 并启动 Gaussian 渲染窗口。
 
-Release 默认只构建 `vk_gs_windows` 和核心库。`vk_gs_sandbox` 只用于 Debug 默认构建，也可以手动指定目标构建。
+Release 默认只构建主应用和核心库。`vk_gs_sandbox` 只用于 Debug 默认构建，也可以手动指定目标构建。
 
 ## 目录结构
 
@@ -24,12 +24,16 @@ vk-gs/
 │   ├── CMakeLists.txt
 │   └── sandbox.cpp
 ├── shaders/
-│   └── gaussian_compute_shader/
+│   ├── gaussian_compute_shader/
+│   │   └── slang/
+│   │       ├── gaussian_common.slang
+│   │       ├── gaussian_compute_shader.vert.slang
+│   │       ├── gaussian_compute_shader.frag.slang
+│   │       └── radix_keygen.comp.slang
+│   └── training_shader/
 │       └── slang/
-│           ├── gaussian_common.slang
-│           ├── gaussian_compute_shader.vert.slang
-│           ├── gaussian_compute_shader.frag.slang
-│           └── radix_keygen.comp.slang
+│           ├── common/
+│           └── passes/
 └── src/
     ├── application.hpp/cpp
     ├── window.hpp/cpp
@@ -43,11 +47,19 @@ vk-gs/
     │   ├── compute_pipeline.hpp/cpp
     │   ├── shader.hpp/cpp
     │   └── swapchain.hpp/cpp
-    ├── gaussian_renderer_compute/
+    ├── gaussian_renderer/
     │   ├── gaussian_model.hpp/cpp
     │   ├── gaussian_renderer.hpp/cpp
     │   ├── pipeline.hpp/cpp
     │   └── renderpass.hpp/cpp
+    ├── gaussian_training/
+    │   ├── gaussian_training.hpp/cpp
+    │   ├── gaussian_forward_renderer.hpp/cpp
+    │   ├── gaussian_backward_renderer.hpp/cpp
+    │   ├── gaussian_densification_renderer.hpp/cpp
+    │   ├── training_buffers.hpp/cpp
+    │   ├── training_dataset.hpp/cpp
+    │   └── training_types.hpp
     └── utils/
         ├── camera.hpp/cpp
         ├── file_utils.hpp
@@ -82,12 +94,37 @@ sandbox.cpp
 
 读取时会恢复 alpha、scale，并根据 scale + quaternion 构建协方差矩阵。`.splat`、`.gs`、`.json` 目前只是预留，尚未实现。
 
+## Training
+
+`GaussianTraining` 是独立于普通 `GaussianRenderer` 的 compute 训练路径。它使用 MipNeRF360/COLMAP 风格数据集，加载真实图片尺寸，按 COLMAP 相机内参缩放后训练 Gaussian 参数。
+
+训练路径包含：
+
+- compute forward tile renderer
+- loss 和 backward passes
+- Adam-style optimizer
+- densification / pruning
+- PLY export
+
+训练 UI 支持两种调度模式：
+
+- `Sequential`: 按数据集图片顺序逐帧训练，没有固定总迭代停止。
+- `3DGS Random`: 按原始 3DGS 的 viewpoint stack 策略随机抽图，抽完一轮重填，并在 30000 iterations 自动停止。
+
+稠密化统计使用 shader float atomics，因此设备必须支持并启用：
+
+- `VK_EXT_shader_atomic_float`
+- `VK_EXT_shader_atomic_float2`
+
+如果 GPU/驱动不支持 buffer float32 atomic add/min-max，设备适配性检查会失败，训练路径不会以不可靠状态继续运行。
+
 ## Shader
 
 Slang 源码在：
 
 ```text
 shaders/gaussian_compute_shader/slang/
+shaders/training_shader/slang/
 ```
 
 CMake 使用 `slangc` 编译为 SPIR-V，并复制到运行目录：
@@ -102,6 +139,7 @@ build/bin/<Config>/shaders/
 - `gaussian_compute_shader.vert.slang`: 按排序索引读取高斯实例，投影协方差，计算屏幕椭圆和 SH 颜色。
 - `gaussian_compute_shader.frag.slang`: 计算高斯 alpha 衰减并输出颜色。
 - `radix_keygen.comp.slang`: GPU 可见性裁剪、排序 key 生成和 indirect draw instance count 写入。
+- `training_shader/slang/passes/*`: 训练 forward、loss、backward、optimizer、densify/prune 和 preview packing passes。
 
 ## 构建依赖
 
@@ -112,8 +150,17 @@ build/bin/<Config>/shaders/
 - GLFW3
 - GLM
 - STB headers
+- ImGui
+- ImGuiFileDialog（仓库内 `third_party/ImGuiFileDialog`）
 
 项目会优先 `find_package()` 查找依赖；找不到 GLFW/GLM/STB 时，`src/CMakeLists.txt` 里有 FetchContent 回退逻辑。离线环境建议提前通过 vcpkg 或系统包安装依赖，避免配置阶段尝试访问 GitHub。
+
+训练稠密化需要 GPU/驱动支持 Vulkan float atomic 扩展：
+
+- `VK_EXT_shader_atomic_float`
+- `VK_EXT_shader_atomic_float2`
+
+可用 `vulkaninfo` 检查 Linux 驱动是否暴露这些扩展。
 
 ## 构建
 
@@ -152,14 +199,44 @@ cmake --build build --config Debug --target vk_gs_sandbox
 .\build\bin\Debug\vk_gs_sandbox.exe
 ```
 
+Ubuntu + vcpkg 示例：
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+  -DVCPKG_TARGET_TRIPLET=x64-linux
+
+cmake --build build
+```
+
+Ubuntu 上建议安装 Vulkan loader、driver 和基础 X11 开发包：
+
+```bash
+sudo apt install vulkan-tools libvulkan1 mesa-vulkan-drivers xorg-dev
+```
+
+vcpkg 依赖示例：
+
+```bash
+vcpkg install vulkan glfw3 glm imgui stb shader-slang --triplet x64-linux
+```
+
+非 Windows 平台主应用输出名为：
+
+```bash
+./build/bin/Debug/vk_gs
+```
+
 ## 当前限制
 
-- `apps/main.cpp` 只是最小模板入口，还没有应用逻辑。
 - `sandbox` 依赖根目录的 `insect.ply`，路径当前按构建输出目录相对路径解析。
 - `Application::initialize()` 当前在构造函数中调用，不适合依赖派生类虚函数分发。
 - `.splat`、`.gs`、`.json` 加载尚未实现。
 - GPU 排序和 descriptor 资源重建仍是项目重点维护区域。
 - 没有引入 VMA，buffer/image memory 仍为手写分配。
+- `3DGS Random` 模式匹配原始 3DGS 的随机视角栈和 30000 iteration 调度，但 forward/backward 数学仍是项目实现，尚未声明与 reference 3DGS 完全一致。
+- 训练结果当前通过 PLY 导出进入普通渲染路径，主视口不会自动实时渲染训练 buffer。
 
 ## 日志
 

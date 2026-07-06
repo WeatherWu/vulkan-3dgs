@@ -17,6 +17,8 @@ Use this skill to become productive in the `vk-gs` repository quickly. Treat it 
 cmake --build build --config Debug
 ```
 
+   On single-config Linux generators, configure with `-DCMAKE_BUILD_TYPE=Debug` and build the same `build` directory.
+
 4. Do not introduce Ninja/CMake preset churn unless explicitly requested. Current active build path is the existing `build` directory.
 5. Preserve the user's dirty worktree. Do not revert unrelated changes.
 
@@ -42,9 +44,11 @@ The training path is not a thin wrapper over the graphics renderer. It owns its 
 - Keep C++/Slang struct layouts synchronized. `training_types.hpp` static asserts are important; shader structs in `shaders/training_shader/slang/common/` must match.
 - Descriptor buffer infos returned by `TrainingBuffers` are values. If a Vulkan write needs a pointer, keep the returned `vk::DescriptorBufferInfo` in a stable local variable before passing its address.
 - Training frame dimensions must match `TrainingBuffers::extent()`. Dataset loading currently uses real image dimensions from `stbi_info` and scales COLMAP intrinsics to those dimensions.
-- Training currently selects images sequentially, not randomly, and has no automatic total-iteration stop unless added.
+- Training supports two scheduling modes: `Sequential` keeps the previous ordered frame advance and has no fixed iteration stop; `3DGS Random` uses a random-without-replacement viewpoint stack and auto stops at 30000 iterations.
 - Training UI `Start Training` can auto validate/load a dataset, then initialize and run. If it is disabled, inspect `training_dataset_loaded_`, `training_dataset_valid_`, and the status text in `Application`.
+- Training densification statistics use float atomics. Device creation requires `VK_EXT_shader_atomic_float` and `VK_EXT_shader_atomic_float2` with buffer float32 atomic add/min-max features.
 - Shader additions must be added to top-level `CMakeLists.txt` via `compile_training_shader(...)` or `compile_slang_shader(...)`.
+- CMake Slang lookup supports vcpkg triplets. Windows keeps `vk_gs_windows.exe`; non-Windows app output is `vk_gs`.
 
 ## Validation Expectations
 
@@ -58,6 +62,12 @@ For UI/runtime issues, report the executable:
 
 ```text
 build/bin/Debug/vk_gs_windows.exe
+```
+
+On non-Windows builds, report:
+
+```text
+build/bin/Debug/vk_gs
 ```
 
 If a runtime issue depends on local data or GPU behavior and cannot be reproduced from the shell, explain the exact UI steps and error text to check.

@@ -3,7 +3,7 @@
 ## Repository Layout
 
 - `CMakeLists.txt`: top-level build and Slang shader compilation.
-- `apps/main.cpp`: normal app entry, builds `vk_gs_windows`.
+- `apps/main.cpp`: normal app entry, target name is `vk_gs_windows`; non-Windows output name is `vk_gs`.
 - `sandbox/`: debug utilities, including `dataset_probe.cpp`.
 - `src/application.*`: GLFW app, ImGui UI, file dialogs, training controls, render loop.
 - `src/renderer.*`: base renderer interfaces: `Renderer`, `ForwardTrainingRenderer`, `BackwardRenderer`.
@@ -33,6 +33,7 @@ Top-level CMake requires `slangc` and compiles each Slang pass explicitly. When 
 ## Runtime Targets
 
 - `build/bin/Debug/vk_gs_windows.exe`: primary app.
+- `build/bin/Debug/vk_gs`: primary non-Windows app output.
 - `build/bin/Debug/vk_gs_sandbox.exe`: debug sandbox.
 
 ## Application/UI Flow

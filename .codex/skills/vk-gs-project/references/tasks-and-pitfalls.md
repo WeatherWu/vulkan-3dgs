@@ -24,6 +24,7 @@ Run app after build:
 
 ```text
 build/bin/Debug/vk_gs_windows.exe
+build/bin/Debug/vk_gs
 ```
 
 ## Adding Or Editing Training Shader Passes
@@ -121,14 +122,14 @@ When adding parameters:
 
 ## Current Training Strategy
 
-- No automatic total training iteration stop.
 - `Steps/Frame` controls how many `trainStep()` calls run per UI update.
-- Current frame selection is sequential, not random.
-- An "epoch" is not represented in code; with `N` frames, `N` train steps equals one full sequential pass.
+- `Sequential` mode keeps ordered frame selection and has no automatic total training iteration stop.
+- `3DGS Random` mode uses a random-without-replacement viewpoint stack. With `N` frames, each stack refill covers all frames once in random order.
+- `3DGS Random` mode sets `totalIterations = 30000`; the UI stops training automatically at completion.
 
-To move closer to standard 3DGS, likely add:
+When touching scheduling, keep these separate:
 
-- total iteration limit, default 30000
-- random viewpoint sampling
-- optional deterministic seed
-- explicit training progress display
+- frame selection mode
+- total iteration limit
+- deterministic random seed
+- displayed training progress

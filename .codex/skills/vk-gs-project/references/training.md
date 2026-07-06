@@ -82,15 +82,19 @@ If no sparse points exist, random fallback samples Gaussians around the camera-p
 12. Validation on first 5 steps and every `validationInterval_`.
 13. Adopt densified Gaussian count.
 14. Increment `trainingIteration_`.
-15. Advance frame index sequentially.
+15. Advance or resample frame index according to the active schedule.
 
-Images are selected sequentially:
+Images are selected by `TrainingScheduleConfig`:
 
-```cpp
-currentDatasetFrameIndex_ = (currentDatasetFrameIndex_ + 1) % dataset_.size();
-```
+- `Sequential`: keeps the previous ordered frame advance:
 
-There is no current fixed total iteration count or automatic stop.
+  ```cpp
+  currentDatasetFrameIndex_ = (currentDatasetFrameIndex_ + 1) % dataset_.size();
+  ```
+
+- `3DGS Random`: uses a random-without-replacement viewpoint stack matching the original 3DGS training loop. When the stack is empty, it is refilled with all training frame indices, then each iteration samples and removes one index.
+
+Sequential mode has no fixed total iteration count. `3DGS Random` sets `totalIterations = 30000` and the UI stops training automatically when `trainingIteration()` reaches that value.
 
 ## Training Buffers
 
@@ -212,12 +216,20 @@ Densification/pruning runs at the end of a training step when the iteration is i
 
 Current logic supports clone/split split behavior, local Gaussian-normal offsets, scale shrinking, inherited/scaled Adam state, opacity reset, opacity pruning, screen/world size pruning.
 
+## Training Schedule Modes
+
+The Application UI exposes:
+
+- `Sequential`: ordered image traversal, no automatic iteration stop.
+- `3DGS Random`: random-without-replacement frame sampling and fixed 30000 total iterations.
+
+The optimizer defaults still mirror common 3DGS values, but forward/backward math remains project-specific and should not be treated as exact reference parity without further audit.
+
 ## Known Differences From Standard 3DGS
 
 Current implementation is not yet standard 3DGS parity:
 
-- No fixed 30000-iteration stop by default.
-- Image/view selection is sequential, not random.
+- Fixed 30000-iteration stop and random viewpoint-stack sampling are available only in `3DGS Random` mode; `Sequential` mode keeps the old behavior.
 - Training validation reads back GPU data and may be expensive.
 - Forward/backward math is still project-specific and should be audited against the paper/reference implementation before claiming parity.
 - Tile sort depends on stable 32-bit radix passes rather than native 64-bit key sort.
