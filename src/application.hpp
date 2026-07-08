@@ -11,7 +11,7 @@
 #include "utils/camera.hpp"
 #include "vulkan/swapchain.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Window;
 class Context;
@@ -49,7 +49,7 @@ public:
     // 设置相机参数（由外部调用）
     void setCamera(const glm::mat4& view, const glm::mat4& projection);
 
-    void setTrueCamera(const vk_gs::Camera& camera);
+    void setTrueCamera(const vulkan3DGS::Camera& camera);
     
 protected:
     virtual void initialize();
@@ -67,7 +67,7 @@ protected:
     glm::mat4 view_matrix_ = glm::mat4(1.0f);
     glm::mat4 projection_matrix_ = glm::mat4(1.0f);
 
-    vk_gs::Camera camera_;
+    vulkan3DGS::Camera camera_;
     bool has_true_camera_ = false;
 
     RenderMode current_mode_;
@@ -181,4 +181,4 @@ private:
     std::string training_error_;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

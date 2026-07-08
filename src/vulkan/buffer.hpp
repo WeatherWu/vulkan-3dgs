@@ -4,7 +4,7 @@
 #include <cstddef>
 #include "vulkan/command_pool.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Buffer {
 public:
@@ -59,4 +59,4 @@ private:
     void uploadData(const void* data, vk::DeviceSize size);
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

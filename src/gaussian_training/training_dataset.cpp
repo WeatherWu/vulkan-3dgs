@@ -15,7 +15,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -448,4 +448,4 @@ TrainingImage TrainingDatasetLoader::loadImage(const TrainingCameraFrame& frame)
     return image;
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

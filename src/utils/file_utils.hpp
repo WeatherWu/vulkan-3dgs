@@ -15,7 +15,7 @@
     #include <limits.h>
 #endif
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class FileUtils {
 public:
@@ -106,4 +106,4 @@ public:
     }
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

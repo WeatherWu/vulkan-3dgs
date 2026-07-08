@@ -6,7 +6,7 @@
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 struct TrainingExtent;
 
@@ -88,4 +88,4 @@ public:
     virtual bool isInitialized() const = 0;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

@@ -7,7 +7,7 @@
 #include <array>
 #include <algorithm>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 Buffer::~Buffer() {
     cleanup();
@@ -327,4 +327,4 @@ uint32_t Buffer::findMemoryType(vk::PhysicalDevice physicalDevice,
     throw std::runtime_error("Failed to find suitable memory type");
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

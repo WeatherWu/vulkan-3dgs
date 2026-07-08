@@ -6,7 +6,7 @@
 #include "utils/logger.hpp"
 #include "context/context.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 Swapchain::Swapchain(vk::SurfaceKHR surface):
       surface_(surface)
@@ -365,4 +365,4 @@ vk::Extent2D Swapchain::chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capab
     }
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

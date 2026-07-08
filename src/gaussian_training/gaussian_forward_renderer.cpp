@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -493,4 +493,4 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     device_.updateDescriptorSets(writeCount, writes.data(), 0, nullptr);
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

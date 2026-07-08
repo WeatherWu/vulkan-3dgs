@@ -15,7 +15,7 @@
 #include <sstream>
 #include <glm/gtc/packing.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -440,7 +440,7 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     swapchain_->createFramebuffers(device, renderPass_->getRenderPass(), RenderPass::DepthFormat);
 }
 
-void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix) {
+void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vulkan3DGS::Camera& camera, const glm::mat4& modelMatrix) {
     if (model != current_model_) {
         auto device = getDevice();
         if (device) {
@@ -1171,4 +1171,4 @@ void GaussianRenderer::recordRenderCommands(vk::CommandBuffer commandBuffer,
     commandBuffer.endRenderPass();
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

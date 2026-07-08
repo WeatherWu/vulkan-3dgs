@@ -4,7 +4,7 @@
 #include <vector>
 
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 enum class PresentModePreference {
     MaxFps = 0,
@@ -67,4 +67,4 @@ private:
     uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

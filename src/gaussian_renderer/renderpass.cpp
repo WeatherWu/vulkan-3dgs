@@ -6,7 +6,7 @@
 
 #include <array>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 RenderPass::RenderPass() = default;
 
@@ -98,4 +98,4 @@ void RenderPass::cleanup() {
     }
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

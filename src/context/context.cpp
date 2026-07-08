@@ -13,7 +13,7 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <string>
 #include <memory>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 // Vulkan调试消息回调函数
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -67,7 +67,7 @@ void Context::initialize(GLFWwindow* window) {
         setupDebugMessenger();
     }
 
-    device_ = std::make_unique<vk_gs::Device>(surface_);
+    device_ = std::make_unique<vulkan3DGS::Device>(surface_);
     device_->createDevice();
     
     LOG_INFO("Vulkan context initialized successfully");
@@ -106,7 +106,7 @@ void Context::createInstance() {
     }
     
     vk::ApplicationInfo appInfo{};
-    appInfo.setPApplicationName("Vulkan 3DGS")
+    appInfo.setPApplicationName("vulkan-3dgs")
            .setApplicationVersion(vk::makeVersion(1, 0, 0))
            .setPEngineName("No Engine")
            .setEngineVersion(vk::makeVersion(1, 0, 0))
@@ -233,4 +233,4 @@ std::vector<const char*> Context::getRequiredExtensions() {
     return extensions;
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

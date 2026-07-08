@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -240,4 +240,4 @@ void GaussianDensificationRenderer::shaderBufferBarrier(std::initializer_list<vk
                                    nullptr);
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

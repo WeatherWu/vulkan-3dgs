@@ -14,7 +14,7 @@
 #include "utils/camera.hpp"
 #include <vk_radix_sort.h>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 // 高斯渲染器，继承自通用渲染器基类
 class GaussianRenderer : public Renderer {
@@ -37,7 +37,7 @@ public:
     void setPresentModePreference(PresentModePreference preference);
     PresentModePreference getPresentModePreference() const { return presentModePreference_; }
 
-    void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vk_gs::Camera& camera, const glm::mat4& modelMatrix);
+    void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vulkan3DGS::Camera& camera, const glm::mat4& modelMatrix);
 
 private:
     // ---- ImGui ----
@@ -120,7 +120,7 @@ private:
 
     // ---- 模型 & 相机 ----
     const GaussianModel* current_model_ = nullptr;
-    vk_gs::Camera camera_;
+    vulkan3DGS::Camera camera_;
 
     bool imguiInitialized_ = false;
     PresentModePreference presentModePreference_ = PresentModePreference::MaxFps;
@@ -141,4 +141,4 @@ private:
 
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

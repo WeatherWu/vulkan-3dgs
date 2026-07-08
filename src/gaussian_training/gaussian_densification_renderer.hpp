@@ -7,7 +7,7 @@
 #include "gaussian_training/training_types.hpp"
 #include "vulkan/compute_pipeline.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class GaussianDensificationRenderer {
 public:
@@ -52,4 +52,4 @@ private:
     bool initialized_ = false;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

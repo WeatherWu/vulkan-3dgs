@@ -6,7 +6,7 @@
 #include "gaussian_training/training_types.hpp"
 #include "vulkan/compute_pipeline.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class TrainingPipelines {
 public:
@@ -29,4 +29,4 @@ private:
     ComputePipeline packRenderBuffer_;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

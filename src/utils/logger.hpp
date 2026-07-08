@@ -15,13 +15,13 @@
 #include <memory>
 #include <utility>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 enum class LogLevel {
-    DEBUG_VKGS,
-    INFO_VKGS,
-    WARN_VKGS,
-    ERROR_VKGS
+    DEBUG_VULKAN_3DGS,
+    INFO_VULKAN_3DGS,
+    WARN_VULKAN_3DGS,
+    ERROR_VULKAN_3DGS
 };
 
 class Logger {
@@ -60,10 +60,10 @@ public:
            << std::setw(2) << tm_info.tm_sec << "] ";
         
         switch (level) {
-            case LogLevel::DEBUG_VKGS: ss << "[DEBUG] "; break;
-            case LogLevel::INFO_VKGS: ss << "[INFO]  "; break;
-            case LogLevel::WARN_VKGS: ss << "[WARN]  "; break;
-            case LogLevel::ERROR_VKGS: ss << "[ERROR] "; break;
+            case LogLevel::DEBUG_VULKAN_3DGS: ss << "[DEBUG] "; break;
+            case LogLevel::INFO_VULKAN_3DGS: ss << "[INFO]  "; break;
+            case LogLevel::WARN_VULKAN_3DGS: ss << "[WARN]  "; break;
+            case LogLevel::ERROR_VULKAN_3DGS: ss << "[ERROR] "; break;
         }
         
         // 使用可变参数模板展开进行格式化
@@ -74,7 +74,7 @@ public:
     }
     
 private:
-    Logger() : level_(LogLevel::INFO_VKGS) {}
+    Logger() : level_(LogLevel::INFO_VULKAN_3DGS) {}
     
     // 基础情况：没有参数时直接输出格式字符串
     void format_impl(std::stringstream& ss, const std::string& format) {
@@ -102,9 +102,9 @@ private:
 };
 
 // 便捷宏
-#define LOG_DEBUG(format, ...) vk_gs::Logger::get_instance().log(vk_gs::LogLevel::DEBUG_VKGS, format, ##__VA_ARGS__)
-#define LOG_INFO(format, ...) vk_gs::Logger::get_instance().log(vk_gs::LogLevel::INFO_VKGS, format, ##__VA_ARGS__)
-#define LOG_WARN(format, ...) vk_gs::Logger::get_instance().log(vk_gs::LogLevel::WARN_VKGS, format, ##__VA_ARGS__)
-#define LOG_ERROR(format, ...) vk_gs::Logger::get_instance().log(vk_gs::LogLevel::ERROR_VKGS, format, ##__VA_ARGS__)
+#define LOG_DEBUG(format, ...) vulkan3DGS::Logger::get_instance().log(vulkan3DGS::LogLevel::DEBUG_VULKAN_3DGS, format, ##__VA_ARGS__)
+#define LOG_INFO(format, ...) vulkan3DGS::Logger::get_instance().log(vulkan3DGS::LogLevel::INFO_VULKAN_3DGS, format, ##__VA_ARGS__)
+#define LOG_WARN(format, ...) vulkan3DGS::Logger::get_instance().log(vulkan3DGS::LogLevel::WARN_VULKAN_3DGS, format, ##__VA_ARGS__)
+#define LOG_ERROR(format, ...) vulkan3DGS::Logger::get_instance().log(vulkan3DGS::LogLevel::ERROR_VULKAN_3DGS, format, ##__VA_ARGS__)
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

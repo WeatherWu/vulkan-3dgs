@@ -4,7 +4,7 @@
 #include <vector>
 #include "vulkan/shader.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Pipeline {
 public:
@@ -36,4 +36,4 @@ private:
     std::vector<Shader> shaders_;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

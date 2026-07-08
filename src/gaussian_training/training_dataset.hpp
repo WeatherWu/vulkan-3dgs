@@ -7,7 +7,7 @@
 
 #include <glm/glm.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 struct TrainingImage {
     uint32_t width = 0;
@@ -72,4 +72,4 @@ private:
     struct ColmapImage;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

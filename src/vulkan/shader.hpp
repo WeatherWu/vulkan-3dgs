@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Shader {
 public:
@@ -32,4 +32,4 @@ private:
     std::string entryPoint_ = "main";
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

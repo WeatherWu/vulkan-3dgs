@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <glm/glm.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 void TrainingBuffers::initialize(vk::Device device,
                                  vk::PhysicalDevice physicalDevice,
@@ -412,4 +412,4 @@ void TrainingBuffers::createUniformBuffer(Buffer& buffer, vk::DeviceSize size) {
                   vk::MemoryPropertyFlagBits::eDeviceLocal);
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

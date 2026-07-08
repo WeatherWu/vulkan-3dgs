@@ -8,7 +8,7 @@
 
 #include "device.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Context {
 public:
@@ -20,7 +20,7 @@ public:
         return *instance;
     }
 
-    friend class vk_gs::Device;
+    friend class vulkan3DGS::Device;
     
     void initialize(GLFWwindow* window);
     void cleanup();
@@ -29,7 +29,7 @@ public:
     bool isInitialized() const { return device_ != nullptr; }
     
     vk::SurfaceKHR& getSurface() { return surface_; }
-    vk_gs::Device& getDevice() { return *device_; }
+    vulkan3DGS::Device& getDevice() { return *device_; }
     vk::Device Device() const { return device_->getDevice(); }
     vk::PhysicalDevice PhysicalDevice() const { return device_->getPhysicalDevice(); }
     vk::Instance getInstance() const { return instance_; }
@@ -53,7 +53,7 @@ private:
     vk::DebugUtilsMessengerEXT debug_messenger_ = nullptr;
     vk::SurfaceKHR surface_ = nullptr;
 
-    std::unique_ptr<vk_gs::Device> device_;
+    std::unique_ptr<vulkan3DGS::Device> device_;
     
     bool enableValidationLayers_ = true;  // 启用验证层以调试Pipeline创建问题
 
@@ -62,4 +62,4 @@ private:
     };
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

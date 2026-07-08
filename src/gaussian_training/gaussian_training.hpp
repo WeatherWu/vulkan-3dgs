@@ -15,7 +15,7 @@
 #include "renderer.hpp"
 #include "vulkan/command_pool.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class GaussianRenderer;
 
@@ -119,4 +119,4 @@ private:
 
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

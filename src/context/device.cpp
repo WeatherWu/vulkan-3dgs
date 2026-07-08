@@ -5,7 +5,7 @@
 
 #include <set>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 Device::Device(vk::SurfaceKHR surface) : surface_(surface) {}
 
@@ -257,4 +257,4 @@ void Device::destroyCommandPool(vk::CommandPool commandPool) {
     }
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

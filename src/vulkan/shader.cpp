@@ -4,7 +4,7 @@
 
 #include <stdexcept>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 Shader::Shader() = default;
 
@@ -78,4 +78,4 @@ vk::PipelineShaderStageCreateInfo Shader::getStageCreateInfo() const {
     return stageInfo;
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

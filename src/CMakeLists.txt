@@ -1,5 +1,5 @@
 # Vulkan+3DGS核心库配置
-project(vk_gs_core VERSION 1.0.0 LANGUAGES CXX)
+project(vulkan_3dgs_core VERSION 1.0.0 LANGUAGES CXX)
 
 
 # 查找Vulkan SDK
@@ -42,7 +42,7 @@ if(NOT Stb_FOUND)
 endif()
 
 # 创建核心库
-add_library(vk_gs_core STATIC
+add_library(vulkan_3dgs_core STATIC
     # Context 模块（Vulkan 基础环境）
     context/context.cpp
     context/device.cpp
@@ -82,13 +82,13 @@ add_library(vk_gs_core STATIC
 )
 
 # 包含目录
-target_include_directories(vk_gs_core PUBLIC
+target_include_directories(vulkan_3dgs_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/third_party/vulkan_radix_sort/include
 )
 
 # 包含目录（私有依赖）
-target_include_directories(vk_gs_core PRIVATE
+target_include_directories(vulkan_3dgs_core PRIVATE
     ${Stb_INCLUDE_DIR}
     ${Stb_SOURCE_DIR}
     ${glm_SOURCE_DIR}
@@ -96,12 +96,12 @@ target_include_directories(vk_gs_core PRIVATE
 )
 
 # 链接库
-target_link_libraries(vk_gs_core PUBLIC
+target_link_libraries(vulkan_3dgs_core PUBLIC
     Vulkan::Vulkan
     glfw
 )
 
-target_link_libraries(vk_gs_core PRIVATE
+target_link_libraries(vulkan_3dgs_core PRIVATE
     glm::glm
     imgui::imgui
 )
@@ -115,7 +115,7 @@ else()
 endif()
 
 # 编译器定义
-target_compile_definitions(vk_gs_core PRIVATE
+target_compile_definitions(vulkan_3dgs_core PRIVATE
     GLFW_INCLUDE_VULKAN
     GLM_FORCE_DEPTH_ZERO_TO_ONE
     NOMINMAX
@@ -128,7 +128,7 @@ if(MSVC)
 endif()
 
 # 安装配置
-install(TARGETS vk_gs_core
+install(TARGETS vulkan_3dgs_core
     ARCHIVE DESTINATION lib
 )
 

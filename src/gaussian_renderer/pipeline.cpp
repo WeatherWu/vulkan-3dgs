@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <cstring>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 Pipeline::Pipeline() = default;
 
@@ -311,4 +311,4 @@ void Pipeline::cleanup() {
     }
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

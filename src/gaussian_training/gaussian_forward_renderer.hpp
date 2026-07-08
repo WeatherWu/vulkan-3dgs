@@ -9,7 +9,7 @@
 #include "vulkan/compute_pipeline.hpp"
 #include <vk_radix_sort.h>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class GaussianForwardRenderer : public ForwardTrainingRenderer {
 public:
@@ -93,4 +93,4 @@ private:
     bool initialized_ = false;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

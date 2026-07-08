@@ -3,7 +3,7 @@
 #include <vulkan/vulkan.hpp>
 #include <vector>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class CommandPool {
 public:
@@ -33,4 +33,4 @@ private:
     vk::CommandPool pool_ = nullptr;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

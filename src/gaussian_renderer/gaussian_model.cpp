@@ -8,7 +8,7 @@
 #include <cstring>
 #include <cmath>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 // === SHColor实现 ===
 namespace {
@@ -669,4 +669,4 @@ std::vector<uint32_t> GaussianModel::get_active_index_data() const {
     return indices;
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

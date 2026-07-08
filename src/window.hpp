@@ -5,7 +5,7 @@
 #include <functional>
 #include <vector>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Window {
 public:
@@ -50,4 +50,4 @@ private:
     DropCallback drop_callback_;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

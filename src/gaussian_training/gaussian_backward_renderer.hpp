@@ -8,7 +8,7 @@
 #include "renderer.hpp"
 #include "vulkan/compute_pipeline.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class GaussianBackwardRenderer : public BackwardRenderer {
 public:
@@ -67,4 +67,4 @@ private:
     bool initialized_ = false;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

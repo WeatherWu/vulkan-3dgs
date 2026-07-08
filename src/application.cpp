@@ -17,7 +17,7 @@
 #include <exception>
 
 #include <ImGuiFileDialog.h>
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -61,7 +61,7 @@ Application::Application(const std::string& title, int width, int height, Render
     : current_mode_(mode) {
     // 设置日志级别为DEBUG（仅在Debug模式下）
 #ifdef _DEBUG
-    vk_gs::Logger::get_instance().set_level(LogLevel::DEBUG_VKGS);
+    vulkan3DGS::Logger::get_instance().set_level(LogLevel::DEBUG_VULKAN_3DGS);
 #endif
     
     LOG_INFO("Initializing Vulkan+3DGS Application");
@@ -282,7 +282,7 @@ void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) 
     projection_matrix_ = projection;
 }
 
-void Application::setTrueCamera(const vk_gs::Camera& camera) {
+void Application::setTrueCamera(const vulkan3DGS::Camera& camera) {
     camera_ = camera;
     has_true_camera_ = true;
 

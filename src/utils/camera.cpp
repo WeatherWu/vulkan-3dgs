@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 Camera::Camera() {
     update_vectors();
@@ -130,4 +130,4 @@ void Camera::sync_euler_from_front() {
     pitch_ = glm::degrees(std::asin(std::clamp(front_.y, -1.0f, 1.0f)));
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

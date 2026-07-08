@@ -7,7 +7,7 @@
 #include <string>
 #include <fstream>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 // PLY属性描述
 struct PLYProperty {
@@ -214,4 +214,4 @@ private:
     std::vector<PLYProperty> ply_properties_;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

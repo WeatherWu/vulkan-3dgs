@@ -6,7 +6,7 @@
 #include <memory>
 #include <optional>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Device {
 public:
@@ -62,4 +62,4 @@ private:
     };
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

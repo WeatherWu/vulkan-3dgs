@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -908,4 +908,4 @@ void GaussianTraining::destroyTrainingCommandResources() {
     computeQueueFamilyIndex_ = 0;
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

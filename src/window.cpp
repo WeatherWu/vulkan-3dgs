@@ -1,7 +1,7 @@
 #include "window.hpp"
 #include "utils/logger.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 Window::Window(const std::string& title, int width, int height) 
     : width_(width), height_(height) {
@@ -94,4 +94,4 @@ void Window::drop_callback_wrapper(GLFWwindow* window, int count, const char** p
     win->drop_callback_(droppedPaths);
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

@@ -3,7 +3,7 @@
 
 #include <stdexcept>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 ComputePipeline::ComputePipeline() = default;
 
@@ -79,4 +79,4 @@ void ComputePipeline::cleanup() {
     computeShader_.reset();
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

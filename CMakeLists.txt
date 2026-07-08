@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.26)
-project(vk_gs VERSION 1.0.0 LANGUAGES CXX)
+project(vulkan_3dgs VERSION 1.0.0 LANGUAGES CXX)
 
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 20)
@@ -163,14 +163,11 @@ add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
 # 添加子目录
 add_subdirectory(src)
 add_subdirectory(apps)
-if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_subdirectory(sandbox)
-endif()
 
 # 确保在构建库之前编译着色器
-# 注意：这里假设 src/CMakeLists.txt 中定义的目标名为 vk_gs_core
+# 注意：这里假设 src/CMakeLists.txt 中定义的目标名为 vulkan_3dgs_core
 # 如果目标名不同，请相应调整
-add_dependencies(vk_gs_core compile_shaders)
+add_dependencies(vulkan_3dgs_core compile_shaders)
 
 # 安装配置
 install(DIRECTORY src/ DESTINATION include)
@@ -186,7 +183,7 @@ install(DIRECTORY ${TRAINING_SHADER_SPV_DIR}/
     FILES_MATCHING PATTERN "*.spv"
 )
 
-install(TARGETS vk_gs_core # vk_gs_demo
+install(TARGETS vulkan_3dgs_core # vulkan_3dgs_demo
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib

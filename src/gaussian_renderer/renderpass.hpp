@@ -2,7 +2,7 @@
 
 #include <vulkan/vulkan.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class RenderPass {
 public:
@@ -21,4 +21,4 @@ private:
     
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

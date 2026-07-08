@@ -6,7 +6,7 @@
 #include "gaussian_training/training_types.hpp"
 #include "vulkan/buffer.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class TrainingBuffers {
 public:
@@ -112,4 +112,4 @@ private:
     Buffer camera_;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

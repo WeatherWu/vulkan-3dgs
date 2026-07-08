@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 struct TrainingExtent {
     uint32_t width = 0;
@@ -197,4 +197,4 @@ static_assert(sizeof(AdamState) == sizeof(GaussianGrad) * 2);
 static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 4);
 static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 6);
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

@@ -1,7 +1,7 @@
 #include "command_pool.hpp"
 #include <stdexcept>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 CommandPool::~CommandPool() {
     cleanup();
@@ -63,4 +63,4 @@ void CommandPool::reset() {
     }
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

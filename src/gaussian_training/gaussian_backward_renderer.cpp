@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -596,5 +596,5 @@ void GaussianBackwardRenderer::shaderBufferBarrier(std::initializer_list<vk::Des
                                                   nullptr);
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS
 

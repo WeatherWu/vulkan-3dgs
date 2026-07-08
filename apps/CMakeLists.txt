@@ -1,11 +1,9 @@
 # Vulkan+3DGS应用程序配置
-project(vk_gs_windows VERSION 1.0.0 LANGUAGES CXX)
+project(vulkan_3dgs_app VERSION 1.0.0 LANGUAGES CXX)
 
 # 创建示例应用程序
-add_executable(vk_gs_windows main.cpp)
-if(NOT WIN32)
-    set_target_properties(vk_gs_windows PROPERTIES OUTPUT_NAME vk_gs)
-endif()
+add_executable(vulkan_3dgs_app main.cpp)
+set_target_properties(vulkan_3dgs_app PROPERTIES OUTPUT_NAME vulkan-3dgs)
 
 find_package(imgui CONFIG REQUIRED)
 
@@ -19,16 +17,16 @@ if(NOT imgui_FOUND)
 endif()
 
 # 链接核心库
-target_link_libraries(vk_gs_windows PRIVATE vk_gs_core)
-target_link_libraries(vk_gs_windows PRIVATE imgui::imgui)
+target_link_libraries(vulkan_3dgs_app PRIVATE vulkan_3dgs_core)
+target_link_libraries(vulkan_3dgs_app PRIVATE imgui::imgui)
 
 # 包含目录
-target_include_directories(vk_gs_windows PRIVATE 
+target_include_directories(vulkan_3dgs_app PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src/include
 )
 
 # 安装配置
-install(TARGETS vk_gs_windows
+install(TARGETS vulkan_3dgs_app
     RUNTIME DESTINATION bin
 )

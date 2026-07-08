@@ -4,7 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 class Camera {
 public:
@@ -68,4 +68,4 @@ private:
     float fov_ = 45.0f;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

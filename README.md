@@ -1,28 +1,27 @@
-# vk-gs
+# vulkan-3dgs
 
-Vulkan + Slang 3D Gaussian Splatting 实验项目。当前仓库包含普通 PLY 渲染路径和 MipNeRF360/COLMAP 数据集训练路径，训练端支持 compute forward/backward、Adam 优化、稠密化/修剪和 PLY 导出。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 当前目标
+vulkan-3dgs is an experimental Vulkan + Slang 3D Gaussian Splatting project. The repository currently contains a standard PLY rendering path and a MipNeRF360/COLMAP dataset training path. The training side supports compute forward/backward passes, Adam optimization, densification/pruning, and PLY export.
 
-- `vk_gs_core`: 核心静态库，包含 Vulkan 上下文、资源封装、相机、PLY 读取和 Gaussian 渲染器。
-- `vk_gs_windows`: `apps/main.cpp` 的主应用入口。Windows 输出为 `vk_gs_windows.exe`，非 Windows 平台输出名为 `vk_gs`。
-- `vk_gs_sandbox`: `sandbox/sandbox.cpp` 的调试入口，加载根目录下的 `insect.ply` 并启动 Gaussian 渲染窗口。
+## Current Targets
 
-Release 默认只构建主应用和核心库。`vk_gs_sandbox` 只用于 Debug 默认构建，也可以手动指定目标构建。
+- `vulkan_3dgs_core`: core static library with Vulkan context setup, resource wrappers, camera utilities, PLY loading, and the Gaussian renderer.
+- `vulkan_3dgs_app`: main application entry from `apps/main.cpp`. Windows and non-Windows builds output `vulkan-3dgs`.
 
-## 目录结构
+Release builds include the main application and core library by default.
+
+## Repository Layout
 
 ```text
-vk-gs/
+vulkan-3dgs/
 ├── CMakeLists.txt
 ├── README.md
+├── README.zh-CN.md
 ├── insect.ply
 ├── apps/
 │   ├── CMakeLists.txt
 │   └── main.cpp
-├── sandbox/
-│   ├── CMakeLists.txt
-│   └── sandbox.cpp
 ├── shaders/
 │   ├── gaussian_compute_shader/
 │   │   └── slang/
@@ -66,15 +65,14 @@ vk-gs/
         └── logger.hpp
 ```
 
-## 架构概览
+## Architecture Overview
 
-`Application` 负责 GLFW 窗口、Vulkan `Context` 初始化和主循环。`Context` 是 Vulkan instance、surface、device 和队列的全局入口。`GaussianRenderer` 继承自 `Renderer`，负责 swapchain、render pass、graphics pipeline、compute pipeline、descriptor set、GPU 深度排序和每帧提交。
+`Application` owns the GLFW window, Vulkan `Context` initialization, and main loop. `Context` is the global entry point for the Vulkan instance, surface, device, and queues. `GaussianRenderer` derives from `Renderer` and owns the swapchain, render pass, graphics pipeline, compute pipeline, descriptor sets, GPU depth sorting, and per-frame submission.
 
-渲染路径大致如下：
+The normal rendering path is:
 
 ```text
-sandbox.cpp
-  -> GaussianModel::loadFromFile("insect.ply")
+apps/main.cpp
   -> Application
   -> GaussianRenderer::setRenderData(...)
   -> GPU keygen + vulkan_radix_sort
@@ -82,96 +80,96 @@ sandbox.cpp
   -> swapchain present
 ```
 
-## Gaussian 数据
+## Gaussian Data
 
-`GaussianModel` 当前支持 3DGS 风格的 binary little endian `.ply`：
+`GaussianModel` currently supports 3DGS-style binary little endian `.ply` files:
 
-- 位置：`x`, `y`, `z`
-- 颜色：`f_dc_0..2`, `f_rest_0..44`
-- 不透明度：`opacity`
-- 尺度：`scale_0..2`
-- 旋转：`rot_0..3`
+- position: `x`, `y`, `z`
+- color: `f_dc_0..2`, `f_rest_0..44`
+- opacity: `opacity`
+- scale: `scale_0..2`
+- rotation: `rot_0..3`
 
-读取时会恢复 alpha、scale，并根据 scale + quaternion 构建协方差矩阵。`.splat`、`.gs`、`.json` 目前只是预留，尚未实现。
+Loading restores alpha and scale, then builds the covariance matrix from scale and quaternion rotation. `.splat`, `.gs`, and `.json` are reserved but not implemented yet.
 
 ## Training
 
-`GaussianTraining` 是独立于普通 `GaussianRenderer` 的 compute 训练路径。它使用 MipNeRF360/COLMAP 风格数据集，加载真实图片尺寸，按 COLMAP 相机内参缩放后训练 Gaussian 参数。
+`GaussianTraining` is a compute training path independent from the normal `GaussianRenderer`. It uses MipNeRF360/COLMAP-style datasets, reads actual image dimensions, scales COLMAP camera intrinsics to those dimensions, and trains Gaussian parameters.
 
-训练路径包含：
+The training path includes:
 
 - compute forward tile renderer
-- loss 和 backward passes
+- loss and backward passes
 - Adam-style optimizer
 - densification / pruning
 - PLY export
 
-训练 UI 支持两种调度模式：
+The training UI supports two scheduling modes:
 
-- `Sequential`: 按数据集图片顺序逐帧训练，没有固定总迭代停止。
-- `3DGS Random`: 按原始 3DGS 的 viewpoint stack 策略随机抽图，抽完一轮重填，并在 30000 iterations 自动停止。
+- `Sequential`: trains frames in dataset order and has no fixed total-iteration stop.
+- `3DGS Random`: follows the original 3DGS viewpoint-stack strategy, samples frames randomly without replacement, refills the stack after a full pass, and stops automatically at 30000 iterations.
 
-稠密化统计使用 shader float atomics，因此设备必须支持并启用：
+Densification statistics use shader float atomics, so the device must support and enable:
 
 - `VK_EXT_shader_atomic_float`
 - `VK_EXT_shader_atomic_float2`
 
-如果 GPU/驱动不支持 buffer float32 atomic add/min-max，设备适配性检查会失败，训练路径不会以不可靠状态继续运行。
+If the GPU or driver does not support buffer float32 atomic add/min-max, device suitability checks fail and the training path will not continue in an unreliable state.
 
 ## Shader
 
-Slang 源码在：
+Slang sources live in:
 
 ```text
 shaders/gaussian_compute_shader/slang/
 shaders/training_shader/slang/
 ```
 
-CMake 使用 `slangc` 编译为 SPIR-V，并复制到运行目录：
+CMake compiles them with `slangc` into SPIR-V and copies them into the runtime shader directory:
 
 ```text
 build/bin/<Config>/shaders/
 ```
 
-当前 shader 包含：
+Current shaders include:
 
-- `gaussian_common.slang`: 共享 Gaussian 数据结构、half-packed SH 解包和 SH 评估。
-- `gaussian_compute_shader.vert.slang`: 按排序索引读取高斯实例，投影协方差，计算屏幕椭圆和 SH 颜色。
-- `gaussian_compute_shader.frag.slang`: 计算高斯 alpha 衰减并输出颜色。
-- `radix_keygen.comp.slang`: GPU 可见性裁剪、排序 key 生成和 indirect draw instance count 写入。
-- `training_shader/slang/passes/*`: 训练 forward、loss、backward、optimizer、densify/prune 和 preview packing passes。
+- `gaussian_common.slang`: shared Gaussian data structures, half-packed SH unpacking, and SH evaluation.
+- `gaussian_compute_shader.vert.slang`: reads sorted Gaussian instances, projects covariance, computes screen ellipses, and evaluates SH color.
+- `gaussian_compute_shader.frag.slang`: computes Gaussian alpha falloff and outputs color.
+- `radix_keygen.comp.slang`: GPU visibility culling, sort-key generation, and indirect draw instance count writes.
+- `training_shader/slang/passes/*`: training forward, loss, backward, optimizer, densify/prune, and preview packing passes.
 
-## 构建依赖
+## Build Dependencies
 
 - CMake 3.26+
-- C++20 编译器
+- C++20 compiler
 - Vulkan headers/library
-- `slangc`（可通过 vcpkg 的 `shader-slang` 获取）
+- `slangc` (available through vcpkg's `shader-slang`)
 - GLFW3
 - GLM
 - STB headers
 - ImGui
-- ImGuiFileDialog（仓库内 `third_party/ImGuiFileDialog`）
+- ImGuiFileDialog (`third_party/ImGuiFileDialog` in this repository)
 
-项目会优先 `find_package()` 查找依赖；找不到 GLFW/GLM/STB 时，`src/CMakeLists.txt` 里有 FetchContent 回退逻辑。离线环境建议提前通过 vcpkg 或系统包安装依赖，避免配置阶段尝试访问 GitHub。
+The project first uses `find_package()` for dependencies. If GLFW/GLM/STB are not found, `src/CMakeLists.txt` has FetchContent fallbacks. In offline environments, install dependencies ahead of time through vcpkg or system packages to avoid network access during configuration.
 
-训练稠密化需要 GPU/驱动支持 Vulkan float atomic 扩展：
+Training densification requires Vulkan float atomic extension support from the GPU and driver:
 
 - `VK_EXT_shader_atomic_float`
 - `VK_EXT_shader_atomic_float2`
 
-可用 `vulkaninfo` 检查 Linux 驱动是否暴露这些扩展。
+On Linux, use `vulkaninfo` to check whether the driver exposes these extensions.
 
-## 构建
+## Build
 
-Visual Studio 生成器示例：
+Visual Studio generator example:
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022"
 cmake --build build --config Release
 ```
 
-如果 Vulkan 或 vcpkg 依赖没有被自动找到，可以显式传入路径，例如：
+If Vulkan or vcpkg dependencies are not found automatically, pass paths explicitly:
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" `
@@ -180,26 +178,19 @@ cmake -S . -B build -G "Visual Studio 17 2022" `
   -DVulkan_LIBRARY=C:/Users/weath/vcpkg/installed/x64-windows/lib/vulkan-1.lib
 ```
 
-Release 默认构建：
+Release build:
 
 ```powershell
 cmake --build build --config Release
 ```
 
-Debug 构建沙盒：
+Example run paths:
 
 ```powershell
-cmake --build build --config Debug --target vk_gs_sandbox
+.\build\bin\Release\vulkan-3dgs.exe
 ```
 
-运行位置示例：
-
-```powershell
-.\build\bin\Release\vk_gs_windows.exe
-.\build\bin\Debug\vk_gs_sandbox.exe
-```
-
-Ubuntu + vcpkg 示例：
+Ubuntu + vcpkg example:
 
 ```bash
 cmake -S . -B build \
@@ -210,36 +201,35 @@ cmake -S . -B build \
 cmake --build build
 ```
 
-Ubuntu 上建议安装 Vulkan loader、driver 和基础 X11 开发包：
+On Ubuntu, install the Vulkan loader, driver, and baseline X11 development packages:
 
 ```bash
 sudo apt install vulkan-tools libvulkan1 mesa-vulkan-drivers xorg-dev
 ```
 
-vcpkg 依赖示例：
+Example vcpkg dependency install:
 
 ```bash
 vcpkg install vulkan glfw3 glm imgui stb shader-slang --triplet x64-linux
 ```
 
-非 Windows 平台主应用输出名为：
+The non-Windows main application output is:
 
 ```bash
-./build/bin/Debug/vk_gs
+./build/bin/Debug/vulkan-3dgs
 ```
 
-## 当前限制
+## Current Limitations
 
-- `sandbox` 依赖根目录的 `insect.ply`，路径当前按构建输出目录相对路径解析。
-- `Application::initialize()` 当前在构造函数中调用，不适合依赖派生类虚函数分发。
-- `.splat`、`.gs`、`.json` 加载尚未实现。
-- GPU 排序和 descriptor 资源重建仍是项目重点维护区域。
-- 没有引入 VMA，buffer/image memory 仍为手写分配。
-- `3DGS Random` 模式匹配原始 3DGS 的随机视角栈和 30000 iteration 调度，但 forward/backward 数学仍是项目实现，尚未声明与 reference 3DGS 完全一致。
-- 训练结果当前通过 PLY 导出进入普通渲染路径，主视口不会自动实时渲染训练 buffer。
+- `Application::initialize()` is currently called from the constructor and is not suitable for derived-class virtual dispatch.
+- `.splat`, `.gs`, and `.json` loading are not implemented yet.
+- GPU sorting and descriptor resource rebuilds remain active maintenance areas.
+- The project does not use VMA yet; buffer/image memory is still allocated manually.
+- `3DGS Random` matches the original 3DGS random viewpoint stack and 30000-iteration schedule, but the forward/backward math is still project-specific and should not be claimed as exact reference 3DGS parity.
+- Training results currently enter the normal rendering path through PLY export. The main viewport does not automatically render training buffers in real time.
 
-## 日志
+## Logging
 
-日志使用 `utils/logger.hpp`，默认输出 INFO 及以上级别。Debug 构建会把日志级别调到 `DEBUG_VKGS`。
+Logging uses `utils/logger.hpp` and defaults to INFO and above. Debug builds set the log level to `DEBUG_VULKAN_3DGS`.
 
-热路径上的每帧 INFO 已经尽量移除，INFO 主要保留启动、设备选择、模型加载、swapchain 初始化和 resize 重建等状态信息。
+Per-frame INFO logs on hot paths have been trimmed. INFO is mainly kept for startup, device selection, model loading, swapchain initialization, and resize rebuild status.

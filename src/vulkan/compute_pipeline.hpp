@@ -6,7 +6,7 @@
 #include <string>
 #include "vulkan/shader.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 struct ComputePipelineConfig {
     std::vector<vk::DescriptorSetLayoutBinding> descriptorBindings;
@@ -35,4 +35,4 @@ private:
     std::unique_ptr<Shader> computeShader_;
 };
 
-} // namespace vk_gs
+} // namespace vulkan3DGS

@@ -1,6 +1,6 @@
 #include "gaussian_training/training_pipeline.hpp"
 
-namespace vk_gs {
+namespace vulkan3DGS {
 
 namespace {
 
@@ -52,4 +52,4 @@ ComputePipelineConfig TrainingPipelines::createCommonConfig() {
     return config;
 }
 
-} // namespace vk_gs
+} // namespace vulkan3DGS
