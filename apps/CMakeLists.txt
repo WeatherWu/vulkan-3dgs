@@ -7,15 +7,6 @@ set_target_properties(vulkan_3dgs_app PROPERTIES OUTPUT_NAME vulkan-3dgs)
 
 find_package(imgui CONFIG REQUIRED)
 
-if(NOT imgui_FOUND)
-    FetchContent_Declare(
-        imgui
-        GIT_REPOSITORY https://github.com/ocornut/imgui.git
-        GIT_TAG 1.91.9
-    )
-    FetchContent_MakeAvailable(imgui)
-endif()
-
 # 链接核心库
 target_link_libraries(vulkan_3dgs_app PRIVATE vulkan_3dgs_core)
 target_link_libraries(vulkan_3dgs_app PRIVATE imgui::imgui)

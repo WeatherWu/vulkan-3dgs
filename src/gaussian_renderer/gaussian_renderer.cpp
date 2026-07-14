@@ -238,10 +238,10 @@ void GaussianRenderer::initializeImGui(GLFWwindow* window) {
     initInfo.Queue = context.getDevice().getGraphicsQueue();
     initInfo.DescriptorPool = VK_NULL_HANDLE;
     initInfo.DescriptorPoolSize = 64;
-    initInfo.RenderPass = renderPass_->getRenderPass();
+    initInfo.PipelineInfoMain.RenderPass = renderPass_->getRenderPass();
     initInfo.MinImageCount = swapchain_->getImageCount();
     initInfo.ImageCount = swapchain_->getImageCount();
-    initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
     if (!ImGui_ImplVulkan_Init(&initInfo)) {
         LOG_ERROR("Failed to initialize ImGui Vulkan backend");
@@ -250,7 +250,6 @@ void GaussianRenderer::initializeImGui(GLFWwindow* window) {
         throw std::runtime_error("Failed to initialize ImGui Vulkan backend");
     }
 
-    ImGui_ImplVulkan_CreateFontsTexture();
     imguiInitialized_ = true;
     LOG_INFO("ImGui initialized");
 }

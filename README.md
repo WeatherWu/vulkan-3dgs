@@ -142,16 +142,44 @@ Current shaders include:
 ## Build Dependencies
 
 - CMake 3.26+
-- C++20 compiler
+- C/C++ compiler with C++20 support
 - Vulkan headers/library
 - `slangc` (available through vcpkg's `shader-slang`)
 - GLFW3
 - GLM
 - STB headers
 - ImGui
+- COLMAP
 - ImGuiFileDialog (`third_party/ImGuiFileDialog` in this repository)
 
-The project first uses `find_package()` for dependencies. If GLFW/GLM/STB are not found, `src/CMakeLists.txt` has FetchContent fallbacks. In offline environments, install dependencies ahead of time through vcpkg or system packages to avoid network access during configuration.
+All CMake package dependencies are expected to be provided by vcpkg or an equivalent local package installation. The build no longer uses `FetchContent_Declare()` fallbacks, and missing packages fail during CMake configuration.
+
+This repository includes a vcpkg manifest pinned to this registry baseline:
+
+```bash
+301856f5f2824f788a3ffa6332293861cccd23b4
+```
+
+Install the reproducible dependency set with:
+
+```bash
+vcpkg install --triplet x64-windows
+```
+
+Current vcpkg package versions from that baseline:
+
+- `vulkan`: `2023-12-17`
+- `glfw3`: `3.4#1`
+- `glm`: `1.0.3`
+- `imgui[glfw-binding,vulkan-binding]`: `1.92.8#1`
+- `stb`: `2024-07-29#1`
+- `shader-slang`: `2026.7.1`
+- `colmap` without default features: `3.12.6#1`
+
+Bundled third-party submodule versions:
+
+- `third_party/ImGuiFileDialog`: `https://github.com/aiekick/ImGuiFileDialog.git` at `d0e97b2adc3d3452d72c750c7305dc0291acd052`
+- `third_party/vulkan_radix_sort`: `https://github.com/jaesung-cs/vulkan_radix_sort.git` at `7b9912bb827fcc569854e45b43748fd27bc5dde3`
 
 Training densification requires Vulkan float atomic extension support from the GPU and driver:
 
@@ -207,10 +235,10 @@ On Ubuntu, install the Vulkan loader, driver, and baseline X11 development packa
 sudo apt install vulkan-tools libvulkan1 mesa-vulkan-drivers xorg-dev
 ```
 
-Example vcpkg dependency install:
+Example vcpkg manifest install:
 
 ```bash
-vcpkg install vulkan glfw3 glm imgui stb shader-slang --triplet x64-linux
+vcpkg install --triplet x64-linux
 ```
 
 The non-Windows main application output is:

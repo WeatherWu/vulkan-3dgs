@@ -141,16 +141,44 @@ build/bin/<Config>/shaders/
 ## 构建依赖
 
 - CMake 3.26+
-- C++20 编译器
+- 支持 C++20 的 C/C++ 编译器
 - Vulkan headers/library
 - `slangc`（可通过 vcpkg 的 `shader-slang` 获取）
 - GLFW3
 - GLM
 - STB headers
 - ImGui
+- COLMAP
 - ImGuiFileDialog（仓库内 `third_party/ImGuiFileDialog`）
 
-项目会优先 `find_package()` 查找依赖；找不到 GLFW/GLM/STB 时，`src/CMakeLists.txt` 里有 FetchContent 回退逻辑。离线环境建议提前通过 vcpkg 或系统包安装依赖，避免配置阶段尝试访问 GitHub。
+所有 CMake package 依赖都应由 vcpkg 或等价的本地包安装提供。构建系统不再使用 `FetchContent_Declare()` 回退逻辑，缺少依赖时会在 CMake 配置阶段直接报错。
+
+本仓库包含 vcpkg manifest，并固定到以下 registry baseline：
+
+```bash
+301856f5f2824f788a3ffa6332293861cccd23b4
+```
+
+使用下面命令安装可复现的依赖集合：
+
+```bash
+vcpkg install --triplet x64-windows
+```
+
+当前 baseline 解析到的 vcpkg 包版本：
+
+- `vulkan`: `2023-12-17`
+- `glfw3`: `3.4#1`
+- `glm`: `1.0.3`
+- `imgui[glfw-binding,vulkan-binding]`: `1.92.8#1`
+- `stb`: `2024-07-29#1`
+- `shader-slang`: `2026.7.1`
+- 关闭 default features 的 `colmap`: `3.12.6#1`
+
+仓库内 third-party submodule 版本：
+
+- `third_party/ImGuiFileDialog`: `https://github.com/aiekick/ImGuiFileDialog.git` at `d0e97b2adc3d3452d72c750c7305dc0291acd052`
+- `third_party/vulkan_radix_sort`: `https://github.com/jaesung-cs/vulkan_radix_sort.git` at `7b9912bb827fcc569854e45b43748fd27bc5dde3`
 
 训练稠密化需要 GPU/驱动支持 Vulkan float atomic 扩展：
 
@@ -206,10 +234,10 @@ Ubuntu 上建议安装 Vulkan loader、driver 和基础 X11 开发包：
 sudo apt install vulkan-tools libvulkan1 mesa-vulkan-drivers xorg-dev
 ```
 
-vcpkg 依赖示例：
+vcpkg manifest 依赖安装示例：
 
 ```bash
-vcpkg install vulkan glfw3 glm imgui stb shader-slang --triplet x64-linux
+vcpkg install --triplet x64-linux
 ```
 
 非 Windows 平台主应用输出名为：

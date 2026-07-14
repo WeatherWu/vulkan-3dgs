@@ -2,44 +2,25 @@
 project(vulkan_3dgs_core VERSION 1.0.0 LANGUAGES CXX)
 
 
-# 查找Vulkan SDK
-find_package(Vulkan REQUIRED)
+# 查找Vulkan SDK components from vcpkg explicitly.
+find_package(VulkanHeaders CONFIG REQUIRED)
+find_package(VulkanLoader CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
-find_package(Stb QUIET)
+find_package(Stb REQUIRED)
+find_package(COLMAP REQUIRED)
+
+set(VULKAN_LINK_TARGETS Vulkan::Headers)
+if(TARGET Vulkan::Loader)
+    list(APPEND VULKAN_LINK_TARGETS Vulkan::Loader)
+elseif(TARGET Vulkan::Vulkan)
+    list(APPEND VULKAN_LINK_TARGETS Vulkan::Vulkan)
+else()
+    message(FATAL_ERROR "VulkanLoader package did not provide Vulkan::Loader or Vulkan::Vulkan")
+endif()
 
 set(IMGUI_FILE_DIALOG_DIR "${CMAKE_SOURCE_DIR}/third_party/ImGuiFileDialog")
-
-# 查找GLFW
-if(NOT glfw3_FOUND)
-    FetchContent_Declare(
-        glfw
-        GIT_REPOSITORY https://github.com/glfw/glfw.git
-        GIT_TAG 3.3.8
-    )
-    FetchContent_MakeAvailable(glfw)
-endif()
-
-# 查找glm
-if(NOT glm_FOUND)
-    FetchContent_Declare(
-        glm
-        GIT_REPOSITORY https://github.com/g-truc/glm.git
-        GIT_TAG 0.9.9.8
-    )
-    FetchContent_MakeAvailable(glm)
-endif()
-
-# 查找stb_image
-if(NOT Stb_FOUND)
-    FetchContent_Declare(
-        stb
-        GIT_REPOSITORY https://github.com/nothings/stb.git
-        GIT_TAG 5736b15f7ea0ffb08dd38af21067c314d6a3aae9
-    )
-    FetchContent_MakeAvailable(stb)
-endif()
 
 # 创建核心库
 add_library(vulkan_3dgs_core STATIC
@@ -97,13 +78,16 @@ target_include_directories(vulkan_3dgs_core PRIVATE
 
 # 链接库
 target_link_libraries(vulkan_3dgs_core PUBLIC
-    Vulkan::Vulkan
+    ${VULKAN_LINK_TARGETS}
     glfw
 )
 
 target_link_libraries(vulkan_3dgs_core PRIVATE
     glm::glm
     imgui::imgui
+    colmap::colmap_image
+    colmap::colmap_scene
+    colmap::colmap_sensor
 )
 
 # 编译器选项

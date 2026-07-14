@@ -161,7 +161,12 @@ void Context::createSurface() {
     VkSurfaceKHR surface;
     auto result = glfwCreateWindowSurface(instance_, window_, nullptr, &surface);
     if (result != VK_SUCCESS) {
-        LOG_ERROR("Failed to create window surface");
+        const char* glfwDescription = nullptr;
+        int glfwError = glfwGetError(&glfwDescription);
+        LOG_ERROR("Failed to create window surface: {} (GLFW error {}: {})",
+                  string_VkResult(result),
+                  glfwError,
+                  glfwDescription ? glfwDescription : "none");
         throw std::runtime_error("Failed to create window surface");
     }
     surface_ = surface;
