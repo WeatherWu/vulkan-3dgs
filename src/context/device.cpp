@@ -3,9 +3,60 @@
 #include "utils/logger.hpp"
 #include "vulkan/command_pool.hpp"
 
+#include <cstdlib>
 #include <set>
 
 namespace vulkan3DGS {
+
+namespace {
+
+const char* deviceTypeName(vk::PhysicalDeviceType type) {
+    switch (type) {
+        case vk::PhysicalDeviceType::eDiscreteGpu:
+            return "Discrete GPU";
+        case vk::PhysicalDeviceType::eIntegratedGpu:
+            return "Integrated GPU";
+        case vk::PhysicalDeviceType::eVirtualGpu:
+            return "Virtual GPU";
+        case vk::PhysicalDeviceType::eCpu:
+            return "CPU";
+        default:
+            return "Other";
+    }
+}
+
+bool allowCpuVulkanDevice() {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t valueLength = 0;
+    if (_dupenv_s(&value, &valueLength, "VULKAN_3DGS_ALLOW_CPU_VULKAN") != 0 || value == nullptr) {
+        return false;
+    }
+    bool enabled = std::string(value) == "1";
+    std::free(value);
+    return enabled;
+#else
+    const char* value = std::getenv("VULKAN_3DGS_ALLOW_CPU_VULKAN");
+    return value && std::string(value) == "1";
+#endif
+}
+
+int deviceScore(vk::PhysicalDeviceType type) {
+    switch (type) {
+        case vk::PhysicalDeviceType::eDiscreteGpu:
+            return 1000;
+        case vk::PhysicalDeviceType::eIntegratedGpu:
+            return 500;
+        case vk::PhysicalDeviceType::eVirtualGpu:
+            return 100;
+        case vk::PhysicalDeviceType::eCpu:
+            return allowCpuVulkanDevice() ? -100 : -10000;
+        default:
+            return 0;
+    }
+}
+
+} // namespace
 
 Device::Device(vk::SurfaceKHR surface) : surface_(surface) {}
 
@@ -58,13 +109,6 @@ void Device::createDevice() {
     deviceFeatures.setSamplerAnisotropy(VK_TRUE);
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.setShaderDrawParameters(VK_TRUE);
-    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
-    atomicFloatFeatures.setShaderBufferFloat32Atomics(VK_TRUE)
-                       .setShaderBufferFloat32AtomicAdd(VK_TRUE);
-    vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
-    atomicFloat2Features.setShaderBufferFloat32AtomicMinMax(VK_TRUE);
-    vulkan11Features.setPNext(&atomicFloatFeatures);
-    atomicFloatFeatures.setPNext(&atomicFloat2Features);
     createInfo.setPEnabledFeatures(&deviceFeatures);
     createInfo.setPNext(&vulkan11Features);
 
@@ -115,11 +159,30 @@ void Device::pickPhysicalDevice(vk::SurfaceKHR& surface) {
         throw std::runtime_error("Failed to find GPUs with Vulkan support");
     }
     
+    int bestScore = -10001;
+    QueueFamilyIndices bestQueueFamilyIndices;
+    size_t bestDeviceIndex = 0;
+    
     for (size_t i = 0; i < devices.size(); ++i) {
-        if (isDeviceSuitable(devices[i], surface)) {
-            phyDevice_ = devices[i];
-            LOG_DEBUG("Selected device {}", i);
-            break;
+        auto properties = devices[i].getProperties();
+        LOG_DEBUG("Checking physical device {}: {} ({})", i, properties.deviceName, deviceTypeName(properties.deviceType));
+        
+        if (properties.deviceType == vk::PhysicalDeviceType::eCpu && !allowCpuVulkanDevice()) {
+            LOG_WARN("Skipping CPU Vulkan device {}. Set VULKAN_3DGS_ALLOW_CPU_VULKAN=1 to allow software fallback.", properties.deviceName);
+            continue;
+        }
+        
+        QueueFamilyIndices candidateQueueFamilyIndices;
+        if (isDeviceSuitable(devices[i], surface, candidateQueueFamilyIndices)) {
+            int score = deviceScore(properties.deviceType);
+            LOG_DEBUG("Physical device {} is suitable with score {}", properties.deviceName, score);
+            
+            if (score > bestScore) {
+                phyDevice_ = devices[i];
+                bestQueueFamilyIndices = candidateQueueFamilyIndices;
+                bestScore = score;
+                bestDeviceIndex = i;
+            }
         }
     }
     
@@ -129,10 +192,14 @@ void Device::pickPhysicalDevice(vk::SurfaceKHR& surface) {
     }
     
     vk::PhysicalDeviceProperties device_properties = phyDevice_.getProperties();
-    LOG_INFO("Selected physical device: {}", device_properties.deviceName);
+    queueFamilyIndices_ = bestQueueFamilyIndices;
+    LOG_DEBUG("Selected device {} with score {}", bestDeviceIndex, bestScore);
+    LOG_INFO("Selected physical device: {} ({})", device_properties.deviceName, deviceTypeName(device_properties.deviceType));
 }
 
-bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface) {
+bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface, QueueFamilyIndices& queueFamilyIndices) {
+    auto properties = device.getProperties();
+    
     // 查找队列家族
     uint32_t queue_family_count = 0;
     device.getQueueFamilyProperties(&queue_family_count, nullptr);
@@ -144,22 +211,22 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
         
         // 查找图形队列
         if (queueFamily.queueFlags & vk::QueueFlagBits::eGraphics) {
-            queueFamilyIndices_.graphicsIndex = i;
+            queueFamilyIndices.graphicsIndex = i;
         }
         
         // 查找呈现队列
         vk::Bool32 present_support = false;
         vk::Result result = device.getSurfaceSupportKHR(i, surface, &present_support);
         if (result == vk::Result::eSuccess && present_support) {
-            queueFamilyIndices_.presentIndex = i;
+            queueFamilyIndices.presentIndex = i;
         }
 
         // 查找专用计算队列（支持计算但不支持图形）
         if ((queueFamily.queueFlags & vk::QueueFlagBits::eCompute) &&
             !(queueFamily.queueFlags & vk::QueueFlagBits::eGraphics)) {
             // 优先选择专用计算队列
-            if (!queueFamilyIndices_.computeIndex.has_value()) {
-                queueFamilyIndices_.computeIndex = i;
+            if (!queueFamilyIndices.computeIndex.has_value()) {
+                queueFamilyIndices.computeIndex = i;
                 LOG_DEBUG("Found dedicated compute queue family: {}", i);
             }
         }
@@ -169,8 +236,8 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
             !(queueFamily.queueFlags & vk::QueueFlagBits::eGraphics) &&
             !(queueFamily.queueFlags & vk::QueueFlagBits::eCompute)) {
             // 优先选择专用传输队列
-            if (!queueFamilyIndices_.transferIndex.has_value()) {
-                queueFamilyIndices_.transferIndex = i;
+            if (!queueFamilyIndices.transferIndex.has_value()) {
+                queueFamilyIndices.transferIndex = i;
             }
         }
     }
@@ -179,13 +246,13 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
     uint32_t extension_count = 0;
     auto result = device.enumerateDeviceExtensionProperties(nullptr, &extension_count, nullptr);
     if (result != vk::Result::eSuccess) {
-        LOG_ERROR("Failed to enumerate device extension properties data");
+        LOG_WARN("Device {} rejected: failed to enumerate extension property count", properties.deviceName);
         return false;
     }
     std::vector<vk::ExtensionProperties> available_extensions(extension_count);
     result = device.enumerateDeviceExtensionProperties(nullptr, &extension_count, available_extensions.data());
     if (result != vk::Result::eSuccess) {
-        LOG_ERROR("Failed to enumerate device extension properties");
+        LOG_WARN("Device {} rejected: failed to enumerate extension properties", properties.deviceName);
         return false;
     }
 
@@ -198,6 +265,11 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
         required_extensions.erase(extension.extensionName);
     }
     bool extensions_supported = required_extensions.empty();
+    if (!extensions_supported) {
+        for (const auto& extension : required_extensions) {
+            LOG_DEBUG("Device {} missing extension: {}", properties.deviceName, extension);
+        }
+    }
     
     // 检查交换链支持
     bool swapchain_adequate = false;
@@ -210,21 +282,26 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface)
     // 检查特性支持
     vk::PhysicalDeviceFeatures supported_features = device.getFeatures();
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
-    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
-    vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
     vk::PhysicalDeviceFeatures2 features2{};
     features2.setPNext(&vulkan11Features);
-    vulkan11Features.setPNext(&atomicFloatFeatures);
-    atomicFloatFeatures.setPNext(&atomicFloat2Features);
     device.getFeatures2(&features2);
     
-    return queueFamilyIndices_ && 
-           extensions_supported && swapchain_adequate && 
-           supported_features.samplerAnisotropy &&
-           vulkan11Features.shaderDrawParameters &&
-           atomicFloatFeatures.shaderBufferFloat32Atomics &&
-           atomicFloatFeatures.shaderBufferFloat32AtomicAdd &&
-           atomicFloat2Features.shaderBufferFloat32AtomicMinMax;
+    bool featuresSupported = supported_features.samplerAnisotropy &&
+                             vulkan11Features.shaderDrawParameters;
+    
+    if (!queueFamilyIndices) {
+        LOG_DEBUG("Device {} rejected: missing graphics or present queue", properties.deviceName);
+    }
+    if (!swapchain_adequate) {
+        LOG_DEBUG("Device {} rejected: inadequate swapchain support", properties.deviceName);
+    }
+    if (!featuresSupported) {
+        LOG_DEBUG("Device {} rejected: missing required Vulkan features", properties.deviceName);
+    }
+    
+    return queueFamilyIndices &&
+           extensions_supported && swapchain_adequate &&
+           featuresSupported;
 }
 
 void Device::cleanup() {

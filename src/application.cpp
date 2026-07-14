@@ -66,6 +66,8 @@ Application::Application(const std::string& title, int width, int height, Render
     
     LOG_INFO("Initializing Vulkan+3DGS Application");
     
+    Context::initializeVulkanLoader();
+
     // 初始化GLFW
     if (!glfwInit()) {
         LOG_ERROR("Failed to initialize GLFW");

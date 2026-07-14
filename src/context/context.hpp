@@ -20,6 +20,8 @@ public:
         return *instance;
     }
 
+    static void initializeVulkanLoader();
+
     friend class vulkan3DGS::Device;
     
     void initialize(GLFWwindow* window);

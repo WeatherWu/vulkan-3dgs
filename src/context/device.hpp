@@ -27,7 +27,7 @@ public:
     
     void createDevice();
     void pickPhysicalDevice(vk::SurfaceKHR& surface);
-    bool isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface);
+    bool isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface, QueueFamilyIndices& queueFamilyIndices);
 
     void cleanup();
 
@@ -56,9 +56,7 @@ private:
     
     const std::vector<const char*> deviceExtensions_ = {
         vk::KHRSwapchainExtensionName,
-        vk::KHRPushDescriptorExtensionName,
-        vk::EXTShaderAtomicFloatExtensionName,
-        vk::EXTShaderAtomicFloat2ExtensionName
+        vk::KHRPushDescriptorExtensionName
     };
 };
 

@@ -50,6 +50,25 @@ Context::~Context() {
     cleanup();
 }
 
+void Context::initializeVulkanLoader() {
+    static bool loader_initialized = false;
+    if (loader_initialized) {
+        return;
+    }
+
+    VULKAN_HPP_DEFAULT_DISPATCHER.init();
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
+    if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr) {
+        LOG_ERROR("Failed to load vkGetInstanceProcAddr");
+        throw std::runtime_error("Failed to load Vulkan loader");
+    }
+    glfwInitVulkanLoader(VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr);
+    LOG_DEBUG("GLFW Vulkan loader initialized from Vulkan-Hpp dispatcher");
+#endif
+    loader_initialized = true;
+    LOG_DEBUG("Vulkan dynamic loader initialized");
+}
+
 void Context::initialize(GLFWwindow* window) {
     // 防止重复初始化导致设备丢失
     if (device_ != nullptr) {
@@ -93,12 +112,7 @@ void Context::cleanup() {
 
 void Context::createInstance() {
     // 第一步：初始化动态加载器（必须在任何Vulkan API调用之前）
-    static bool dispatcher_initialized = false;
-    if (!dispatcher_initialized) {
-        VULKAN_HPP_DEFAULT_DISPATCHER.init();
-        dispatcher_initialized = true;
-        LOG_DEBUG("Vulkan dynamic loader initialized");
-    }
+    initializeVulkanLoader();
     
     if (enableValidationLayers_ && !checkValidationLayerSupport()) {
         LOG_WARN("Validation layers requested, but not available!");
@@ -228,6 +242,15 @@ std::vector<const char*> Context::getRequiredExtensions() {
     uint32_t glfw_extension_count = 0;
     const char** glfw_extensions;
     glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
+
+    if (!glfw_extensions || glfw_extension_count == 0) {
+        const char* glfwDescription = nullptr;
+        int glfwError = glfwGetError(&glfwDescription);
+        LOG_ERROR("GLFW did not provide required Vulkan instance extensions (GLFW error {}: {})",
+                  glfwError,
+                  glfwDescription ? glfwDescription : "none");
+        throw std::runtime_error("GLFW did not provide required Vulkan instance extensions");
+    }
     
     std::vector<const char*> extensions(glfw_extensions, glfw_extensions + glfw_extension_count);
     
