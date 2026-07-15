@@ -25,7 +25,7 @@ struct TrainingPushConstants {
     float positionLearningRateMaxSteps = 30000.0f;
     float featureLearningRate = 0.0025f;
     float featureRestLearningRate = 0.000125f;
-    float opacityLearningRate = 0.05f;
+    float opacityLearningRate = 0.025f;
     float scaleLearningRate = 0.005f;
     float rotationLearningRate = 0.001f;
     float optimizerBeta1 = 0.9f;
@@ -63,7 +63,7 @@ struct TrainingOptimizerConfig {
     float positionLearningRateMaxSteps = 30000.0f;
     float featureLearningRate = 0.0025f;
     float featureRestLearningRate = 0.000125f;
-    float opacityLearningRate = 0.05f;
+    float opacityLearningRate = 0.025f;
     float scaleLearningRate = 0.005f;
     float rotationLearningRate = 0.001f;
     float beta1 = 0.9f;
@@ -88,13 +88,24 @@ struct TrainingValidationStats {
     bool valid = true;
 };
 
+struct TrainingDensificationStats {
+    uint32_t outputCount = 0;
+    uint32_t pruneOpacityHits = 0;
+    uint32_t pruneScreenHits = 0;
+    uint32_t pruneWorldHits = 0;
+    uint32_t keptSources = 0;
+    uint32_t cloneSources = 0;
+    uint32_t splitSources = 0;
+    uint32_t prunedSources = 0;
+};
+
 struct TrainingDensificationConfig {
     bool enabled = true;
     uint32_t densifyFromIteration = 500;
     uint32_t densifyUntilIteration = 15000;
     uint32_t densificationInterval = 100;
     uint32_t opacityResetInterval = 3000;
-    uint32_t maxGaussianCount = 1000000;
+    uint32_t maxGaussianCount = 10000000;
     uint32_t splitChildren = 2;
     float densifyGradThreshold = 0.0002f;
     float minOpacity = 0.005f;

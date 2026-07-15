@@ -26,8 +26,8 @@ void accumulateGaussianVisibility(uint gaussianIndex, GaussianSample sample, Pro
     float ignoredFloat = 0.0;
     InterlockedAdd(gaussianVisibility[gaussianIndex].contributionCount, 1u, ignoredCount);
     InterlockedAdd(gaussianVisibility[gaussianIndex].alphaSum, sample.alpha, ignoredFloat);
-    InterlockedMax(gaussianVisibility[gaussianIndex].maxScreenRadius, gaussian.centerRadius.w, ignoredFloat);
-    InterlockedMax(densificationStates[gaussianIndex].maxScreenRadius, gaussian.centerRadius.w, ignoredFloat);
+    atomicMaxVisibilityScreenRadius(gaussianVisibility[gaussianIndex], gaussian.centerRadius.w);
+    atomicMaxDensificationScreenRadius(densificationStates[gaussianIndex], gaussian.centerRadius.w);
 }
 
 PixelComposite renderPixelFromTile(uint2 pixel) {

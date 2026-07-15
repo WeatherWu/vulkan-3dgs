@@ -2,7 +2,9 @@
 
 #include "utils/logger.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -42,6 +44,23 @@ uint32_t ceilDiv(uint32_t value, uint32_t divisor) {
 uint32_t tileCount(TrainingExtent extent) {
     constexpr uint32_t tileSize = 16;
     return ceilDiv(extent.width, tileSize) * ceilDiv(extent.height, tileSize);
+}
+
+bool supportsShaderBufferFloat32AtomicMinMax(vk::PhysicalDevice physicalDevice) {
+    auto extensions = physicalDevice.enumerateDeviceExtensionProperties();
+    const bool hasAtomicFloat2 = std::any_of(extensions.begin(), extensions.end(),
+        [](const vk::ExtensionProperties& extension) {
+            return std::strcmp(extension.extensionName.data(), vk::EXTShaderAtomicFloat2ExtensionName) == 0;
+        });
+    if (!hasAtomicFloat2) {
+        return false;
+    }
+
+    vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
+    vk::PhysicalDeviceFeatures2 features2{};
+    features2.setPNext(&atomicFloat2Features);
+    physicalDevice.getFeatures2(&features2);
+    return atomicFloat2Features.shaderBufferFloat32AtomicMinMax;
 }
 
 } // namespace
@@ -139,7 +158,15 @@ void GaussianForwardRenderer::createForwardResources() {
                                         pipelineConfig({storageBinding(4), storageBinding(22), storageBinding(24)}));
     tileRangeBuildPipeline_.initialize(device_, "shaders/train_forward_tile_sort.comp.spv",
                                        pipelineConfig({storageBinding(4), storageBinding(5), storageBinding(21), storageBinding(22)}));
-    forwardPipeline_.initialize(device_, "shaders/train_forward.comp.spv",
+    const bool useUintRadiusFallback = !supportsShaderBufferFloat32AtomicMinMax(physicalDevice_);
+    const char* forwardShader = useUintRadiusFallback
+        ? "shaders/train_forward_uint_radius.comp.spv"
+        : "shaders/train_forward.comp.spv";
+    if (useUintRadiusFallback) {
+        LOG_INFO("Using uint maxScreenRadius fallback training forward shader");
+    }
+
+    forwardPipeline_.initialize(device_, forwardShader,
                                 pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14), storageBinding(15), storageBinding(16)}));
 
     VrdxSorterCreateInfo sorterInfo{};

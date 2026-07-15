@@ -799,6 +799,22 @@ void Application::drawTrainingControls() {
     }
     ImGui::Text("Steps %llu", static_cast<unsigned long long>(training_steps_done_));
     ImGui::Text("Gaussians %u", training_.gaussianCount());
+    const auto& densification = training_.densificationStats();
+    const uint32_t densificationIteration = training_.densificationStatsIteration();
+    if (densificationIteration > 0) {
+        ImGui::Text("Densify/prune iter %u, output %u", densificationIteration, densification.outputCount);
+        ImGui::Text("Densify kept %u, cloned %u, split %u, pruned %u",
+                    densification.keptSources,
+                    densification.cloneSources,
+                    densification.splitSources,
+                    densification.prunedSources);
+        ImGui::Text("Prune hits opacity %u, screen %u, world %u",
+                    densification.pruneOpacityHits,
+                    densification.pruneScreenHits,
+                    densification.pruneWorldHits);
+    } else {
+        ImGui::Text("Densify/prune not run yet");
+    }
     const auto& validation = training_.validationStats();
     ImGui::Text("Loss %.6g", validation.meanLoss);
     ImGui::Text("Render alpha %.6g", validation.meanRenderedAlpha);

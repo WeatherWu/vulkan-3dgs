@@ -17,7 +17,7 @@ struct TrainingDensificationPushConstants {
 };
 
 [[vk::binding(19, 0)]]
-RWStructuredBuffer<uint4> densificationCounters;
+RWStructuredBuffer<uint> densificationCounters;
 
 [[vk::push_constant]]
 ConstantBuffer<TrainingDensificationPushConstants> densifyParams;
@@ -28,5 +28,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     if (dispatchThreadID.x > 0) {
         return;
     }
-    densificationCounters[0] = uint4(0, 0, 0, 0);
+    for (uint i = 0; i < 16; ++i) {
+        densificationCounters[i] = 0u;
+    }
 }

@@ -42,9 +42,13 @@ private:
 
     ComputePipeline clearPipeline_;
     ComputePipeline densifyPrunePipeline_;
+    ComputePipeline finalizePrunePipeline_;
+    ComputePipeline opacityResetPipeline_;
     vk::DescriptorPool descriptorPool_ = nullptr;
     vk::DescriptorSet clearDescriptorSet_ = nullptr;
     vk::DescriptorSet densifyPruneDescriptorSet_ = nullptr;
+    vk::DescriptorSet finalizePruneDescriptorSet_ = nullptr;
+    vk::DescriptorSet opacityResetDescriptorSet_ = nullptr;
 
     const TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;

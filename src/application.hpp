@@ -151,7 +151,7 @@ private:
     float training_position_lr_max_steps_ = 30000.0f;
     float training_feature_lr_ = 0.0025f;
     float training_feature_rest_lr_ = 0.000125f;
-    float training_opacity_lr_ = 0.05f;
+    float training_opacity_lr_ = 0.025f;
     float training_scale_lr_ = 0.005f;
     float training_rotation_lr_ = 0.001f;
     float training_adam_beta1_ = 0.9f;
@@ -167,7 +167,7 @@ private:
     uint32_t training_densify_until_iteration_ = 15000;
     uint32_t training_densification_interval_ = 100;
     uint32_t training_opacity_reset_interval_ = 3000;
-    uint32_t training_max_gaussians_ = 1000000;
+    uint32_t training_max_gaussians_ = 10000000;
     uint32_t training_split_children_ = 2;
     float training_densify_grad_threshold_ = 0.0002f;
     float training_min_opacity_ = 0.005f;

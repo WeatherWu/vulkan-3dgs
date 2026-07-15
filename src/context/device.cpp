@@ -4,6 +4,7 @@
 #include "vulkan/command_pool.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <set>
 
 namespace vulkan3DGS {
@@ -68,8 +69,8 @@ void Device::createDevice() {
     pickPhysicalDevice(surface_);
     
     vk::DeviceCreateInfo createInfo;
-    createInfo.setPEnabledExtensionNames(deviceExtensions_);
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
+    std::vector<const char*> enabledExtensions = deviceExtensions_;
     float properties = 1.0;
     
     if (!queueFamilyIndices_.graphicsIndex || !queueFamilyIndices_.presentIndex) {
@@ -104,13 +105,73 @@ void Device::createDevice() {
     
     createInfo.setQueueCreateInfos(queueCreateInfos);
 
-    // 配置设备特性
+    // 配置设备特性。计算相关扩展按支持情况启用，不作为全局设备筛选条件。
     vk::PhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.setSamplerAnisotropy(VK_TRUE);
+
+    const auto availableExtensions = phyDevice_.enumerateDeviceExtensionProperties();
+    auto supportsExtension = [&availableExtensions](const char* name) {
+        return std::any_of(availableExtensions.begin(), availableExtensions.end(),
+                           [name](const vk::ExtensionProperties& extension) {
+                               return std::strcmp(extension.extensionName.data(), name) == 0;
+                           });
+    };
+
+    const bool supportsAtomicFloatExtension = supportsExtension(vk::EXTShaderAtomicFloatExtensionName);
+    const bool supportsAtomicFloat2Extension = supportsExtension(vk::EXTShaderAtomicFloat2ExtensionName);
+
+    vk::PhysicalDeviceVulkan11Features supportedVulkan11Features{};
+    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT supportedAtomicFloatFeatures{};
+    vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT supportedAtomicFloat2Features{};
+    vk::PhysicalDeviceFeatures2 supportedFeatures2{};
+    supportedFeatures2.setPNext(&supportedVulkan11Features);
+    if (supportsAtomicFloatExtension) {
+        supportedVulkan11Features.setPNext(&supportedAtomicFloatFeatures);
+        if (supportsAtomicFloat2Extension) {
+            supportedAtomicFloatFeatures.setPNext(&supportedAtomicFloat2Features);
+        }
+    } else if (supportsAtomicFloat2Extension) {
+        supportedVulkan11Features.setPNext(&supportedAtomicFloat2Features);
+    }
+    phyDevice_.getFeatures2(&supportedFeatures2);
+
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.setShaderDrawParameters(VK_TRUE);
+    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
+    vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
+
+    vk::BaseOutStructure* featureTail = reinterpret_cast<vk::BaseOutStructure*>(&vulkan11Features);
+    auto appendFeature = [&featureTail](auto& feature) {
+        featureTail->pNext = reinterpret_cast<vk::BaseOutStructure*>(&feature);
+        featureTail = reinterpret_cast<vk::BaseOutStructure*>(&feature);
+    };
+
+    if (supportsAtomicFloatExtension &&
+        supportedAtomicFloatFeatures.shaderBufferFloat32Atomics &&
+        supportedAtomicFloatFeatures.shaderBufferFloat32AtomicAdd) {
+        enabledExtensions.push_back(vk::EXTShaderAtomicFloatExtensionName);
+        atomicFloatFeatures.setShaderBufferFloat32Atomics(VK_TRUE)
+                           .setShaderBufferFloat32AtomicAdd(VK_TRUE);
+        appendFeature(atomicFloatFeatures);
+        LOG_INFO("Enabled optional device extension: {}", vk::EXTShaderAtomicFloatExtensionName);
+    } else {
+        LOG_WARN("Optional device extension {} not enabled; training shaders that require float atomic add may be unavailable",
+                 vk::EXTShaderAtomicFloatExtensionName);
+    }
+
+    if (supportsAtomicFloat2Extension &&
+        supportedAtomicFloat2Features.shaderBufferFloat32AtomicMinMax) {
+        enabledExtensions.push_back(vk::EXTShaderAtomicFloat2ExtensionName);
+        atomicFloat2Features.setShaderBufferFloat32AtomicMinMax(VK_TRUE);
+        appendFeature(atomicFloat2Features);
+        LOG_INFO("Enabled optional device extension: {}", vk::EXTShaderAtomicFloat2ExtensionName);
+    } else {
+        LOG_DEBUG("Optional device extension {} not enabled", vk::EXTShaderAtomicFloat2ExtensionName);
+    }
+
     createInfo.setPEnabledFeatures(&deviceFeatures);
     createInfo.setPNext(&vulkan11Features);
+    createInfo.setPEnabledExtensionNames(enabledExtensions);
 
     device_ = phyDevice_.createDevice(createInfo);
     if (!device_) {
@@ -273,7 +334,7 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface,
     
     // 检查交换链支持
     bool swapchain_adequate = false;
-    if (extensions_supported) {
+    if (extensions_supported && queueFamilyIndices.presentIndex.has_value()) {
         auto formats = device.getSurfaceFormatsKHR(surface);
         auto present_modes = device.getSurfacePresentModesKHR(surface);
         swapchain_adequate = !formats.empty() && !present_modes.empty();
@@ -292,7 +353,7 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface,
     if (!queueFamilyIndices) {
         LOG_DEBUG("Device {} rejected: missing graphics or present queue", properties.deviceName);
     }
-    if (!swapchain_adequate) {
+    if (extensions_supported && queueFamilyIndices.presentIndex.has_value() && !swapchain_adequate) {
         LOG_DEBUG("Device {} rejected: inadequate swapchain support", properties.deviceName);
     }
     if (!featuresSupported) {

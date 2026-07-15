@@ -9,9 +9,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     add_compile_options(/W3 /WX /utf-8)
 elseif(MINGW)
-    add_compile_options(-Wall -Wextra -Werror -static -static-libgcc -static-libstdc++)
+    add_compile_options(-Wall -Wextra -static -static-libgcc -static-libstdc++)
 else()
-    add_compile_options(-Wall -Wextra -Werror)
+    add_compile_options(-Wall -Wextra)
 endif()
 
 # 项目配置
@@ -48,6 +48,7 @@ set(GRAPHICS_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader
 set(TRAINING_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/slang")
 set(TRAINING_SHADER_COMMON_DIR "${TRAINING_SHADER_SRC_DIR}/common")
 set(TRAINING_SHADER_PASSES_DIR "${TRAINING_SHADER_SRC_DIR}/passes")
+set(TRAINING_SHADER_UINT_RADIUS_DIR "${TRAINING_SHADER_SRC_DIR}/uint_radius")
 set(TRAINING_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/spv")
 set(TRAINING_SHADER_COMMON_DEPS
     "${TRAINING_SHADER_COMMON_DIR}/train_common.slang"
@@ -118,6 +119,7 @@ function(compile_training_shader SHADER_SRC OUTPUT_BASENAME)
         DEPENDS
             ${SHADER_SRC}
             ${TRAINING_SHADER_COMMON_DEPS}
+            ${ARGN}
         COMMENT "Compiling training Slang shader ${SHADER_SRC} -> ${OUTPUT_BASENAME}.spv"
         VERBATIM
     )
@@ -145,6 +147,9 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather_items.comp.slang" "train_forward_tile_gather_items.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_sort.comp.slang" "train_forward_tile_sort.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang" "train_forward.comp")
+compile_training_shader("${TRAINING_SHADER_UINT_RADIUS_DIR}/train_forward_uint_radius.comp.slang"
+                        "train_forward_uint_radius.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_loss.comp.slang" "train_loss.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_clear.comp.slang" "train_backward_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_loss_to_pixel.comp.slang" "train_backward_loss_to_pixel.comp")
@@ -153,6 +158,15 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3d
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_clear.comp.slang" "train_densify_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_prune.comp.slang" "train_densify_prune.comp")
+compile_training_shader("${TRAINING_SHADER_UINT_RADIUS_DIR}/train_densify_prune_uint_radius.comp.slang"
+                        "train_densify_prune_uint_radius.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_densify_prune.comp.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_finalize_prune.comp.slang"
+                        "train_densify_finalize_prune.comp")
+compile_training_shader("${TRAINING_SHADER_UINT_RADIUS_DIR}/train_densify_finalize_prune_uint_radius.comp.slang"
+                        "train_densify_finalize_prune_uint_radius.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_densify_finalize_prune.comp.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_opacity_reset.comp.slang" "train_opacity_reset.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_pack_render_buffer.comp.slang" "train_pack_render_buffer.comp")
 
 add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})

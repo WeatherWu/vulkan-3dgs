@@ -45,17 +45,29 @@ struct PixelBlendState {
     uint lastContributor;
 };
 
+#ifndef TRAIN_USE_UINT_RADIUS
+#define TRAIN_USE_UINT_RADIUS 0
+#endif
+
 struct GaussianVisibilityState {
     uint contributionCount;
     float alphaSum;
+#if TRAIN_USE_UINT_RADIUS
+    uint maxScreenRadiusBits;
+#else
     float maxScreenRadius;
+#endif
     uint padding0;
 };
 
 struct GaussianDensificationState {
     float screenGradSum;
     uint screenGradCount;
+#if TRAIN_USE_UINT_RADIUS
+    uint maxScreenRadiusBits;
+#else
     float maxScreenRadius;
+#endif
     uint padding0;
 };
 
@@ -143,4 +155,48 @@ float4 evaluateSH(GaussianTrainParam gaussian, float3 viewDirection) {
 
 uint pixelIndex(uint2 pixel) {
     return pixel.y * params.width + pixel.x;
+}
+
+void clearVisibilityMaxScreenRadius(inout GaussianVisibilityState state) {
+#if TRAIN_USE_UINT_RADIUS
+    state.maxScreenRadiusBits = 0u;
+#else
+    state.maxScreenRadius = 0.0;
+#endif
+}
+
+void clearDensificationMaxScreenRadius(inout GaussianDensificationState state) {
+#if TRAIN_USE_UINT_RADIUS
+    state.maxScreenRadiusBits = 0u;
+#else
+    state.maxScreenRadius = 0.0;
+#endif
+}
+
+void atomicMaxVisibilityScreenRadius(inout GaussianVisibilityState state, float radius) {
+#if TRAIN_USE_UINT_RADIUS
+    uint ignored = 0u;
+    InterlockedMax(state.maxScreenRadiusBits, asuint(max(radius, 0.0)), ignored);
+#else
+    float ignored = 0.0;
+    InterlockedMax(state.maxScreenRadius, radius, ignored);
+#endif
+}
+
+void atomicMaxDensificationScreenRadius(inout GaussianDensificationState state, float radius) {
+#if TRAIN_USE_UINT_RADIUS
+    uint ignored = 0u;
+    InterlockedMax(state.maxScreenRadiusBits, asuint(max(radius, 0.0)), ignored);
+#else
+    float ignored = 0.0;
+    InterlockedMax(state.maxScreenRadius, radius, ignored);
+#endif
+}
+
+float loadDensificationMaxScreenRadius(GaussianDensificationState state) {
+#if TRAIN_USE_UINT_RADIUS
+    return asfloat(state.maxScreenRadiusBits);
+#else
+    return state.maxScreenRadius;
+#endif
 }

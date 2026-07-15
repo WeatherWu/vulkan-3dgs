@@ -40,7 +40,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     backwardProjectedColorToSH(grad, gaussian, projectedGrad.color.xyz);
     gaussianGrads[gaussianIndex] = grad;
 
-    float screenGradMagnitude = length(dLoss_dCenter);
+    float2 densificationGrad = dLoss_dCenter *
+        (0.5 * max(trainingCamera.viewport.zw, float2(1.0)));
+    float screenGradMagnitude = length(densificationGrad);
     if (screenGradMagnitude > 0.0) {
         float ignoredFloat = 0.0;
         uint ignoredUint = 0;

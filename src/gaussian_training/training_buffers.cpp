@@ -1,6 +1,7 @@
 #include "gaussian_training/training_buffers.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <vector>
@@ -25,6 +26,9 @@ void TrainingBuffers::cleanup() {
     counters_.cleanup();
     loss_.cleanup();
     projectedGrads_.cleanup();
+    densificationCandidateStates_.cleanup();
+    densificationCandidateAdamStates_.cleanup();
+    densificationCandidateParams_.cleanup();
     densificationCounters_.cleanup();
     densifiedAdamStates_.cleanup();
     densifiedParams_.cleanup();
@@ -86,6 +90,9 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     pixelBlendStates_.cleanup();
     gaussianVisibility_.cleanup();
     projectedGrads_.cleanup();
+    densificationCandidateStates_.cleanup();
+    densificationCandidateAdamStates_.cleanup();
+    densificationCandidateParams_.cleanup();
     densificationCounters_.cleanup();
     densifiedAdamStates_.cleanup();
     densifiedParams_.cleanup();
@@ -219,23 +226,32 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
     if (safeCapacity <= densificationCapacity_ &&
         densifiedParams_.getBuffer() &&
         densifiedAdamStates_.getBuffer() &&
+        densificationCandidateParams_.getBuffer() &&
+        densificationCandidateAdamStates_.getBuffer() &&
+        densificationCandidateStates_.getBuffer() &&
         densificationCounters_.getBuffer()) {
         return;
     }
 
     densifiedParams_.cleanup();
     densifiedAdamStates_.cleanup();
+    densificationCandidateParams_.cleanup();
+    densificationCandidateAdamStates_.cleanup();
+    densificationCandidateStates_.cleanup();
     densificationCounters_.cleanup();
 
     createStorageBuffer(densifiedParams_, sizeof(GaussianTrainParam) * safeCapacity);
     createZeroedStorageBuffer(densifiedAdamStates_, sizeof(AdamState) * safeCapacity);
-    const glm::uvec4 zeroCounters{0, 0, 0, 0};
+    createStorageBuffer(densificationCandidateParams_, sizeof(GaussianTrainParam) * safeCapacity);
+    createZeroedStorageBuffer(densificationCandidateAdamStates_, sizeof(AdamState) * safeCapacity);
+    createZeroedStorageBuffer(densificationCandidateStates_, sizeof(GaussianDensificationState) * safeCapacity);
+    const std::array<uint32_t, 16> zeroCounters{};
     densificationCounters_.create(device_,
                                   physicalDevice_,
                                   transferQueue_,
                                   transferQueueFamilyIndex_,
-                                  &zeroCounters,
-                                  sizeof(glm::uvec4),
+                                  zeroCounters.data(),
+                                  zeroCounters.size() * sizeof(uint32_t),
                                   vk::BufferUsageFlagBits::eStorageBuffer |
                                       vk::BufferUsageFlagBits::eTransferSrc |
                                       vk::BufferUsageFlagBits::eTransferDst,
@@ -257,6 +273,9 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     densificationStates_.cleanup();
     projectedGrads_.cleanup();
     previewInstances_.cleanup();
+    densificationCandidateStates_.cleanup();
+    densificationCandidateAdamStates_.cleanup();
+    densificationCandidateParams_.cleanup();
 
     gaussianParams_ = std::move(densifiedParams_);
     adamStates_ = std::move(densifiedAdamStates_);
@@ -368,9 +387,25 @@ uint32_t TrainingBuffers::requiredTileItemCount() {
 }
 
 uint32_t TrainingBuffers::densifiedGaussianCount() {
-    glm::uvec4 counters{0, 0, 0, 0};
-    densificationCounters_.download(&counters, sizeof(counters));
-    return counters.x;
+    std::array<uint32_t, 16> counters{};
+    densificationCounters_.download(counters.data(), counters.size() * sizeof(uint32_t));
+    return counters[1];
+}
+
+TrainingDensificationStats TrainingBuffers::densificationStats() {
+    std::array<uint32_t, 16> counters{};
+    densificationCounters_.download(counters.data(), counters.size() * sizeof(uint32_t));
+
+    TrainingDensificationStats stats{};
+    stats.outputCount = counters[1];
+    stats.pruneOpacityHits = counters[2];
+    stats.pruneScreenHits = counters[3];
+    stats.pruneWorldHits = counters[4];
+    stats.keptSources = counters[5];
+    stats.cloneSources = counters[6];
+    stats.splitSources = counters[7];
+    stats.prunedSources = counters[8];
+    return stats;
 }
 
 void TrainingBuffers::createStorageBuffer(Buffer& buffer, vk::DeviceSize size) {

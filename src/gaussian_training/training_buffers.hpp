@@ -30,6 +30,7 @@ public:
     void uploadCamera(const TrainingForwardCamera& camera);
     uint32_t requiredTileItemCount();
     uint32_t densifiedGaussianCount();
+    TrainingDensificationStats densificationStats();
 
     uint32_t gaussianCapacity() const { return gaussianCapacity_; }
     uint32_t densificationCapacity() const { return densificationCapacity_; }
@@ -63,6 +64,9 @@ public:
     vk::DescriptorBufferInfo densifiedParamsInfo() const { return densifiedParams_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densifiedAdamStatesInfo() const { return densifiedAdamStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densificationCountersInfo() const { return densificationCounters_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo densificationCandidateParamsInfo() const { return densificationCandidateParams_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo densificationCandidateAdamStatesInfo() const { return densificationCandidateAdamStates_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo densificationCandidateStatesInfo() const { return densificationCandidateStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo projectedGradsInfo() const { return projectedGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo lossInfo() const { return loss_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo countersInfo() const { return counters_.getDescriptorInfo(); }
@@ -105,6 +109,9 @@ private:
     Buffer densifiedParams_;
     Buffer densifiedAdamStates_;
     Buffer densificationCounters_;
+    Buffer densificationCandidateParams_;
+    Buffer densificationCandidateAdamStates_;
+    Buffer densificationCandidateStates_;
     Buffer projectedGrads_;
     Buffer loss_;
     Buffer counters_;

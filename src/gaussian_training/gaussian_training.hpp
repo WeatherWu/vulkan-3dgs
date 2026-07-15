@@ -67,6 +67,8 @@ public:
     uint32_t trainingIteration() const { return trainingIteration_; }
     uint32_t totalIterations() const { return scheduleConfig_.totalIterations; }
     const TrainingValidationStats& validationStats() const { return validationStats_; }
+    const TrainingDensificationStats& densificationStats() const { return lastDensificationStats_; }
+    uint32_t densificationStatsIteration() const { return lastDensificationStatsIteration_; }
     size_t datasetFrameCount() const { return dataset_.size(); }
     size_t currentFrameIndex() const { return currentDatasetFrameIndex_; }
     TrainingBuffers& buffers() { return buffers_; }
@@ -115,6 +117,8 @@ private:
     uint32_t trainingIteration_ = 0;
     uint32_t validationInterval_ = 10;
     TrainingValidationStats validationStats_{};
+    TrainingDensificationStats lastDensificationStats_{};
+    uint32_t lastDensificationStatsIteration_ = 0;
     float sceneExtent_ = 1.0f;
 
 };

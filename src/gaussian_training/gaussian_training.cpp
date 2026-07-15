@@ -180,6 +180,8 @@ void GaussianTraining::cleanup() {
     trainableGaussianCount_ = 0;
     usedRandomInitialization_ = false;
     randomFrameStack_.clear();
+    lastDensificationStats_ = {};
+    lastDensificationStatsIteration_ = 0;
     initialized_ = false;
 }
 
@@ -342,7 +344,6 @@ void GaussianTraining::trainStep() {
     gaussianForward->renderPreparedTiles();
     gaussianBackward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
     gaussianBackward->backward();
-    gaussianBackward->gradientDescent();
 
     if (runDensificationThisStep) {
         densification_->setTrainingBuffers(buffers_,
@@ -350,6 +351,8 @@ void GaussianTraining::trainStep() {
                                            createDensificationPushConstants(pruneByScreenSize));
         densification_->densifyAndPrune();
     }
+
+    gaussianBackward->gradientDescent();
 
     trainingCommandBuffer_.end();
 
@@ -367,8 +370,21 @@ void GaussianTraining::trainStep() {
     }
 
     if (runDensificationThisStep) {
-        const uint32_t newGaussianCount = std::min(buffers_.densifiedGaussianCount(),
+        const TrainingDensificationStats densificationStats = buffers_.densificationStats();
+        lastDensificationStats_ = densificationStats;
+        lastDensificationStatsIteration_ = trainingIteration_ + 1u;
+        const uint32_t newGaussianCount = std::min(densificationStats.outputCount,
                                                    densificationConfig_.maxGaussianCount);
+        LOG_INFO("Training densify/prune stats at iteration {}: output={} kept={} cloned={} split={} pruned={} pruneHits(opacity={}, screen={}, world={})",
+                 trainingIteration_ + 1u,
+                 densificationStats.outputCount,
+                 densificationStats.keptSources,
+                 densificationStats.cloneSources,
+                 densificationStats.splitSources,
+                 densificationStats.prunedSources,
+                 densificationStats.pruneOpacityHits,
+                 densificationStats.pruneScreenHits,
+                 densificationStats.pruneWorldHits);
         if (newGaussianCount > 0 && newGaussianCount != trainableGaussianCount_) {
             LOG_INFO("Training densify/prune changed gaussian count from {} to {} at iteration {}",
                      trainableGaussianCount_,
@@ -426,6 +442,8 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     trainingIteration_ = 0;
     frameRng_.seed(scheduleConfig_.randomSeed);
     randomFrameStack_.clear();
+    lastDensificationStats_ = {};
+    lastDensificationStatsIteration_ = 0;
     sceneExtent_ = estimateSceneExtent();
 
     if (usedRandomInitialization_) {
@@ -433,6 +451,7 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     } else {
         LOG_INFO("Initialized training model from {} COLMAP sparse points", trainableGaussianCount_);
     }
+    LOG_INFO("Training scene extent set to {} using camera-center normalization", sceneExtent_);
 }
 
 bool GaussianTraining::exportToPLY(const std::filesystem::path& path) {
@@ -859,6 +878,20 @@ glm::mat4 GaussianTraining::createProjectionMatrix(const TrainingCameraFrame& fr
 }
 
 float GaussianTraining::estimateSceneExtent() const {
+    if (!dataset_.frames.empty()) {
+        glm::vec3 center(0.0f);
+        for (const auto& frame : dataset_.frames) {
+            center += frame.position;
+        }
+        center /= std::max(static_cast<float>(dataset_.frames.size()), 1.0f);
+
+        float diagonal = 0.0f;
+        for (const auto& frame : dataset_.frames) {
+            diagonal = std::max(diagonal, glm::length(frame.position - center));
+        }
+        return std::max(diagonal * 1.1f, 1e-6f);
+    }
+
     if (!dataset_.sparsePoints.empty()) {
         glm::vec3 minPosition(std::numeric_limits<float>::max());
         glm::vec3 maxPosition(std::numeric_limits<float>::lowest());
@@ -866,17 +899,7 @@ float GaussianTraining::estimateSceneExtent() const {
             minPosition = glm::min(minPosition, point.position);
             maxPosition = glm::max(maxPosition, point.position);
         }
-        return std::max(glm::length(maxPosition - minPosition), 1.0f);
-    }
-
-    if (!dataset_.frames.empty()) {
-        glm::vec3 minCamera(std::numeric_limits<float>::max());
-        glm::vec3 maxCamera(std::numeric_limits<float>::lowest());
-        for (const auto& frame : dataset_.frames) {
-            minCamera = glm::min(minCamera, frame.position);
-            maxCamera = glm::max(maxCamera, frame.position);
-        }
-        return std::max(glm::length(maxCamera - minCamera), 1.0f);
+        return std::max(glm::length(maxPosition - minPosition), 1e-6f);
     }
 
     return 1.0f;

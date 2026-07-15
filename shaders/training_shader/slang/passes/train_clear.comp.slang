@@ -36,7 +36,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         GaussianVisibilityState visibility;
         visibility.contributionCount = 0;
         visibility.alphaSum = 0.0;
-        visibility.maxScreenRadius = 0.0;
+        clearVisibilityMaxScreenRadius(visibility);
         visibility.padding0 = 0;
         gaussianVisibility[index] = visibility;
     }
