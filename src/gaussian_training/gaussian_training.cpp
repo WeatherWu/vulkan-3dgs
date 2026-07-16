@@ -104,7 +104,7 @@ void queryNearestSquaredDistances(const std::vector<TrainingSparsePoint>& points
 }
 
 std::vector<float> estimateSparsePointScaleDistances(const std::vector<TrainingSparsePoint>& points,
-                                                     float fallbackScale) {
+                                                      float fallbackScale) {
     std::vector<float> scales(points.size(), fallbackScale);
     if (points.size() < 2) {
         return scales;
@@ -140,6 +140,19 @@ std::vector<float> estimateSparsePointScaleDistances(const std::vector<TrainingS
     }
 
     return scales;
+}
+
+uint32_t findMemoryType(vk::PhysicalDevice physicalDevice,
+                        uint32_t typeFilter,
+                        vk::MemoryPropertyFlags properties) {
+    const vk::PhysicalDeviceMemoryProperties memoryProperties = physicalDevice.getMemoryProperties();
+    for (uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index) {
+        if ((typeFilter & (1u << index)) != 0u &&
+            (memoryProperties.memoryTypes[index].propertyFlags & properties) == properties) {
+            return index;
+        }
+    }
+    throw std::runtime_error("Failed to find host-visible validation readback memory");
 }
 
 } // namespace
@@ -393,6 +406,20 @@ void GaussianTraining::trainStep() {
         buffers_.ensureDensificationCapacity(std::max(requestedCapacity, trainableGaussianCount_));
     }
 
+    ValidationReadbackSlot* validationReadbackSlot = nullptr;
+    if (pushConstants.validationEnabled != 0u) {
+        collectCompletedValidationReadbacks();
+        validationReadbackSlot = acquireValidationReadbackSlot();
+        if (!validationReadbackSlot) {
+            LOG_WARN("Training validation readback ring is full at iteration {}", pushConstants.validationIteration);
+            pushConstants.validationEnabled = 0u;
+        } else {
+            validationReadbackSlot->iteration = pushConstants.validationIteration;
+            validationReadbackSlot->tileItemCount = requiredTileItems;
+            validationReadbackSlot->gaussianCount = trainableGaussianCount_;
+        }
+    }
+
     trainingCommandPool_.reset();
     trainingCommandBuffer_.begin(beginInfo);
 
@@ -411,6 +438,10 @@ void GaussianTraining::trainStep() {
     }
 
     gaussianBackward->gradientDescent();
+
+    if (validationReadbackSlot) {
+        recordValidationReadbackCopy(*validationReadbackSlot);
+    }
 
     trainingCommandBuffer_.end();
     LOG_DEBUG("Finished recording training main command buffer for iteration {}", trainingIteration_ + 1u);
@@ -432,7 +463,13 @@ void GaussianTraining::trainStep() {
     LOG_DEBUG("Submitting training main pass for iteration {} with image upload timeline value {}",
               trainingIteration_ + 1u,
               pendingImageUploadValue_);
-    computeQueue_.submit(submitInfo);
+    if (validationReadbackSlot) {
+        device_.resetFences(validationReadbackSlot->fence);
+        computeQueue_.submit(submitInfo, validationReadbackSlot->fence);
+        validationReadbackSlot->pending = true;
+    } else {
+        computeQueue_.submit(submitInfo);
+    }
     computeQueue_.waitIdle();
     LOG_DEBUG("Training main pass completed for iteration {}", trainingIteration_ + 1u);
     pendingImageUploadValue_ = 0;
@@ -440,13 +477,12 @@ void GaussianTraining::trainStep() {
                              std::chrono::duration<float, std::milli>(Clock::now() - mainSubmitStart).count());
     collectGpuProfilingStats();
 
-    const uint32_t completedTileItems = requiredTileItems;
     const uint32_t nextIteration = trainingIteration_ + 1u;
     if (nextIteration <= 5u ||
         (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u)) {
         const auto validationStart = Clock::now();
         LOG_DEBUG("Starting training validation readback for iteration {}", nextIteration);
-        validateTrainingStep(completedTileItems);
+        collectCompletedValidationReadbacks();
         LOG_DEBUG("Completed training validation readback for iteration {}", nextIteration);
         recordCpuProfilingSample(TrainingCpuProfileStage::Validation,
                                  std::chrono::duration<float, std::milli>(Clock::now() - validationStart).count());
@@ -701,6 +737,13 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.optimizerEpsilon = optimizerConfig_.epsilon;
     pushConstants.optimizerGradClip = optimizerConfig_.gradClip;
     pushConstants.lossDssimWeight = std::clamp(optimizerConfig_.lossDssimWeight, 0.0f, 1.0f);
+    const uint32_t nextIteration = trainingIteration_ + 1u;
+    pushConstants.validationEnabled =
+        (nextIteration <= 5u ||
+         (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u))
+            ? 1u
+            : 0u;
+    pushConstants.validationIteration = nextIteration;
     return pushConstants;
 }
 
@@ -881,8 +924,9 @@ uint64_t GaussianTraining::initialDeviceImageCacheBudget() const {
         const uint64_t heapBudget = budgetProperties.heapBudget[deviceLocalHeapIndex];
         const uint64_t heapUsage = budgetProperties.heapUsage[deviceLocalHeapIndex];
         const uint64_t freeBytes = heapBudget > heapUsage ? heapBudget - heapUsage : 0;
+        constexpr uint64_t minimumReserveBytes = uint64_t{512} * 1024u * 1024u;
         const uint64_t reserveBytes = std::min(heapBudget / 2u,
-                                              std::max(512ull * 1024ull * 1024ull,
+                                              std::max(minimumReserveBytes,
                                                        heapBudget * 15u / 100u));
         const uint64_t usableBytes = freeBytes > reserveBytes ? freeBytes - reserveBytes : imageBytes;
         return std::min(fullDatasetBytes,
@@ -929,85 +973,45 @@ void GaussianTraining::prefetchUpcomingTrainingFrames() {
     imageStreamer_->prefetch(std::span<const ImageId>(upcoming.data(), count));
 }
 
-void GaussianTraining::validateTrainingStep(uint32_t tileItemCount) {
+void GaussianTraining::validateTrainingStep(const TrainingValidationGpuResult& result,
+                                            uint32_t tileItemCount,
+                                            uint32_t gaussianCount) {
     TrainingValidationStats stats{};
     stats.tileItemCount = tileItemCount;
 
     const auto extent = buffers_.extent();
     const uint32_t pixelCount = extent.width * extent.height;
-    if (pixelCount == 0 || trainableGaussianCount_ == 0) {
+    if (pixelCount == 0 || gaussianCount == 0) {
         stats.valid = false;
         validationStats_ = stats;
         LOG_WARN("Training validation failed: empty pixel or gaussian count");
         return;
     }
 
-    std::vector<float> loss = buffers_.downloadLoss(pixelCount);
-    double lossSum = 0.0;
-    for (float value : loss) {
-        if (!std::isfinite(value)) {
-            ++stats.invalidLossCount;
-            continue;
-        }
-        lossSum += static_cast<double>(value);
-        stats.maxLoss = std::max(stats.maxLoss, value);
-    }
-    stats.meanLoss = static_cast<float>(lossSum);
-
-    std::vector<glm::vec4> rendered = buffers_.downloadRenderedColor(pixelCount);
-    double alphaSum = 0.0;
-    double luminanceSum = 0.0;
-    uint32_t validRenderedCount = 0;
-    for (const auto& pixel : rendered) {
-        if (!std::isfinite(pixel.x) ||
-            !std::isfinite(pixel.y) ||
-            !std::isfinite(pixel.z) ||
-            !std::isfinite(pixel.w)) {
-            ++stats.invalidRenderedPixelCount;
-            continue;
-        }
-        alphaSum += static_cast<double>(pixel.w);
-        luminanceSum += static_cast<double>((pixel.x + pixel.y + pixel.z) / 3.0f);
-        ++validRenderedCount;
-    }
-    if (validRenderedCount > 0) {
-        stats.meanRenderedAlpha = static_cast<float>(alphaSum / static_cast<double>(validRenderedCount));
-        stats.meanRenderedLuminance = static_cast<float>(luminanceSum / static_cast<double>(validRenderedCount));
+    stats.meanLoss = result.lossSum;
+    stats.maxLoss = result.maxLoss;
+    stats.invalidLossCount = result.invalidLossCount;
+    stats.invalidRenderedPixelCount = result.invalidRenderedPixelCount;
+    stats.nonFiniteGaussianCount = result.nonFiniteGaussianCount;
+    if (result.validRenderedPixelCount > 0u) {
+        const float validRenderedCount = static_cast<float>(result.validRenderedPixelCount);
+        stats.meanRenderedAlpha = result.alphaSum / validRenderedCount;
+        stats.meanRenderedLuminance = result.luminanceSum / validRenderedCount;
     }
     stats.renderedNonEmpty = stats.meanRenderedAlpha > 1e-5f ||
                              std::abs(stats.meanRenderedLuminance) > 1e-5f;
-
-    std::vector<GaussianTrainParam> params = buffers_.downloadGaussianParams(trainableGaussianCount_);
-    for (const auto& gaussian : params) {
-        const glm::vec4 values[] = {
-            gaussian.positionOpacity,
-            gaussian.scale,
-            gaussian.rotation,
-        };
-        bool finite = true;
-        for (const auto& value : values) {
-            finite = finite &&
-                     std::isfinite(value.x) &&
-                     std::isfinite(value.y) &&
-                     std::isfinite(value.z) &&
-                     std::isfinite(value.w);
-        }
-        if (!finite) {
-            ++stats.nonFiniteGaussianCount;
-        }
-    }
 
     stats.valid = stats.invalidLossCount == 0 &&
                   stats.invalidRenderedPixelCount == 0 &&
                   stats.nonFiniteGaussianCount == 0 &&
                   stats.renderedNonEmpty &&
                   stats.tileItemCount > 0 &&
-                  trainableGaussianCount_ <= buffers_.gaussianCapacity();
+                  gaussianCount <= buffers_.gaussianCapacity();
     validationStats_ = stats;
 
     if (!stats.valid) {
         LOG_WARN("Training validation issue at iteration {}: loss={} invalidLoss={} invalidPixels={} nonFiniteGaussians={} tileItems={} alpha={} luminance={}",
-                 trainingIteration_ + 1u,
+                 result.validationIteration,
                  stats.meanLoss,
                  stats.invalidLossCount,
                  stats.invalidRenderedPixelCount,
@@ -1311,9 +1315,11 @@ void GaussianTraining::createTrainingCommandResources(vk::Device device,
                                 computeQueueFamilyIndex_,
                                 vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     trainingCommandBuffer_ = trainingCommandPool_.allocateCommandBuffer();
+    createValidationReadbackResources();
 }
 
 void GaussianTraining::destroyTrainingCommandResources() {
+    destroyValidationReadbackResources();
     if (trainingCommandBuffer_) {
         trainingCommandPool_.freeCommandBuffer(trainingCommandBuffer_);
         trainingCommandBuffer_ = nullptr;
@@ -1322,6 +1328,109 @@ void GaussianTraining::destroyTrainingCommandResources() {
     trainingCommandPool_.cleanup();
     computeQueue_ = nullptr;
     computeQueueFamilyIndex_ = 0;
+}
+
+void GaussianTraining::createValidationReadbackResources() {
+    if (validationReadbackSlots_[0].buffer) {
+        return;
+    }
+
+    try {
+        for (auto& slot : validationReadbackSlots_) {
+            vk::BufferCreateInfo bufferInfo{};
+            bufferInfo.setSize(sizeof(TrainingValidationGpuResult))
+                      .setUsage(vk::BufferUsageFlagBits::eTransferDst)
+                      .setSharingMode(vk::SharingMode::eExclusive);
+            slot.buffer = device_.createBuffer(bufferInfo);
+
+            const vk::MemoryRequirements requirements = device_.getBufferMemoryRequirements(slot.buffer);
+            vk::MemoryAllocateInfo allocationInfo{};
+            allocationInfo.setAllocationSize(requirements.size)
+                          .setMemoryTypeIndex(findMemoryType(
+                              physicalDevice_,
+                              requirements.memoryTypeBits,
+                              vk::MemoryPropertyFlagBits::eHostVisible |
+                                  vk::MemoryPropertyFlagBits::eHostCoherent));
+            slot.memory = device_.allocateMemory(allocationInfo);
+            device_.bindBufferMemory(slot.buffer, slot.memory, 0);
+            slot.mapped = device_.mapMemory(slot.memory, 0, sizeof(TrainingValidationGpuResult));
+            slot.fence = device_.createFence(vk::FenceCreateInfo{});
+        }
+    } catch (...) {
+        destroyValidationReadbackResources();
+        throw;
+    }
+    nextValidationReadbackSlot_ = 0;
+}
+
+void GaussianTraining::destroyValidationReadbackResources() {
+    for (auto& slot : validationReadbackSlots_) {
+        if (slot.pending && slot.fence && device_) {
+            (void)device_.waitForFences(slot.fence, VK_TRUE, UINT64_MAX);
+        }
+        if (slot.fence && device_) {
+            device_.destroyFence(slot.fence);
+        }
+        if (slot.mapped && slot.memory && device_) {
+            device_.unmapMemory(slot.memory);
+        }
+        if (slot.buffer && device_) {
+            device_.destroyBuffer(slot.buffer);
+        }
+        if (slot.memory && device_) {
+            device_.freeMemory(slot.memory);
+        }
+        slot = {};
+    }
+    nextValidationReadbackSlot_ = 0;
+}
+
+GaussianTraining::ValidationReadbackSlot* GaussianTraining::acquireValidationReadbackSlot() {
+    for (size_t offset = 0; offset < validationReadbackSlots_.size(); ++offset) {
+        const size_t index = (nextValidationReadbackSlot_ + offset) % validationReadbackSlots_.size();
+        auto& slot = validationReadbackSlots_[index];
+        if (!slot.pending) {
+            nextValidationReadbackSlot_ = (index + 1u) % validationReadbackSlots_.size();
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+void GaussianTraining::recordValidationReadbackCopy(ValidationReadbackSlot& slot) {
+    vk::BufferCopy copyRegion{};
+    copyRegion.setSize(sizeof(TrainingValidationGpuResult));
+    trainingCommandBuffer_.copyBuffer(buffers_.validationFinalResultBuffer(),
+                                      slot.buffer,
+                                      copyRegion);
+}
+
+void GaussianTraining::collectCompletedValidationReadbacks() {
+    for (auto& slot : validationReadbackSlots_) {
+        if (!slot.pending) {
+            continue;
+        }
+
+        const vk::Result status = device_.getFenceStatus(slot.fence);
+        if (status == vk::Result::eNotReady) {
+            continue;
+        }
+        if (status != vk::Result::eSuccess) {
+            LOG_WARN("Failed to poll training validation readback fence: {}", vk::to_string(status));
+            continue;
+        }
+
+        TrainingValidationGpuResult result{};
+        std::memcpy(&result, slot.mapped, sizeof(result));
+        if (result.validationIteration != slot.iteration) {
+            LOG_WARN("Ignoring stale training validation result: expected iteration {}, got {}",
+                     slot.iteration,
+                     result.validationIteration);
+        } else {
+            validateTrainingStep(result, slot.tileItemCount, slot.gaussianCount);
+        }
+        slot.pending = false;
+    }
 }
 
 } // namespace vulkan3DGS

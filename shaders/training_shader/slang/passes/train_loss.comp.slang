@@ -15,6 +15,17 @@ RWStructuredBuffer<float> lossBuffer;
 [[vk::binding(28, 0)]]
 RWStructuredBuffer<SsimBackwardState> ssimBackwardStates;
 
+[[vk::binding(29, 0)]]
+RWStructuredBuffer<TrainingPixelValidationPartial> pixelValidationPartials;
+
+groupshared float validationLossSum[256];
+groupshared float validationMaxLoss[256];
+groupshared float validationAlphaSum[256];
+groupshared float validationLuminanceSum[256];
+groupshared uint validationInvalidLossCount[256];
+groupshared uint validationInvalidRenderedCount[256];
+groupshared uint validationValidRenderedCount[256];
+
 static const int SSIM_RADIUS = 5;
 static const float SSIM_C1 = 0.0001;
 static const float SSIM_C2 = 0.0009;
@@ -106,17 +117,68 @@ float ssimColor(uint centerIndex, out SsimBackwardState backwardState) {
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
+void main(uint3 dispatchThreadID : SV_DispatchThreadID,
+          uint3 groupThreadID : SV_GroupThreadID,
+          uint3 groupID : SV_GroupID) {
     uint index = dispatchThreadID.x;
-    if (index >= params.pixelCount) {
+    bool active = index < params.pixelCount;
+    float pixelLoss = 0.0;
+    float4 rendered = float4(0.0);
+
+    if (active) {
+        SsimBackwardState backwardState;
+        rendered = renderedColor[index];
+        float l1 = l1Color(rendered.xyz, unpackTargetColor(targetColor[index]).xyz);
+        float dssim = clamp(1.0 - ssimColor(index, backwardState), 0.0, 1.0);
+        ssimBackwardStates[index] = backwardState;
+        float dssimWeight = clamp(params.lossDssimWeight, 0.0, 1.0);
+        pixelLoss = ((1.0 - dssimWeight) * l1 + dssimWeight * dssim) /
+                    max(float(params.pixelCount), 1.0);
+        lossBuffer[index] = pixelLoss;
+    }
+
+    if (params.validationEnabled == 0u) {
         return;
     }
 
-    SsimBackwardState backwardState;
-    float l1 = l1Color(renderedColor[index].xyz, unpackTargetColor(targetColor[index]).xyz);
-    float dssim = clamp(1.0 - ssimColor(index, backwardState), 0.0, 1.0);
-    ssimBackwardStates[index] = backwardState;
-    float dssimWeight = clamp(params.lossDssimWeight, 0.0, 1.0);
-    lossBuffer[index] = ((1.0 - dssimWeight) * l1 + dssimWeight * dssim) /
-                        max(float(params.pixelCount), 1.0);
+    bool finiteLoss = active && isfinite(pixelLoss);
+    bool finiteRendered = active && all(isfinite(rendered));
+    uint localIndex = groupThreadID.x;
+    validationLossSum[localIndex] = finiteLoss ? pixelLoss : 0.0;
+    validationMaxLoss[localIndex] = finiteLoss ? pixelLoss : 0.0;
+    validationAlphaSum[localIndex] = finiteRendered ? rendered.w : 0.0;
+    validationLuminanceSum[localIndex] = finiteRendered
+        ? (rendered.x + rendered.y + rendered.z) / 3.0
+        : 0.0;
+    validationInvalidLossCount[localIndex] = active && !finiteLoss ? 1u : 0u;
+    validationInvalidRenderedCount[localIndex] = active && !finiteRendered ? 1u : 0u;
+    validationValidRenderedCount[localIndex] = finiteRendered ? 1u : 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (localIndex < stride) {
+            validationLossSum[localIndex] += validationLossSum[localIndex + stride];
+            validationMaxLoss[localIndex] = max(validationMaxLoss[localIndex],
+                                                validationMaxLoss[localIndex + stride]);
+            validationAlphaSum[localIndex] += validationAlphaSum[localIndex + stride];
+            validationLuminanceSum[localIndex] += validationLuminanceSum[localIndex + stride];
+            validationInvalidLossCount[localIndex] += validationInvalidLossCount[localIndex + stride];
+            validationInvalidRenderedCount[localIndex] += validationInvalidRenderedCount[localIndex + stride];
+            validationValidRenderedCount[localIndex] += validationValidRenderedCount[localIndex + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (localIndex == 0u) {
+        TrainingPixelValidationPartial partial;
+        partial.lossSum = validationLossSum[0];
+        partial.maxLoss = validationMaxLoss[0];
+        partial.alphaSum = validationAlphaSum[0];
+        partial.luminanceSum = validationLuminanceSum[0];
+        partial.invalidLossCount = validationInvalidLossCount[0];
+        partial.invalidRenderedPixelCount = validationInvalidRenderedCount[0];
+        partial.validRenderedPixelCount = validationValidRenderedCount[0];
+        partial.padding0 = 0u;
+        pixelValidationPartials[groupID.x] = partial;
+    }
 }

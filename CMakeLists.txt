@@ -50,6 +50,7 @@ set(GRAPHICS_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/gaussian_compute_shader
 set(TRAINING_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/slang")
 set(TRAINING_SHADER_COMMON_DIR "${TRAINING_SHADER_SRC_DIR}/common")
 set(TRAINING_SHADER_PASSES_DIR "${TRAINING_SHADER_SRC_DIR}/passes")
+set(TRAINING_SHADER_VALIDATION_DIR "${TRAINING_SHADER_SRC_DIR}/validation")
 set(TRAINING_SHADER_UINT_RADIUS_DIR "${TRAINING_SHADER_SRC_DIR}/uint_radius")
 set(TRAINING_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/spv")
 set(TRAINING_SHADER_COMMON_DEPS
@@ -159,6 +160,8 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_loss_to_pi
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs.comp.slang" "train_backward_pixel_to_2dgs.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
+compile_training_shader("${TRAINING_SHADER_VALIDATION_DIR}/train_validation_finalize.comp.slang"
+                        "train_validation_finalize.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_clear.comp.slang" "train_densify_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_prune.comp.slang" "train_densify_prune.comp")
 compile_training_shader("${TRAINING_SHADER_UINT_RADIUS_DIR}/train_densify_prune_uint_radius.comp.slang"

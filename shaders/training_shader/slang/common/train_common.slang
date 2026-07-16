@@ -21,8 +21,45 @@ struct TrainingPushConstants {
     float optimizerEpsilon;
     float optimizerGradClip;
     float lossDssimWeight;
-    float padding1;
-    float padding2;
+    uint validationEnabled;
+    uint validationIteration;
+};
+
+struct TrainingPixelValidationPartial {
+    float lossSum;
+    float maxLoss;
+    float alphaSum;
+    float luminanceSum;
+    uint invalidLossCount;
+    uint invalidRenderedPixelCount;
+    uint validRenderedPixelCount;
+    uint padding0;
+};
+
+struct TrainingGaussianValidationPartial {
+    uint nonFiniteGaussianCount;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
+
+struct TrainingValidationGpuResult {
+    float lossSum;
+    float maxLoss;
+    float alphaSum;
+    float luminanceSum;
+    uint invalidLossCount;
+    uint invalidRenderedPixelCount;
+    uint validRenderedPixelCount;
+    uint nonFiniteGaussianCount;
+    uint validationIteration;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+    uint padding3;
+    uint padding4;
+    uint padding5;
+    uint padding6;
 };
 
 struct GaussianTrainParam {

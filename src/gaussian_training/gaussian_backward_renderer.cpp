@@ -129,6 +129,7 @@ void GaussianBackwardRenderer::gradientDescent() {
 
     writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, false);
     optimizeParameters();
+    finalizeValidation();
     writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, true);
 }
 
@@ -147,6 +148,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(7),
         storageBinding(8),
         storageBinding(28),
+        storageBinding(29),
     };
     lossConfig.pushConstantSize = sizeof(TrainingPushConstants);
 
@@ -194,8 +196,17 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(1),
         storageBinding(2),
         storageBinding(9),
+        storageBinding(30),
     };
     optimizerConfig.pushConstantSize = sizeof(TrainingPushConstants);
+
+    ComputePipelineConfig validationFinalizeConfig{};
+    validationFinalizeConfig.descriptorBindings = {
+        storageBinding(29),
+        storageBinding(30),
+        storageBinding(31),
+    };
+    validationFinalizeConfig.pushConstantSize = sizeof(TrainingPushConstants);
 
     backwardClearPipeline_.initialize(device_, "shaders/train_backward_clear.comp.spv", clearConfig);
     lossPipeline_.initialize(device_, "shaders/train_loss.comp.spv", lossConfig);
@@ -203,27 +214,31 @@ void GaussianBackwardRenderer::createBackwardResources() {
     pixelTo2DGSPipeline_.initialize(device_, "shaders/train_backward_pixel_to_2dgs.comp.spv", pixelTo2DGSConfig);
     twoDGSTo3DGSPipeline_.initialize(device_, "shaders/train_backward_2dgs_to_3dgs.comp.spv", twoDGSTo3DGSConfig);
     optimizerPipeline_.initialize(device_, "shaders/train_optimizer.comp.spv", optimizerConfig);
+    validationFinalizePipeline_.initialize(device_,
+                                           "shaders/train_validation_finalize.comp.spv",
+                                           validationFinalizeConfig);
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(25);
+                .setDescriptorCount(31);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(6);
+            .setMaxSets(7);
 
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
-    std::array<vk::DescriptorSetLayout, 6> layouts = {
+    std::array<vk::DescriptorSetLayout, 7> layouts = {
         backwardClearPipeline_.getDescriptorSetLayout(),
         lossPipeline_.getDescriptorSetLayout(),
         lossToPixelPipeline_.getDescriptorSetLayout(),
         pixelTo2DGSPipeline_.getDescriptorSetLayout(),
         twoDGSTo3DGSPipeline_.getDescriptorSetLayout(),
         optimizerPipeline_.getDescriptorSetLayout(),
+        validationFinalizePipeline_.getDescriptorSetLayout(),
     };
 
     vk::DescriptorSetAllocateInfo allocInfo{};
@@ -238,6 +253,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
     pixelTo2DGSDescriptorSet_ = descriptorSets[3];
     twoDGSTo3DGSDescriptorSet_ = descriptorSets[4];
     optimizerDescriptorSet_ = descriptorSets[5];
+    validationFinalizeDescriptorSet_ = descriptorSets[6];
 }
 
 void GaussianBackwardRenderer::destroyBackwardResources() {
@@ -250,8 +266,10 @@ void GaussianBackwardRenderer::destroyBackwardResources() {
         pixelTo2DGSDescriptorSet_ = nullptr;
         twoDGSTo3DGSDescriptorSet_ = nullptr;
         optimizerDescriptorSet_ = nullptr;
+        validationFinalizeDescriptorSet_ = nullptr;
     }
 
+    validationFinalizePipeline_.cleanup();
     optimizerPipeline_.cleanup();
     twoDGSTo3DGSPipeline_.cleanup();
     pixelTo2DGSPipeline_.cleanup();
@@ -269,8 +287,9 @@ void GaussianBackwardRenderer::computeLoss() {
     const auto targetColorInfo = trainingBuffers_->targetColorInfo();
     const auto lossInfo = trainingBuffers_->lossInfo();
     const auto ssimBackwardStatesInfo = trainingBuffers_->ssimBackwardStatesInfo();
+    const auto pixelValidationPartialsInfo = trainingBuffers_->pixelValidationPartialsInfo();
 
-    std::array<vk::WriteDescriptorSet, 4> writes{};
+    std::array<vk::WriteDescriptorSet, 5> writes{};
     writes[0].setDstSet(lossDescriptorSet_)
              .setDstBinding(6)
              .setDescriptorCount(1)
@@ -291,6 +310,11 @@ void GaussianBackwardRenderer::computeLoss() {
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&ssimBackwardStatesInfo);
+    writes[4].setDstSet(lossDescriptorSet_)
+             .setDstBinding(29)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&pixelValidationPartialsInfo);
 
     device_.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
@@ -333,6 +357,9 @@ void GaussianBackwardRenderer::computeLoss() {
                                                   0,
                                                   nullptr);
     shaderBufferBarrier({ssimBackwardStatesInfo}, vk::AccessFlagBits::eShaderRead);
+    if (pushConstants_.validationEnabled != 0u) {
+        shaderBufferBarrier({pixelValidationPartialsInfo}, vk::AccessFlagBits::eShaderRead);
+    }
 }
 
 void GaussianBackwardRenderer::clearBackwardBuffers() {
@@ -560,8 +587,9 @@ void GaussianBackwardRenderer::optimizeParameters() {
     const auto gaussianGradsInfo = trainingBuffers_->gaussianGradsInfo();
     const auto adamStatesInfo = trainingBuffers_->adamStatesInfo();
     const auto countersInfo = trainingBuffers_->countersInfo();
+    const auto gaussianValidationPartialsInfo = trainingBuffers_->gaussianValidationPartialsInfo();
 
-    std::array<vk::WriteDescriptorSet, 4> writes{};
+    std::array<vk::WriteDescriptorSet, 5> writes{};
     writes[0].setDstSet(optimizerDescriptorSet_)
              .setDstBinding(0)
              .setDescriptorCount(1)
@@ -582,6 +610,11 @@ void GaussianBackwardRenderer::optimizeParameters() {
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&countersInfo);
+    writes[4].setDstSet(optimizerDescriptorSet_)
+             .setDstBinding(30)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&gaussianValidationPartialsInfo);
     device_.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
     commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, optimizerPipeline_.getPipeline());
@@ -604,6 +637,54 @@ void GaussianBackwardRenderer::optimizeParameters() {
     commandBuffer_.dispatch((pushConstants_.gaussianCount + 255u) / 256u, 1, 1);
     shaderBufferBarrier({gaussianParamsInfo, adamStatesInfo, countersInfo},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferRead);
+    if (pushConstants_.validationEnabled != 0u) {
+        shaderBufferBarrier({gaussianValidationPartialsInfo}, vk::AccessFlagBits::eShaderRead);
+    }
+}
+
+void GaussianBackwardRenderer::finalizeValidation() {
+    if (pushConstants_.validationEnabled == 0u) {
+        return;
+    }
+
+    const auto pixelValidationPartialsInfo = trainingBuffers_->pixelValidationPartialsInfo();
+    const auto gaussianValidationPartialsInfo = trainingBuffers_->gaussianValidationPartialsInfo();
+    const auto validationFinalResultInfo = trainingBuffers_->validationFinalResultInfo();
+
+    std::array<vk::WriteDescriptorSet, 3> writes{};
+    writes[0].setDstSet(validationFinalizeDescriptorSet_)
+             .setDstBinding(29)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&pixelValidationPartialsInfo);
+    writes[1].setDstSet(validationFinalizeDescriptorSet_)
+             .setDstBinding(30)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&gaussianValidationPartialsInfo);
+    writes[2].setDstSet(validationFinalizeDescriptorSet_)
+             .setDstBinding(31)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&validationFinalResultInfo);
+    device_.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute,
+                                validationFinalizePipeline_.getPipeline());
+    commandBuffer_.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                                      validationFinalizePipeline_.getPipelineLayout(),
+                                      0,
+                                      1,
+                                      &validationFinalizeDescriptorSet_,
+                                      0,
+                                      nullptr);
+    commandBuffer_.pushConstants(validationFinalizePipeline_.getPipelineLayout(),
+                                 vk::ShaderStageFlagBits::eCompute,
+                                 0,
+                                 sizeof(TrainingPushConstants),
+                                 &pushConstants_);
+    commandBuffer_.dispatch(1, 1, 1);
+    shaderBufferBarrier({validationFinalResultInfo}, vk::AccessFlagBits::eTransferRead);
 }
 
 void GaussianBackwardRenderer::shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,

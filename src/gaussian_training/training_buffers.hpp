@@ -64,6 +64,10 @@ public:
     }
     vk::DescriptorBufferInfo pixelGradsInfo() const { return pixelGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo ssimBackwardStatesInfo() const { return ssimBackwardStates_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo pixelValidationPartialsInfo() const { return pixelValidationPartials_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo gaussianValidationPartialsInfo() const { return gaussianValidationPartials_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo validationFinalResultInfo() const { return validationFinalResult_.getDescriptorInfo(); }
+    vk::Buffer validationFinalResultBuffer() const { return validationFinalResult_.getBuffer(); }
     vk::DescriptorBufferInfo pixelBlendStatesInfo() const { return pixelBlendStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo gaussianVisibilityInfo() const { return gaussianVisibility_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densificationStatesInfo() const { return densificationStates_.getDescriptorInfo(); }
@@ -111,6 +115,9 @@ private:
     std::optional<vk::DescriptorBufferInfo> targetColorDescriptorOverride_;
     Buffer pixelGrads_;
     Buffer ssimBackwardStates_;
+    Buffer pixelValidationPartials_;
+    Buffer gaussianValidationPartials_;
+    Buffer validationFinalResult_;
     Buffer pixelBlendStates_;
     Buffer gaussianVisibility_;
     Buffer densificationStates_;

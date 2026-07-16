@@ -12,6 +12,11 @@ RWStructuredBuffer<AdamState> adamStates;
 [[vk::binding(9, 0)]]
 RWStructuredBuffer<uint4> counters;
 
+[[vk::binding(30, 0)]]
+RWStructuredBuffer<TrainingGaussianValidationPartial> gaussianValidationPartials;
+
+groupshared uint validationNonFiniteGaussianCount[256];
+
 float4 clipGrad(float4 grad) {
     float gradClip = max(params.optimizerGradClip, 1e-8);
     return clamp(grad, float4(-gradClip), float4(gradClip));
@@ -106,21 +111,56 @@ void updateGaussianParam(inout GaussianTrainParam gaussian,
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
+void main(uint3 dispatchThreadID : SV_DispatchThreadID,
+          uint3 groupThreadID : SV_GroupThreadID,
+          uint3 groupID : SV_GroupID) {
     uint index = dispatchThreadID.x;
-    if (index >= params.gaussianCount) {
+    bool active = index < params.gaussianCount;
+    uint nonFiniteCount = 0u;
+
+    if (active) {
+        GaussianTrainParam gaussian = gaussianParams[index];
+        AdamState adamState = adamStates[index];
+        float step = float(counters[0].w + 1u);
+        updateGaussianParam(gaussian, adamState, gaussianGrads[index], step);
+        gaussianParams[index] = gaussian;
+        adamStates[index] = adamState;
+
+        if (params.validationEnabled != 0u) {
+            bool finite = all(isfinite(gaussian.positionOpacity)) &&
+                          all(isfinite(gaussian.scale)) &&
+                          all(isfinite(gaussian.rotation));
+            nonFiniteCount = finite ? 0u : 1u;
+        }
+
+        if (index == 0u) {
+            uint ignored = 0u;
+            InterlockedAdd(counters[0].w, 1u, ignored);
+        }
+    }
+
+    if (params.validationEnabled == 0u) {
         return;
     }
 
-    GaussianTrainParam gaussian = gaussianParams[index];
-    AdamState adamState = adamStates[index];
-    float step = float(counters[0].w + 1u);
-    updateGaussianParam(gaussian, adamState, gaussianGrads[index], step);
-    gaussianParams[index] = gaussian;
-    adamStates[index] = adamState;
+    uint localIndex = groupThreadID.x;
+    validationNonFiniteGaussianCount[localIndex] = nonFiniteCount;
+    GroupMemoryBarrierWithGroupSync();
 
-    if (index == 0) {
-        uint ignored = 0;
-        InterlockedAdd(counters[0].w, 1u, ignored);
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (localIndex < stride) {
+            validationNonFiniteGaussianCount[localIndex] +=
+                validationNonFiniteGaussianCount[localIndex + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (localIndex == 0u) {
+        TrainingGaussianValidationPartial partial;
+        partial.nonFiniteGaussianCount = validationNonFiniteGaussianCount[0];
+        partial.padding0 = 0u;
+        partial.padding1 = 0u;
+        partial.padding2 = 0u;
+        gaussianValidationPartials[groupID.x] = partial;
     }
 }

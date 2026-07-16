@@ -35,8 +35,8 @@ struct TrainingPushConstants {
     float optimizerEpsilon = 1e-8f;
     float optimizerGradClip = 1e3f;
     float lossDssimWeight = 0.2f;
-    float padding1 = 0.0f;
-    float padding2 = 0.0f;
+    uint32_t validationEnabled = 0;
+    uint32_t validationIteration = 0;
 };
 
 struct TrainingInitializationConfig {
@@ -88,6 +88,45 @@ struct TrainingValidationStats {
     uint32_t tileItemCount = 0;
     bool renderedNonEmpty = false;
     bool valid = true;
+};
+
+constexpr uint32_t kTrainingValidationWorkgroupSize = 256;
+
+struct alignas(16) TrainingPixelValidationPartial {
+    float lossSum = 0.0f;
+    float maxLoss = 0.0f;
+    float alphaSum = 0.0f;
+    float luminanceSum = 0.0f;
+    uint32_t invalidLossCount = 0;
+    uint32_t invalidRenderedPixelCount = 0;
+    uint32_t validRenderedPixelCount = 0;
+    uint32_t padding0 = 0;
+};
+
+struct alignas(16) TrainingGaussianValidationPartial {
+    uint32_t nonFiniteGaussianCount = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
+
+struct alignas(16) TrainingValidationGpuResult {
+    float lossSum = 0.0f;
+    float maxLoss = 0.0f;
+    float alphaSum = 0.0f;
+    float luminanceSum = 0.0f;
+    uint32_t invalidLossCount = 0;
+    uint32_t invalidRenderedPixelCount = 0;
+    uint32_t validRenderedPixelCount = 0;
+    uint32_t nonFiniteGaussianCount = 0;
+    uint32_t validationIteration = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+    uint32_t padding3 = 0;
+    uint32_t padding4 = 0;
+    uint32_t padding5 = 0;
+    uint32_t padding6 = 0;
 };
 
 struct SsimBackwardState {
@@ -265,5 +304,8 @@ static_assert(sizeof(TrainingForwardCamera) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(AdamState) == sizeof(GaussianGrad) * 2);
 static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 4);
 static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 6);
+static_assert(sizeof(TrainingPixelValidationPartial) == sizeof(glm::vec4) * 2);
+static_assert(sizeof(TrainingGaussianValidationPartial) == sizeof(glm::vec4));
+static_assert(sizeof(TrainingValidationGpuResult) == sizeof(glm::vec4) * 4);
 
 } // namespace vulkan3DGS

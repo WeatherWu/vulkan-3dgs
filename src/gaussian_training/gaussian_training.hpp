@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <filesystem>
 #include <random>
@@ -85,6 +86,17 @@ public:
     const BackwardRenderer& backward() const { return *backward_; }
 
 private:
+    struct ValidationReadbackSlot {
+        vk::Buffer buffer = nullptr;
+        vk::DeviceMemory memory = nullptr;
+        void* mapped = nullptr;
+        vk::Fence fence = nullptr;
+        uint32_t iteration = 0;
+        uint32_t tileItemCount = 0;
+        uint32_t gaussianCount = 0;
+        bool pending = false;
+    };
+
     TrainingPushConstants createPushConstants() const;
     TrainingDensificationPushConstants createDensificationPushConstants(bool pruneByScreenSize) const;
     bool shouldRunDensification() const;
@@ -92,6 +104,11 @@ private:
                                         vk::Queue computeQueue,
                                         uint32_t computeQueueFamilyIndex);
     void destroyTrainingCommandResources();
+    void createValidationReadbackResources();
+    void destroyValidationReadbackResources();
+    ValidationReadbackSlot* acquireValidationReadbackSlot();
+    void recordValidationReadbackCopy(ValidationReadbackSlot& slot);
+    void collectCompletedValidationReadbacks();
     void createTrainingProfilingResources(vk::Device device,
                                           vk::PhysicalDevice physicalDevice,
                                           uint32_t computeQueueFamilyIndex);
@@ -106,7 +123,9 @@ private:
     void initializeDeviceImageCache();
     void refreshDeviceImageCacheBudget(bool reserveForDensification);
     uint64_t initialDeviceImageCacheBudget() const;
-    void validateTrainingStep(uint32_t tileItemCount);
+    void validateTrainingStep(const TrainingValidationGpuResult& result,
+                              uint32_t tileItemCount,
+                              uint32_t gaussianCount);
     std::vector<GaussianTrainParam> createSparsePointInitialGaussians() const;
     std::vector<GaussianTrainParam> createRandomInitialGaussians(const TrainingInitializationConfig& config) const;
     TrainingForwardCamera createTrainingCamera(const TrainingCameraFrame& frame) const;
@@ -125,6 +144,8 @@ private:
     uint32_t computeQueueFamilyIndex_ = 0;
     CommandPool trainingCommandPool_;
     vk::CommandBuffer trainingCommandBuffer_ = nullptr;
+    std::array<ValidationReadbackSlot, 3> validationReadbackSlots_{};
+    size_t nextValidationReadbackSlot_ = 0;
     vk::Device profilingDevice_ = nullptr;
     vk::QueryPool profilingQueryPool_ = nullptr;
     float timestampPeriodNanoseconds_ = 0.0f;

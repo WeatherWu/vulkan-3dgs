@@ -28,6 +28,9 @@ void TrainingBuffers::cleanup() {
     previewInstances_.cleanup();
     counters_.cleanup();
     loss_.cleanup();
+    validationFinalResult_.cleanup();
+    gaussianValidationPartials_.cleanup();
+    pixelValidationPartials_.cleanup();
     projectedGrads_.cleanup();
     densificationCandidateStates_.cleanup();
     densificationCandidateAdamStates_.cleanup();
@@ -93,6 +96,9 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     targetColor_.cleanup();
     pixelGrads_.cleanup();
     ssimBackwardStates_.cleanup();
+    pixelValidationPartials_.cleanup();
+    gaussianValidationPartials_.cleanup();
+    validationFinalResult_.cleanup();
     pixelBlendStates_.cleanup();
     gaussianVisibility_.cleanup();
     projectedGrads_.cleanup();
@@ -136,6 +142,15 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     createStorageBuffer(targetColor_, sizeof(uint32_t) * pixelCount);
     createStorageBuffer(pixelGrads_, sizeof(PixelGrad) * pixelCount);
     createStorageBuffer(ssimBackwardStates_, sizeof(SsimBackwardState) * pixelCount);
+    const uint64_t pixelValidationPartialCount =
+        (pixelCount + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
+    const uint32_t gaussianValidationPartialCount =
+        (safeGaussianCount + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
+    createStorageBuffer(pixelValidationPartials_,
+                        sizeof(TrainingPixelValidationPartial) * pixelValidationPartialCount);
+    createStorageBuffer(gaussianValidationPartials_,
+                        sizeof(TrainingGaussianValidationPartial) * gaussianValidationPartialCount);
+    createStorageBuffer(validationFinalResult_, sizeof(TrainingValidationGpuResult));
     createStorageBuffer(pixelBlendStates_, sizeof(PixelBlendState) * pixelCount);
     createStorageBuffer(gaussianVisibility_, sizeof(GaussianVisibilityState) * safeGaussianCount);
     createZeroedStorageBuffer(densificationStates_, sizeof(GaussianDensificationState) * safeGaussianCount);
@@ -280,6 +295,7 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     densificationStates_.cleanup();
     projectedGrads_.cleanup();
     previewInstances_.cleanup();
+    gaussianValidationPartials_.cleanup();
     densificationCandidateStates_.cleanup();
     densificationCandidateAdamStates_.cleanup();
     densificationCandidateParams_.cleanup();
@@ -293,6 +309,10 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     createZeroedStorageBuffer(densificationStates_, sizeof(GaussianDensificationState) * newCapacity);
     createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * newCapacity);
     createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * newCapacity);
+    const uint32_t gaussianValidationPartialCount =
+        (newCapacity + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
+    createStorageBuffer(gaussianValidationPartials_,
+                        sizeof(TrainingGaussianValidationPartial) * gaussianValidationPartialCount);
 
     gaussianCapacity_ = newCapacity;
     densificationCapacity_ = 0;

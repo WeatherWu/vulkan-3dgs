@@ -40,6 +40,7 @@ private:
     void backpropPixelTo2DGS();
     void backprop2DGSTo3DGS();
     void optimizeParameters();
+    void finalizeValidation();
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
     void writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end);
@@ -56,6 +57,7 @@ private:
     ComputePipeline pixelTo2DGSPipeline_;
     ComputePipeline twoDGSTo3DGSPipeline_;
     ComputePipeline optimizerPipeline_;
+    ComputePipeline validationFinalizePipeline_;
     vk::DescriptorPool descriptorPool_ = nullptr;
     vk::DescriptorSet backwardClearDescriptorSet_ = nullptr;
     vk::DescriptorSet lossDescriptorSet_ = nullptr;
@@ -63,6 +65,7 @@ private:
     vk::DescriptorSet pixelTo2DGSDescriptorSet_ = nullptr;
     vk::DescriptorSet twoDGSTo3DGSDescriptorSet_ = nullptr;
     vk::DescriptorSet optimizerDescriptorSet_ = nullptr;
+    vk::DescriptorSet validationFinalizeDescriptorSet_ = nullptr;
     const TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
     vk::QueryPool profilingQueryPool_ = nullptr;
