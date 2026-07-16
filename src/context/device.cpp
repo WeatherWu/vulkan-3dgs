@@ -119,26 +119,40 @@ void Device::createDevice() {
 
     const bool supportsAtomicFloatExtension = supportsExtension(vk::EXTShaderAtomicFloatExtensionName);
     const bool supportsAtomicFloat2Extension = supportsExtension(vk::EXTShaderAtomicFloat2ExtensionName);
+    const bool supportsMemoryBudgetExtension = supportsExtension(vk::EXTMemoryBudgetExtensionName);
+
+    if (supportsMemoryBudgetExtension) {
+        enabledExtensions.push_back(vk::EXTMemoryBudgetExtensionName);
+        LOG_INFO("Enabled optional device extension: {}", vk::EXTMemoryBudgetExtensionName);
+    }
 
     vk::PhysicalDeviceVulkan11Features supportedVulkan11Features{};
     vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT supportedAtomicFloatFeatures{};
     vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT supportedAtomicFloat2Features{};
+    vk::PhysicalDeviceTimelineSemaphoreFeatures supportedTimelineSemaphoreFeatures{};
     vk::PhysicalDeviceFeatures2 supportedFeatures2{};
     supportedFeatures2.setPNext(&supportedVulkan11Features);
+    vk::BaseOutStructure* supportedFeatureTail = reinterpret_cast<vk::BaseOutStructure*>(&supportedVulkan11Features);
+    auto appendSupportedFeature = [&supportedFeatureTail](auto& feature) {
+        supportedFeatureTail->pNext = reinterpret_cast<vk::BaseOutStructure*>(&feature);
+        supportedFeatureTail = reinterpret_cast<vk::BaseOutStructure*>(&feature);
+    };
     if (supportsAtomicFloatExtension) {
-        supportedVulkan11Features.setPNext(&supportedAtomicFloatFeatures);
+        appendSupportedFeature(supportedAtomicFloatFeatures);
         if (supportsAtomicFloat2Extension) {
-            supportedAtomicFloatFeatures.setPNext(&supportedAtomicFloat2Features);
+            appendSupportedFeature(supportedAtomicFloat2Features);
         }
     } else if (supportsAtomicFloat2Extension) {
-        supportedVulkan11Features.setPNext(&supportedAtomicFloat2Features);
+        appendSupportedFeature(supportedAtomicFloat2Features);
     }
+    appendSupportedFeature(supportedTimelineSemaphoreFeatures);
     phyDevice_.getFeatures2(&supportedFeatures2);
 
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.setShaderDrawParameters(VK_TRUE);
     vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
     vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
+    vk::PhysicalDeviceTimelineSemaphoreFeatures timelineSemaphoreFeatures{};
 
     vk::BaseOutStructure* featureTail = reinterpret_cast<vk::BaseOutStructure*>(&vulkan11Features);
     auto appendFeature = [&featureTail](auto& feature) {
@@ -167,6 +181,14 @@ void Device::createDevice() {
         LOG_INFO("Enabled optional device extension: {}", vk::EXTShaderAtomicFloat2ExtensionName);
     } else {
         LOG_DEBUG("Optional device extension {} not enabled", vk::EXTShaderAtomicFloat2ExtensionName);
+    }
+
+    if (supportedTimelineSemaphoreFeatures.timelineSemaphore) {
+        timelineSemaphoreFeatures.setTimelineSemaphore(VK_TRUE);
+        appendFeature(timelineSemaphoreFeatures);
+        LOG_INFO("Enabled timeline semaphores for asynchronous resource uploads");
+    } else {
+        LOG_WARN("Timeline semaphores are unavailable; resource uploads will use the synchronous fallback");
     }
 
     createInfo.setPEnabledFeatures(&deviceFeatures);

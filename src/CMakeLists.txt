@@ -9,6 +9,7 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+find_package(Ktx CONFIG REQUIRED)
 find_package(COLMAP REQUIRED)
 
 set(VULKAN_LINK_TARGETS Vulkan::Headers)
@@ -34,6 +35,7 @@ add_library(vulkan_3dgs_core STATIC
     vulkan/shader.cpp
     vulkan/swapchain.cpp
     vulkan/compute_pipeline.cpp
+    vulkan/device_image_cache.cpp
     vulkan/vrdx_impl.cpp
     
     # Gaussian Splatting 渲染模块
@@ -51,8 +53,14 @@ add_library(vulkan_3dgs_core STATIC
     gaussian_training/gaussian_densification_renderer.cpp
     gaussian_training/training_dataset.cpp
 
+    # 通用图像加载与缓存模块
+    image/image_decoder.cpp
+    image/image_disk_cache.cpp
+    image/image_streamer.cpp
+
     # 工具模块
     utils/camera.cpp
+    utils/system_memory.cpp
     utils/stb_image_impl.cpp
     ${IMGUI_FILE_DIALOG_DIR}/ImGuiFileDialog.cpp
     
@@ -85,6 +93,7 @@ target_link_libraries(vulkan_3dgs_core PUBLIC
 target_link_libraries(vulkan_3dgs_core PRIVATE
     glm::glm
     imgui::imgui
+    KTX::ktx
     colmap::colmap_image
     colmap::colmap_scene
     colmap::colmap_sensor

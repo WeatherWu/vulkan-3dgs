@@ -24,6 +24,7 @@
       ]
     },
     "stb",
+    "ktx",
     "shader-slang",
     {
       "name": "colmap",

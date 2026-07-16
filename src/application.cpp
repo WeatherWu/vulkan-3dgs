@@ -826,6 +826,96 @@ void Application::drawTrainingControls() {
                            validation.invalidRenderedPixelCount,
                            validation.nonFiniteGaussianCount);
     }
+    if (ImGui::CollapsingHeader("Training Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        static constexpr const char* cpuStageNames[] = {
+            "Frame upload",
+            "Image request/wait",
+            "Target RGBA8 upload",
+            "Prepare submit/wait",
+            "Tile count readback",
+            "Tile buffer resize",
+            "Main submit/wait",
+            "Validation",
+            "Densify adopt",
+            "Total step",
+        };
+        static constexpr const char* gpuStageNames[] = {
+            "Prepare tiles",
+            "Tile emit",
+            "Tile sort/ranges",
+            "Composite",
+            "Loss",
+            "Loss to pixel",
+            "Pixel to 2DGS",
+            "2DGS to 3DGS",
+            "Optimizer",
+            "Densify/prune",
+        };
+        const auto& profiling = training_.profilingStats();
+        ImGui::Text("CPU last / average (ms)");
+        for (size_t i = 0; i < kTrainingCpuProfileStageCount; ++i) {
+            const auto& timing = profiling.cpu[i];
+            ImGui::Text("%s %.2f / %.2f", cpuStageNames[i], timing.lastMs, timing.averageMs);
+        }
+        if (profiling.gpuTimestampsAvailable) {
+            ImGui::Text("GPU last / average (ms)");
+            for (size_t i = 0; i < kTrainingGpuProfileStageCount; ++i) {
+                const auto& timing = profiling.gpu[i];
+                ImGui::Text("%s %.2f / %.2f", gpuStageNames[i], timing.lastMs, timing.averageMs);
+            }
+        } else {
+            ImGui::TextDisabled("GPU timestamps unavailable on the compute queue");
+        }
+    }
+    if (ImGui::CollapsingHeader("Image Cache", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const ImageStreamerStats cacheStats = training_.imageCacheStats();
+        constexpr double bytesPerMiB = 1024.0 * 1024.0;
+        ImGui::Text("Host %.1f / %.1f MiB, %llu images",
+                    static_cast<double>(cacheStats.hostCachedBytes) / bytesPerMiB,
+                    static_cast<double>(cacheStats.hostBudgetBytes) / bytesPerMiB,
+                    static_cast<unsigned long long>(cacheStats.hostCachedImages));
+        ImGui::Text("Host hit %llu, miss %llu, wait %llu, evict %llu",
+                    static_cast<unsigned long long>(cacheStats.hostHits),
+                    static_cast<unsigned long long>(cacheStats.hostMisses),
+                    static_cast<unsigned long long>(cacheStats.hostWaits),
+                    static_cast<unsigned long long>(cacheStats.hostEvictions));
+        ImGui::Text("Prefetch %llu, KTX hit %llu, miss %llu, write %llu",
+                    static_cast<unsigned long long>(cacheStats.prefetchRequests),
+                    static_cast<unsigned long long>(cacheStats.disk.hits),
+                    static_cast<unsigned long long>(cacheStats.disk.misses),
+                    static_cast<unsigned long long>(cacheStats.disk.writes));
+        ImGui::Text("KTX %.1f MiB in %llu chunks, recover %llu, evict %llu",
+                    static_cast<double>(cacheStats.disk.cachedBytes) / bytesPerMiB,
+                    static_cast<unsigned long long>(cacheStats.disk.cachedFiles),
+                    static_cast<unsigned long long>(cacheStats.disk.recoveries),
+                    static_cast<unsigned long long>(cacheStats.disk.evictions));
+        const DeviceImageCacheStats deviceCacheStats = training_.deviceImageCacheStats();
+        static constexpr const char* deviceCacheModes[] = {"Streaming", "Partial", "Full"};
+        const uint32_t deviceMode = std::min(static_cast<uint32_t>(deviceCacheStats.mode), 2u);
+        ImGui::Text("GPU %s %.1f / %.1f MiB, %u / %u images",
+                    deviceCacheModes[deviceMode],
+                    static_cast<double>(deviceCacheStats.allocatedBytes) / bytesPerMiB,
+                    static_cast<double>(deviceCacheStats.budgetBytes) / bytesPerMiB,
+                    deviceCacheStats.residentImages,
+                    deviceCacheStats.slotCount);
+        ImGui::Text("GPU hit %llu, miss %llu, upload %llu, evict %llu",
+                    static_cast<unsigned long long>(deviceCacheStats.hits),
+                    static_cast<unsigned long long>(deviceCacheStats.misses),
+                    static_cast<unsigned long long>(deviceCacheStats.uploads),
+                    static_cast<unsigned long long>(deviceCacheStats.evictions));
+        ImGui::Text("Upload %s, staging %.1f MiB, pending %u, ring waits %llu",
+                    deviceCacheStats.asynchronousUploads ? "async" : "sync",
+                    static_cast<double>(deviceCacheStats.stagingBytes) / bytesPerMiB,
+                    deviceCacheStats.pendingUploads,
+                    static_cast<unsigned long long>(deviceCacheStats.uploadWaits));
+        if (deviceCacheStats.heapBudgetBytes > 0) {
+            ImGui::Text("VRAM heap %.1f / %.1f MiB%s, cache resizes %llu",
+                        static_cast<double>(deviceCacheStats.heapUsageBytes) / bytesPerMiB,
+                        static_cast<double>(deviceCacheStats.heapBudgetBytes) / bytesPerMiB,
+                        deviceCacheStats.memoryBudgetAvailable ? " (budget)" : " (size only)",
+                        static_cast<unsigned long long>(deviceCacheStats.budgetResizes));
+        }
+    }
     ImGui::Text("Frame %llu / %u",
                 static_cast<unsigned long long>(training_.hasDataset() ? training_.currentFrameIndex() : 0),
                 training_frame_count_);

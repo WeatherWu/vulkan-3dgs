@@ -94,16 +94,21 @@ void GaussianForwardRenderer::cleanup() {
     extent_ = {};
     trainingBuffers_ = nullptr;
     commandBuffer_ = nullptr;
+    profilingQueryPool_ = nullptr;
     pushConstants_ = {};
     initialized_ = false;
 }
 
 void GaussianForwardRenderer::setTrainingBuffers(TrainingBuffers& trainingBuffers,
-                                                 vk::CommandBuffer commandBuffer,
-                                                 TrainingPushConstants pushConstants) {
+                                                  vk::CommandBuffer commandBuffer,
+                                                  TrainingPushConstants pushConstants) {
     trainingBuffers_ = &trainingBuffers;
     commandBuffer_ = commandBuffer;
     pushConstants_ = pushConstants;
+}
+
+void GaussianForwardRenderer::setProfilingQueryPool(vk::QueryPool queryPool) {
+    profilingQueryPool_ = queryPool;
 }
 
 void GaussianForwardRenderer::forward() {
@@ -125,18 +130,36 @@ void GaussianForwardRenderer::forward() {
 }
 
 void GaussianForwardRenderer::prepareTileItems() {
+    writeProfilingTimestamp(TrainingGpuProfileStage::PrepareTileItems, false);
     clearForwardBuffers();
     projectGaussians();
     clearTileRanges();
     countTileCoverage();
     prefixTileRanges();
+    writeProfilingTimestamp(TrainingGpuProfileStage::PrepareTileItems, true);
 }
 
 void GaussianForwardRenderer::renderPreparedTiles() {
+    writeProfilingTimestamp(TrainingGpuProfileStage::TileEmit, false);
     emitTileItems();
+    writeProfilingTimestamp(TrainingGpuProfileStage::TileEmit, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, false);
     sortTileItems();
     rebuildTileRanges();
+    writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::Composite, false);
     compositePixels();
+    writeProfilingTimestamp(TrainingGpuProfileStage::Composite, true);
+}
+
+void GaussianForwardRenderer::writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end) {
+    if (profilingQueryPool_ && commandBuffer_) {
+        commandBuffer_.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands,
+                                      profilingQueryPool_,
+                                      trainingGpuTimestampQuery(stage, end));
+    }
 }
 
 void GaussianForwardRenderer::createForwardResources() {

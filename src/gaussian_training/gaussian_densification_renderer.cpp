@@ -72,6 +72,7 @@ void GaussianDensificationRenderer::cleanup() {
     computeQueueFamilyIndex_ = 0;
     trainingBuffers_ = nullptr;
     commandBuffer_ = nullptr;
+    profilingQueryPool_ = nullptr;
     pushConstants_ = {};
     initialized_ = false;
 }
@@ -82,6 +83,10 @@ void GaussianDensificationRenderer::setTrainingBuffers(const TrainingBuffers& tr
     trainingBuffers_ = &trainingBuffers;
     commandBuffer_ = commandBuffer;
     pushConstants_ = pushConstants;
+}
+
+void GaussianDensificationRenderer::setProfilingQueryPool(vk::QueryPool queryPool) {
+    profilingQueryPool_ = queryPool;
 }
 
 void GaussianDensificationRenderer::densifyAndPrune() {
@@ -97,6 +102,8 @@ void GaussianDensificationRenderer::densifyAndPrune() {
         LOG_WARN("GaussianDensificationRenderer::densifyAndPrune called without command buffer");
         return;
     }
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::Densification, false);
 
     updateDescriptorSet(clearDescriptorSet_, {19});
     bindAndDispatch(clearPipeline_, clearDescriptorSet_, 1);
@@ -134,7 +141,16 @@ void GaussianDensificationRenderer::densifyAndPrune() {
                          trainingBuffers_->densificationCountersInfo()},
                         vk::AccessFlagBits::eShaderRead |
                             vk::AccessFlagBits::eShaderWrite |
-                            vk::AccessFlagBits::eTransferRead);
+                             vk::AccessFlagBits::eTransferRead);
+    writeProfilingTimestamp(TrainingGpuProfileStage::Densification, true);
+}
+
+void GaussianDensificationRenderer::writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end) {
+    if (profilingQueryPool_ && commandBuffer_) {
+        commandBuffer_.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands,
+                                      profilingQueryPool_,
+                                      trainingGpuTimestampQuery(stage, end));
+    }
 }
 
 void GaussianDensificationRenderer::createResources() {

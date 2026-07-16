@@ -12,8 +12,10 @@
 #include "gaussian_training/gaussian_backward_renderer.hpp"
 #include "gaussian_training/gaussian_densification_renderer.hpp"
 #include "gaussian_training/gaussian_forward_renderer.hpp"
+#include "image/image_streamer.hpp"
 #include "renderer.hpp"
 #include "vulkan/command_pool.hpp"
+#include "vulkan/device_image_cache.hpp"
 
 namespace vulkan3DGS {
 
@@ -69,6 +71,11 @@ public:
     const TrainingValidationStats& validationStats() const { return validationStats_; }
     const TrainingDensificationStats& densificationStats() const { return lastDensificationStats_; }
     uint32_t densificationStatsIteration() const { return lastDensificationStatsIteration_; }
+    const TrainingProfilingStats& profilingStats() const { return profilingStats_; }
+    ImageStreamerStats imageCacheStats() const { return imageStreamer_ ? imageStreamer_->stats() : ImageStreamerStats{}; }
+    DeviceImageCacheStats deviceImageCacheStats() const {
+        return deviceImageCache_ ? deviceImageCache_->stats() : DeviceImageCacheStats{};
+    }
     size_t datasetFrameCount() const { return dataset_.size(); }
     size_t currentFrameIndex() const { return currentDatasetFrameIndex_; }
     TrainingBuffers& buffers() { return buffers_; }
@@ -85,8 +92,20 @@ private:
                                         vk::Queue computeQueue,
                                         uint32_t computeQueueFamilyIndex);
     void destroyTrainingCommandResources();
+    void createTrainingProfilingResources(vk::Device device,
+                                          vk::PhysicalDevice physicalDevice,
+                                          uint32_t computeQueueFamilyIndex);
+    void destroyTrainingProfilingResources();
+    void collectGpuProfilingStats();
+    void resetProfilingLastSamples();
+    void recordCpuProfilingSample(TrainingCpuProfileStage stage, float milliseconds);
+    void recordGpuProfilingSample(TrainingGpuProfileStage stage, float milliseconds);
     void selectTrainingFrameForIteration();
+    void prefetchUpcomingTrainingFrames();
     void uploadCurrentTrainingFrame();
+    void initializeDeviceImageCache();
+    void refreshDeviceImageCacheBudget(bool reserveForDensification);
+    uint64_t initialDeviceImageCacheBudget() const;
     void validateTrainingStep(uint32_t tileItemCount);
     std::vector<GaussianTrainParam> createSparsePointInitialGaussians() const;
     std::vector<GaussianTrainParam> createRandomInitialGaussians(const TrainingInitializationConfig& config) const;
@@ -96,12 +115,24 @@ private:
 
     bool initialized_ = false;
     bool rendererInitialized_ = false;
+    vk::Device device_ = nullptr;
+    vk::PhysicalDevice physicalDevice_ = nullptr;
+    vk::Queue transferQueue_ = nullptr;
+    uint32_t transferQueueFamilyIndex_ = 0;
+    uint64_t pendingImageUploadValue_ = 0;
+    uint32_t deviceCacheGrowthResumeIteration_ = 0;
     vk::Queue computeQueue_ = nullptr;
     uint32_t computeQueueFamilyIndex_ = 0;
     CommandPool trainingCommandPool_;
     vk::CommandBuffer trainingCommandBuffer_ = nullptr;
+    vk::Device profilingDevice_ = nullptr;
+    vk::QueryPool profilingQueryPool_ = nullptr;
+    float timestampPeriodNanoseconds_ = 0.0f;
+    bool gpuTimestampProfilingAvailable_ = false;
 
     TrainingBuffers buffers_;
+    std::unique_ptr<ImageStreamer> imageStreamer_;
+    std::unique_ptr<DeviceImageCache> deviceImageCache_;
     TrainingDataset dataset_;
     size_t currentDatasetFrameIndex_ = 0;
     uint32_t trainableGaussianCount_ = 0;
@@ -119,6 +150,7 @@ private:
     TrainingValidationStats validationStats_{};
     TrainingDensificationStats lastDensificationStats_{};
     uint32_t lastDensificationStatsIteration_ = 0;
+    TrainingProfilingStats profilingStats_{};
     float sceneExtent_ = 1.0f;
 
 };

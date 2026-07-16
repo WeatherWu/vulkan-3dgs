@@ -1,10 +1,11 @@
 #include "../common/train_backward_common.slang"
+#include "../common/train_target_common.slang"
 
 [[vk::binding(6, 0)]]
 StructuredBuffer<float4> renderedColor;
 
 [[vk::binding(7, 0)]]
-StructuredBuffer<float4> targetColor;
+StructuredBuffer<uint> targetColor;
 
 [[vk::binding(12, 0)]]
 RWStructuredBuffer<PixelGrad> pixelGrads;
@@ -45,7 +46,7 @@ void ssimWindowStats(uint centerIndex,
             float weight = backwardSsimWindowWeight(int2(dx, dy));
             uint sampleIndex = backwardClampedPixelIndex(center + int2(dx, dy));
             float3 rendered = renderedColor[sampleIndex].xyz;
-            float3 target = targetColor[sampleIndex].xyz;
+            float3 target = unpackTargetColor(targetColor[sampleIndex]).xyz;
 
             renderedMean += rendered * weight;
             targetMean += target * weight;
@@ -73,7 +74,7 @@ float3 ssimWindowDerivativeForSample(uint centerIndex, uint sampleIndex, float s
     ssimWindowStats(centerIndex, renderedMean, targetMean, renderedSqMean, targetSqMean, renderedTargetMean, weightSum);
 
     float3 rendered = renderedColor[sampleIndex].xyz;
-    float3 target = targetColor[sampleIndex].xyz;
+    float3 target = unpackTargetColor(targetColor[sampleIndex]).xyz;
     float3 renderedVariance = max(renderedSqMean - renderedMean * renderedMean, float3(0.0));
     float3 targetVariance = max(targetSqMean - targetMean * targetMean, float3(0.0));
     float3 covariance = renderedTargetMean - renderedMean * targetMean;
@@ -148,7 +149,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     float3 rendered = renderedColor[index].xyz;
-    float3 target = targetColor[index].xyz;
+    float3 target = unpackTargetColor(targetColor[index]).xyz;
     float3 l1Grad = float3(
         l1Derivative(rendered.x, target.x),
         l1Derivative(rendered.y, target.y),

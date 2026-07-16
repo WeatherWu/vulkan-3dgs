@@ -23,6 +23,7 @@ public:
     void setTrainingBuffers(const TrainingBuffers& trainingBuffers,
                             vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
+    void setProfilingQueryPool(vk::QueryPool queryPool);
     void backward() override;
     void gradientDescent() override;
 
@@ -41,6 +42,7 @@ private:
     void optimizeParameters();
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
+    void writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end);
 
     vk::Device device_ = nullptr;
     vk::PhysicalDevice physicalDevice_ = nullptr;
@@ -63,6 +65,7 @@ private:
     vk::DescriptorSet optimizerDescriptorSet_ = nullptr;
     const TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
+    vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
     bool initialized_ = false;
 };

@@ -60,16 +60,21 @@ void GaussianBackwardRenderer::cleanup() {
     extent_ = {};
     trainingBuffers_ = nullptr;
     commandBuffer_ = nullptr;
+    profilingQueryPool_ = nullptr;
     pushConstants_ = {};
     initialized_ = false;
 }
 
 void GaussianBackwardRenderer::setTrainingBuffers(const TrainingBuffers& trainingBuffers,
-                                                  vk::CommandBuffer commandBuffer,
-                                                  TrainingPushConstants pushConstants) {
+                                                   vk::CommandBuffer commandBuffer,
+                                                   TrainingPushConstants pushConstants) {
     trainingBuffers_ = &trainingBuffers;
     commandBuffer_ = commandBuffer;
     pushConstants_ = pushConstants;
+}
+
+void GaussianBackwardRenderer::setProfilingQueryPool(vk::QueryPool queryPool) {
+    profilingQueryPool_ = queryPool;
 }
 
 void GaussianBackwardRenderer::backward() {
@@ -88,11 +93,22 @@ void GaussianBackwardRenderer::backward() {
         return;
     }
 
+    writeProfilingTimestamp(TrainingGpuProfileStage::Loss, false);
     computeLoss();
+    writeProfilingTimestamp(TrainingGpuProfileStage::Loss, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::LossToPixel, false);
     clearBackwardBuffers();
     computeLossToPixel();
+    writeProfilingTimestamp(TrainingGpuProfileStage::LossToPixel, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::PixelTo2DGS, false);
     backpropPixelTo2DGS();
+    writeProfilingTimestamp(TrainingGpuProfileStage::PixelTo2DGS, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::TwoDGSTo3DGS, false);
     backprop2DGSTo3DGS();
+    writeProfilingTimestamp(TrainingGpuProfileStage::TwoDGSTo3DGS, true);
 }
 
 void GaussianBackwardRenderer::gradientDescent() {
@@ -111,7 +127,17 @@ void GaussianBackwardRenderer::gradientDescent() {
         return;
     }
 
+    writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, false);
     optimizeParameters();
+    writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, true);
+}
+
+void GaussianBackwardRenderer::writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end) {
+    if (profilingQueryPool_ && commandBuffer_) {
+        commandBuffer_.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands,
+                                      profilingQueryPool_,
+                                      trainingGpuTimestampQuery(stage, end));
+    }
 }
 
 void GaussianBackwardRenderer::createBackwardResources() {

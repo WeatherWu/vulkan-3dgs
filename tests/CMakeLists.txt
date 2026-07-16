@@ -1,0 +1,3 @@
+add_executable(image_cache_tests image_cache_tests.cpp)
+target_link_libraries(image_cache_tests PRIVATE vulkan_3dgs_core)
+add_test(NAME image_cache_tests COMMAND image_cache_tests)

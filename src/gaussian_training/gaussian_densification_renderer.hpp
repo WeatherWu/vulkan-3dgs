@@ -20,6 +20,7 @@ public:
     void setTrainingBuffers(const TrainingBuffers& trainingBuffers,
                             vk::CommandBuffer commandBuffer,
                             TrainingDensificationPushConstants pushConstants);
+    void setProfilingQueryPool(vk::QueryPool queryPool);
     void densifyAndPrune();
 
     bool isInitialized() const { return initialized_; }
@@ -34,6 +35,7 @@ private:
                          uint32_t groupCountX);
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
+    void writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end);
 
     vk::Device device_ = nullptr;
     vk::PhysicalDevice physicalDevice_ = nullptr;
@@ -52,6 +54,7 @@ private:
 
     const TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
+    vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingDensificationPushConstants pushConstants_{};
     bool initialized_ = false;
 };

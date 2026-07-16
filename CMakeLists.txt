@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.26)
 project(vulkan_3dgs VERSION 1.0.0 LANGUAGES C CXX)
 
+include(CTest)
+
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,6 +55,7 @@ set(TRAINING_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/spv")
 set(TRAINING_SHADER_COMMON_DEPS
     "${TRAINING_SHADER_COMMON_DIR}/train_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_loss_common.slang"
+    "${TRAINING_SHADER_COMMON_DIR}/train_target_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_forward_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_forward_tile_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_forward_project_common.slang"
@@ -174,6 +177,9 @@ add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
 # 添加子目录
 add_subdirectory(src)
 add_subdirectory(apps)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 # 确保在构建库之前编译着色器
 # 注意：这里假设 src/CMakeLists.txt 中定义的目标名为 vulkan_3dgs_core

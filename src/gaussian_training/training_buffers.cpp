@@ -21,6 +21,7 @@ void TrainingBuffers::initialize(vk::Device device,
 }
 
 void TrainingBuffers::cleanup() {
+    clearTargetColorDescriptor();
     camera_.cleanup();
     previewInstances_.cleanup();
     counters_.cleanup();
@@ -62,6 +63,7 @@ void TrainingBuffers::cleanup() {
 }
 
 void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
+    clearTargetColorDescriptor();
     if (!device_) {
         throw std::runtime_error("TrainingBuffers must be initialized before resize");
     }
@@ -127,7 +129,7 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     createStorageBuffer(tileItemsSorted_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileRanges_, sizeof(glm::uvec4) * tileCount);
     createStorageBuffer(renderedColor_, sizeof(glm::vec4) * pixelCount);
-    createStorageBuffer(targetColor_, sizeof(glm::vec4) * pixelCount);
+    createStorageBuffer(targetColor_, sizeof(uint32_t) * pixelCount);
     createStorageBuffer(pixelGrads_, sizeof(PixelGrad) * pixelCount);
     createStorageBuffer(pixelBlendStates_, sizeof(PixelBlendState) * pixelCount);
     createStorageBuffer(gaussianVisibility_, sizeof(GaussianVisibilityState) * safeGaussianCount);
@@ -362,7 +364,7 @@ std::vector<glm::vec4> TrainingBuffers::downloadRenderedColor(uint32_t pixelCoun
     return rendered;
 }
 
-void TrainingBuffers::uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height) {
+void TrainingBuffers::uploadTargetColor(const uint8_t* pixels, uint32_t width, uint32_t height) {
     if (!pixels) {
         throw std::runtime_error("Training target pixels are null");
     }
@@ -372,7 +374,7 @@ void TrainingBuffers::uploadTargetColor(const glm::vec4* pixels, uint32_t width,
 
     const vk::DeviceSize uploadSize = static_cast<vk::DeviceSize>(width) *
                                       static_cast<vk::DeviceSize>(height) *
-                                      sizeof(glm::vec4);
+                                      sizeof(uint32_t);
     targetColor_.upload(pixels, uploadSize);
 }
 
@@ -444,7 +446,8 @@ void TrainingBuffers::createUniformBuffer(Buffer& buffer, vk::DeviceSize size) {
                   size,
                   vk::BufferUsageFlagBits::eUniformBuffer |
                       vk::BufferUsageFlagBits::eTransferDst,
-                  vk::MemoryPropertyFlagBits::eDeviceLocal);
+                  vk::MemoryPropertyFlagBits::eHostVisible |
+                      vk::MemoryPropertyFlagBits::eHostCoherent);
 }
 
 } // namespace vulkan3DGS

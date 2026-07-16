@@ -1,9 +1,13 @@
 #include "gaussian_training.hpp"
 
+#include "image/image_decoder.hpp"
 #include "utils/logger.hpp"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -154,11 +158,20 @@ void GaussianTraining::initialize(vk::Device device,
         return;
     }
 
+    device_ = device;
+    physicalDevice_ = physicalDevice;
+    transferQueue_ = transferQueue;
+    transferQueueFamilyIndex_ = transferQueueFamilyIndex;
     buffers_.initialize(device, physicalDevice, transferQueue, transferQueueFamilyIndex);
     initialized_ = true;
 }
 
 void GaussianTraining::cleanup() {
+    buffers_.clearTargetColorDescriptor();
+    if (deviceImageCache_) {
+        deviceImageCache_->cleanup();
+        deviceImageCache_.reset();
+    }
     if (backward_) {
         backward_->cleanup();
         backward_.reset();
@@ -175,13 +188,22 @@ void GaussianTraining::cleanup() {
     }
     rendererInitialized_ = false;
 
+    destroyTrainingProfilingResources();
     destroyTrainingCommandResources();
     buffers_.cleanup();
     trainableGaussianCount_ = 0;
     usedRandomInitialization_ = false;
     randomFrameStack_.clear();
+    imageStreamer_.reset();
     lastDensificationStats_ = {};
     lastDensificationStatsIteration_ = 0;
+    profilingStats_ = {};
+    device_ = nullptr;
+    physicalDevice_ = nullptr;
+    transferQueue_ = nullptr;
+    transferQueueFamilyIndex_ = 0;
+    pendingImageUploadValue_ = 0;
+    deviceCacheGrowthResumeIteration_ = 0;
     initialized_ = false;
 }
 
@@ -195,8 +217,9 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                                                    vk::PhysicalDevice physicalDevice,
                                                    vk::Queue computeQueue,
                                                    uint32_t computeQueueFamilyIndex,
-                                                   uint32_t gaussianCount,
-                                                   TrainingExtent extent) {
+                                                    uint32_t gaussianCount,
+                                                    TrainingExtent extent) {
+    destroyTrainingProfilingResources();
     if (rendererInitialized_) {
         if (forward_) {
             forward_->cleanup();
@@ -236,6 +259,7 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                                computeQueueFamilyIndex);
 
     createTrainingCommandResources(device, computeQueue, computeQueueFamilyIndex);
+    createTrainingProfilingResources(device, physicalDevice, computeQueueFamilyIndex);
     rendererInitialized_ = true;
 }
 
@@ -287,9 +311,26 @@ void GaussianTraining::trainStep() {
         return;
     }
 
+    using Clock = std::chrono::steady_clock;
+    const auto totalStart = Clock::now();
+    resetProfilingLastSamples();
+    profilingStats_.gpuTimestampsAvailable = gpuTimestampProfilingAvailable_;
+
+    const bool runDensificationThisStep = shouldRunDensification();
+    if (runDensificationThisStep) {
+        deviceCacheGrowthResumeIteration_ = trainingIteration_ + 33u;
+        refreshDeviceImageCacheBudget(true);
+    } else if ((trainingIteration_ % 16u) == 0u) {
+        refreshDeviceImageCacheBudget(false);
+    }
+
     if (hasDataset()) {
+        const auto frameUploadStart = Clock::now();
         selectTrainingFrameForIteration();
+        prefetchUpcomingTrainingFrames();
         uploadCurrentTrainingFrame();
+        recordCpuProfilingSample(TrainingCpuProfileStage::FrameUpload,
+                                 std::chrono::duration<float, std::milli>(Clock::now() - frameUploadStart).count());
     }
 
     auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get());
@@ -304,6 +345,11 @@ void GaussianTraining::trainStep() {
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
     trainingCommandBuffer_.begin(beginInfo);
+    if (gpuTimestampProfilingAvailable_) {
+        trainingCommandBuffer_.resetQueryPool(profilingQueryPool_,
+                                              0,
+                                              kTrainingGpuTimestampQueryCount);
+    }
 
     gaussianForward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
     gaussianForward->prepareTileItems();
@@ -313,11 +359,18 @@ void GaussianTraining::trainStep() {
     vk::SubmitInfo prepareSubmitInfo{};
     prepareSubmitInfo.setCommandBufferCount(1)
                      .setPCommandBuffers(&trainingCommandBuffer_);
+    const auto prepareSubmitStart = Clock::now();
     computeQueue_.submit(prepareSubmitInfo);
     computeQueue_.waitIdle();
+    recordCpuProfilingSample(TrainingCpuProfileStage::PrepareSubmit,
+                             std::chrono::duration<float, std::milli>(Clock::now() - prepareSubmitStart).count());
 
+    const auto tileCountReadbackStart = Clock::now();
     const uint32_t requiredTileItems = buffers_.requiredTileItemCount();
+    recordCpuProfilingSample(TrainingCpuProfileStage::TileCountReadback,
+                             std::chrono::duration<float, std::milli>(Clock::now() - tileCountReadbackStart).count());
     if (requiredTileItems > buffers_.tileItemCapacity()) {
+        const auto tileResizeStart = Clock::now();
         const uint64_t doubledCapacity = static_cast<uint64_t>(buffers_.tileItemCapacity()) * 2ull;
         const uint32_t grownCapacity = static_cast<uint32_t>(
             std::min<uint64_t>(std::max<uint64_t>(requiredTileItems, doubledCapacity),
@@ -325,9 +378,10 @@ void GaussianTraining::trainStep() {
         LOG_INFO("Resizing training tile item buffer from {} to {} entries",
                  buffers_.tileItemCapacity(), grownCapacity);
         buffers_.resizeTileItems(grownCapacity);
+        recordCpuProfilingSample(TrainingCpuProfileStage::TileBufferResize,
+                                 std::chrono::duration<float, std::milli>(Clock::now() - tileResizeStart).count());
     }
 
-    const bool runDensificationThisStep = shouldRunDensification();
     const bool pruneByScreenSize = (trainingIteration_ + 1u) > densificationConfig_.opacityResetInterval;
     if (runDensificationThisStep) {
         const uint32_t possibleGrowth = trainableGaussianCount_ *
@@ -359,17 +413,36 @@ void GaussianTraining::trainStep() {
     vk::SubmitInfo submitInfo{};
     submitInfo.setCommandBufferCount(1)
               .setPCommandBuffers(&trainingCommandBuffer_);
+    vk::TimelineSemaphoreSubmitInfo uploadWaitInfo{};
+    vk::PipelineStageFlags uploadWaitStage = vk::PipelineStageFlagBits::eComputeShader;
+    vk::Semaphore uploadSemaphore = nullptr;
+    if (pendingImageUploadValue_ > 0 && deviceImageCache_) {
+        uploadSemaphore = deviceImageCache_->uploadSemaphore();
+        uploadWaitInfo.setWaitSemaphoreValues(pendingImageUploadValue_);
+        submitInfo.setPNext(&uploadWaitInfo)
+                  .setWaitSemaphores(uploadSemaphore)
+                  .setWaitDstStageMask(uploadWaitStage);
+    }
+    const auto mainSubmitStart = Clock::now();
     computeQueue_.submit(submitInfo);
     computeQueue_.waitIdle();
+    pendingImageUploadValue_ = 0;
+    recordCpuProfilingSample(TrainingCpuProfileStage::MainSubmit,
+                             std::chrono::duration<float, std::milli>(Clock::now() - mainSubmitStart).count());
+    collectGpuProfilingStats();
 
     const uint32_t completedTileItems = requiredTileItems;
     const uint32_t nextIteration = trainingIteration_ + 1u;
     if (nextIteration <= 5u ||
         (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u)) {
+        const auto validationStart = Clock::now();
         validateTrainingStep(completedTileItems);
+        recordCpuProfilingSample(TrainingCpuProfileStage::Validation,
+                                 std::chrono::duration<float, std::milli>(Clock::now() - validationStart).count());
     }
 
     if (runDensificationThisStep) {
+        const auto densificationAdoptStart = Clock::now();
         const TrainingDensificationStats densificationStats = buffers_.densificationStats();
         lastDensificationStats_ = densificationStats;
         lastDensificationStatsIteration_ = trainingIteration_ + 1u;
@@ -395,7 +468,12 @@ void GaussianTraining::trainStep() {
             buffers_.adoptDensifiedGaussians(newGaussianCount);
             trainableGaussianCount_ = newGaussianCount;
         }
+        recordCpuProfilingSample(TrainingCpuProfileStage::DensificationAdopt,
+                                 std::chrono::duration<float, std::milli>(Clock::now() - densificationAdoptStart).count());
     }
+
+    recordCpuProfilingSample(TrainingCpuProfileStage::Total,
+                             std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count());
 
     ++trainingIteration_;
     if (hasDataset() &&
@@ -440,8 +518,28 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     buffers_.uploadGaussianParams(params.data(), static_cast<uint32_t>(params.size()));
     trainableGaussianCount_ = static_cast<uint32_t>(params.size());
     trainingIteration_ = 0;
+    deviceCacheGrowthResumeIteration_ = 0;
     frameRng_.seed(scheduleConfig_.randomSeed);
     randomFrameStack_.clear();
+    imageStreamer_ = std::make_unique<ImageStreamer>();
+    if (imageStreamer_) {
+        std::vector<ImageSourceDesc> sources;
+        sources.reserve(dataset_.frames.size());
+        for (size_t frameIndex = 0; frameIndex < dataset_.frames.size(); ++frameIndex) {
+            const TrainingCameraFrame& frame = dataset_.frames[frameIndex];
+            ImageSourceDesc source{};
+            source.id = static_cast<ImageId>(frameIndex);
+            source.path = frame.imagePath;
+            source.expectedWidth = frame.width;
+            source.expectedHeight = frame.height;
+            source.format = ImagePixelFormat::Rgba8Unorm;
+            source.colorSpace = ImageColorSpace::LinearUnorm;
+            sources.push_back(std::move(source));
+        }
+        imageStreamer_->refreshMemoryBudget();
+        imageStreamer_->setSources(std::move(sources));
+    }
+    initializeDeviceImageCache();
     lastDensificationStats_ = {};
     lastDensificationStatsIteration_ = 0;
     sceneExtent_ = estimateSceneExtent();
@@ -643,9 +741,144 @@ void GaussianTraining::uploadCurrentTrainingFrame() {
                                  " before trainStep.");
     }
 
-    TrainingImage targetImage = TrainingDatasetLoader::loadImage(frame);
-    buffers_.uploadTargetColor(targetImage.pixels.data(), targetImage.width, targetImage.height);
-    buffers_.uploadCamera(createTrainingCamera(frame));
+    const auto imageRequestStart = std::chrono::steady_clock::now();
+    if (imageStreamer_) {
+        const ImageHandle handle = imageStreamer_->request(static_cast<ImageId>(currentDatasetFrameIndex_));
+        const ImageRgba8& image = handle.image();
+        recordCpuProfilingSample(
+            TrainingCpuProfileStage::ImageRequest,
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - imageRequestStart).count());
+        if (image.width != frame.width || image.height != frame.height) {
+            throw std::runtime_error("Cached training image dimensions do not match frame metadata");
+        }
+
+        const auto targetUploadStart = std::chrono::steady_clock::now();
+        if (deviceImageCache_ && deviceImageCache_->isInitialized()) {
+            const DeviceImageBinding binding = deviceImageCache_->getOrUpload(
+                static_cast<ImageId>(currentDatasetFrameIndex_), image);
+            buffers_.setTargetColorDescriptor(binding.descriptor);
+            pendingImageUploadValue_ = binding.readyValue;
+        } else {
+            buffers_.clearTargetColorDescriptor();
+            pendingImageUploadValue_ = 0;
+            buffers_.uploadTargetColor(image.pixels.data(), image.width, image.height);
+        }
+        buffers_.uploadCamera(createTrainingCamera(frame));
+        recordCpuProfilingSample(
+            TrainingCpuProfileStage::TargetUpload,
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - targetUploadStart).count());
+    } else {
+        ImageSourceDesc source{};
+        source.path = frame.imagePath;
+        source.expectedWidth = frame.width;
+        source.expectedHeight = frame.height;
+        const ImageRgba8 targetImage = ImageDecoder::decodeRgba8(source);
+        recordCpuProfilingSample(
+            TrainingCpuProfileStage::ImageRequest,
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - imageRequestStart).count());
+        const auto targetUploadStart = std::chrono::steady_clock::now();
+        buffers_.clearTargetColorDescriptor();
+        pendingImageUploadValue_ = 0;
+        buffers_.uploadTargetColor(targetImage.pixels.data(), targetImage.width, targetImage.height);
+        buffers_.uploadCamera(createTrainingCamera(frame));
+        recordCpuProfilingSample(
+            TrainingCpuProfileStage::TargetUpload,
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - targetUploadStart).count());
+    }
+}
+
+void GaussianTraining::initializeDeviceImageCache() {
+    buffers_.clearTargetColorDescriptor();
+    if (deviceImageCache_) {
+        deviceImageCache_->cleanup();
+        deviceImageCache_.reset();
+    }
+    if (!device_ || !physicalDevice_ || !transferQueue_ || dataset_.empty()) {
+        return;
+    }
+
+    const TrainingCameraFrame& firstFrame = dataset_.frames.front();
+    try {
+        auto cache = std::make_unique<DeviceImageCache>();
+        cache->initialize(device_,
+                          physicalDevice_,
+                          transferQueue_,
+                          transferQueueFamilyIndex_,
+                          firstFrame.width,
+                          firstFrame.height,
+                          static_cast<uint32_t>(dataset_.size()),
+                          initialDeviceImageCacheBudget());
+        const DeviceImageCacheStats cacheStats = cache->stats();
+        LOG_INFO("Initialized device image cache with {} slots ({:.1f} MiB, mode {})",
+                 cacheStats.slotCount,
+                 static_cast<double>(cacheStats.allocatedBytes) / (1024.0 * 1024.0),
+                 static_cast<uint32_t>(cacheStats.mode));
+        deviceImageCache_ = std::move(cache);
+    } catch (const std::exception& error) {
+        LOG_WARN("Device image cache unavailable; using the per-frame target buffer: {}", error.what());
+    }
+}
+
+void GaussianTraining::refreshDeviceImageCacheBudget(bool reserveForDensification) {
+    if (!deviceImageCache_ || !deviceImageCache_->isInitialized()) {
+        return;
+    }
+    const bool allowGrowth = !reserveForDensification &&
+                             trainingIteration_ >= deviceCacheGrowthResumeIteration_;
+    if (deviceImageCache_->refreshMemoryBudget(allowGrowth, reserveForDensification)) {
+        buffers_.clearTargetColorDescriptor();
+        pendingImageUploadValue_ = 0;
+        const DeviceImageCacheStats cacheStats = deviceImageCache_->stats();
+        LOG_INFO("Resized device image cache to {} slots ({:.1f} MiB){}",
+                 cacheStats.slotCount,
+                 static_cast<double>(cacheStats.allocatedBytes) / (1024.0 * 1024.0),
+                 reserveForDensification ? " before densification" : "");
+    }
+}
+
+uint64_t GaussianTraining::initialDeviceImageCacheBudget() const {
+    if (!physicalDevice_ || dataset_.empty()) {
+        return 0;
+    }
+
+    const TrainingCameraFrame& firstFrame = dataset_.frames.front();
+    const uint64_t imageBytes = static_cast<uint64_t>(firstFrame.width) * firstFrame.height * sizeof(uint32_t);
+    const uint64_t fullDatasetBytes = imageBytes * dataset_.size();
+    const vk::PhysicalDeviceMemoryProperties memory = physicalDevice_.getMemoryProperties();
+    uint64_t largestDeviceLocalHeap = 0;
+    uint32_t deviceLocalHeapIndex = 0;
+    for (uint32_t typeIndex = 0; typeIndex < memory.memoryTypeCount; ++typeIndex) {
+        const vk::MemoryType& type = memory.memoryTypes[typeIndex];
+        if ((type.propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) == vk::MemoryPropertyFlagBits::eDeviceLocal &&
+            memory.memoryHeaps[type.heapIndex].size > largestDeviceLocalHeap) {
+            largestDeviceLocalHeap = memory.memoryHeaps[type.heapIndex].size;
+            deviceLocalHeapIndex = type.heapIndex;
+        }
+    }
+
+    const auto extensions = physicalDevice_.enumerateDeviceExtensionProperties();
+    const bool hasMemoryBudget = std::any_of(
+        extensions.begin(), extensions.end(),
+        [](const vk::ExtensionProperties& extension) {
+            return std::strcmp(extension.extensionName.data(), vk::EXTMemoryBudgetExtensionName) == 0;
+        });
+    if (hasMemoryBudget) {
+        vk::PhysicalDeviceMemoryBudgetPropertiesEXT budgetProperties{};
+        vk::PhysicalDeviceMemoryProperties2 memoryProperties{};
+        memoryProperties.pNext = &budgetProperties;
+        physicalDevice_.getMemoryProperties2(&memoryProperties);
+        const uint64_t heapBudget = budgetProperties.heapBudget[deviceLocalHeapIndex];
+        const uint64_t heapUsage = budgetProperties.heapUsage[deviceLocalHeapIndex];
+        const uint64_t freeBytes = heapBudget > heapUsage ? heapBudget - heapUsage : 0;
+        const uint64_t reserveBytes = std::min(heapBudget / 2u,
+                                              std::max(512ull * 1024ull * 1024ull,
+                                                       heapBudget * 15u / 100u));
+        const uint64_t usableBytes = freeBytes > reserveBytes ? freeBytes - reserveBytes : imageBytes;
+        return std::min(fullDatasetBytes,
+                        std::max(imageBytes, std::min(usableBytes, heapBudget / 4u)));
+    }
+    const uint64_t automaticBudget = largestDeviceLocalHeap / 20u;
+    return std::min(fullDatasetBytes, std::max(imageBytes, automaticBudget));
 }
 
 void GaussianTraining::selectTrainingFrameForIteration() {
@@ -659,13 +892,30 @@ void GaussianTraining::selectTrainingFrameForIteration() {
         for (size_t frameIndex = 0; frameIndex < dataset_.size(); ++frameIndex) {
             randomFrameStack_.push_back(frameIndex);
         }
+        std::shuffle(randomFrameStack_.begin(), randomFrameStack_.end(), frameRng_);
     }
 
-    std::uniform_int_distribution<size_t> distribution(0, randomFrameStack_.size() - 1u);
-    const size_t stackIndex = distribution(frameRng_);
-    currentDatasetFrameIndex_ = randomFrameStack_[stackIndex];
-    randomFrameStack_[stackIndex] = randomFrameStack_.back();
+    currentDatasetFrameIndex_ = randomFrameStack_.back();
     randomFrameStack_.pop_back();
+}
+
+void GaussianTraining::prefetchUpcomingTrainingFrames() {
+    if (!imageStreamer_ || dataset_.empty()) {
+        return;
+    }
+
+    std::array<ImageId, 2> upcoming{};
+    size_t count = 0;
+    if (scheduleConfig_.imageSelectionMode == TrainingImageSelectionMode::Random) {
+        for (auto it = randomFrameStack_.rbegin(); it != randomFrameStack_.rend() && count < upcoming.size(); ++it) {
+            upcoming[count++] = static_cast<ImageId>(*it);
+        }
+    } else {
+        for (size_t offset = 1; offset <= upcoming.size(); ++offset) {
+            upcoming[count++] = static_cast<ImageId>((currentDatasetFrameIndex_ + offset) % dataset_.size());
+        }
+    }
+    imageStreamer_->prefetch(std::span<const ImageId>(upcoming.data(), count));
 }
 
 void GaussianTraining::validateTrainingStep(uint32_t tileItemCount) {
@@ -903,6 +1153,119 @@ float GaussianTraining::estimateSceneExtent() const {
     }
 
     return 1.0f;
+}
+
+void GaussianTraining::createTrainingProfilingResources(vk::Device device,
+                                                        vk::PhysicalDevice physicalDevice,
+                                                        uint32_t computeQueueFamilyIndex) {
+    profilingDevice_ = device;
+    profilingStats_ = {};
+
+    const std::vector<vk::QueueFamilyProperties> queueFamilies = physicalDevice.getQueueFamilyProperties();
+    if (computeQueueFamilyIndex >= queueFamilies.size() ||
+        queueFamilies[computeQueueFamilyIndex].timestampValidBits == 0u) {
+        LOG_WARN("Training GPU timestamps are unavailable on the selected compute queue; CPU timings remain enabled");
+        return;
+    }
+
+    timestampPeriodNanoseconds_ = physicalDevice.getProperties().limits.timestampPeriod;
+    if (timestampPeriodNanoseconds_ <= 0.0f) {
+        LOG_WARN("Training GPU timestamps report an invalid timestamp period; CPU timings remain enabled");
+        return;
+    }
+
+    vk::QueryPoolCreateInfo queryPoolInfo{};
+    queryPoolInfo.setQueryType(vk::QueryType::eTimestamp)
+                 .setQueryCount(kTrainingGpuTimestampQueryCount);
+    profilingQueryPool_ = profilingDevice_.createQueryPool(queryPoolInfo);
+    gpuTimestampProfilingAvailable_ = true;
+    profilingStats_.gpuTimestampsAvailable = true;
+
+    if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
+        gaussianForward->setProfilingQueryPool(profilingQueryPool_);
+    }
+    if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
+        gaussianBackward->setProfilingQueryPool(profilingQueryPool_);
+    }
+    densification_->setProfilingQueryPool(profilingQueryPool_);
+    LOG_INFO("Training profiling enabled: {} GPU timestamp stages, timestamp period {} ns",
+             kTrainingGpuProfileStageCount,
+             timestampPeriodNanoseconds_);
+}
+
+void GaussianTraining::destroyTrainingProfilingResources() {
+    gpuTimestampProfilingAvailable_ = false;
+    timestampPeriodNanoseconds_ = 0.0f;
+    if (profilingQueryPool_) {
+        profilingDevice_.destroyQueryPool(profilingQueryPool_);
+        profilingQueryPool_ = nullptr;
+    }
+    profilingDevice_ = nullptr;
+}
+
+void GaussianTraining::resetProfilingLastSamples() {
+    for (TrainingTiming& timing : profilingStats_.cpu) {
+        timing.lastMs = 0.0f;
+    }
+    for (TrainingTiming& timing : profilingStats_.gpu) {
+        timing.lastMs = 0.0f;
+    }
+}
+
+void GaussianTraining::recordCpuProfilingSample(TrainingCpuProfileStage stage, float milliseconds) {
+    TrainingTiming& timing = profilingStats_.cpu[static_cast<size_t>(stage)];
+    timing.lastMs = milliseconds;
+    ++timing.sampleCount;
+    timing.averageMs += (milliseconds - timing.averageMs) / static_cast<float>(timing.sampleCount);
+}
+
+void GaussianTraining::recordGpuProfilingSample(TrainingGpuProfileStage stage, float milliseconds) {
+    TrainingTiming& timing = profilingStats_.gpu[static_cast<size_t>(stage)];
+    timing.lastMs = milliseconds;
+    ++timing.sampleCount;
+    timing.averageMs += (milliseconds - timing.averageMs) / static_cast<float>(timing.sampleCount);
+}
+
+void GaussianTraining::collectGpuProfilingStats() {
+    if (!gpuTimestampProfilingAvailable_) {
+        return;
+    }
+
+    std::array<uint64_t, kTrainingGpuTimestampQueryCount> timestamps{};
+    const VkResult result = vkGetQueryPoolResults(
+        static_cast<VkDevice>(profilingDevice_),
+        static_cast<VkQueryPool>(profilingQueryPool_),
+        0,
+        kTrainingGpuTimestampQueryCount,
+        sizeof(timestamps),
+        timestamps.data(),
+        sizeof(uint64_t),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (result != VK_SUCCESS) {
+        LOG_WARN("Failed to read training GPU timestamps: {}. GPU timing has been disabled for this session.",
+                 static_cast<int>(result));
+        gpuTimestampProfilingAvailable_ = false;
+        profilingStats_.gpuTimestampsAvailable = false;
+        if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
+            gaussianForward->setProfilingQueryPool(nullptr);
+        }
+        if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
+            gaussianBackward->setProfilingQueryPool(nullptr);
+        }
+        densification_->setProfilingQueryPool(nullptr);
+        return;
+    }
+
+    for (uint32_t stageIndex = 0; stageIndex < kTrainingGpuProfileStageCount; ++stageIndex) {
+        const TrainingGpuProfileStage stage = static_cast<TrainingGpuProfileStage>(stageIndex);
+        const uint64_t begin = timestamps[trainingGpuTimestampQuery(stage, false)];
+        const uint64_t end = timestamps[trainingGpuTimestampQuery(stage, true)];
+        if (begin == 0u && end == 0u) {
+            continue;
+        }
+        const float milliseconds = static_cast<float>(end - begin) * timestampPeriodNanoseconds_ / 1.0e6f;
+        recordGpuProfilingSample(stage, milliseconds);
+    }
 }
 
 void GaussianTraining::createTrainingCommandResources(vk::Device device,

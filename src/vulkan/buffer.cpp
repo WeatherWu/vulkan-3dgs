@@ -140,18 +140,30 @@ void Buffer::cleanup() {
     properties_ = {};
 }
 
-void Buffer::upload(const void* data, vk::DeviceSize size) {
+void Buffer::upload(const void* data, vk::DeviceSize size, vk::DeviceSize offset) {
     if (!buffer_ || !memory_) {
         throw std::runtime_error("Cannot upload to an uninitialized buffer");
     }
     if (!data) {
         throw std::runtime_error("Cannot upload null data to buffer");
     }
-    if (size > size_) {
+    if (offset > size_ || size > size_ - offset) {
         throw std::runtime_error("Upload size exceeds buffer capacity");
     }
 
-    uploadData(data, size);
+    if ((properties_ & vk::MemoryPropertyFlagBits::eHostVisible) == vk::MemoryPropertyFlagBits::eHostVisible) {
+        void* mappedMemory = device_.mapMemory(memory_, 0, VK_WHOLE_SIZE);
+        std::memcpy(static_cast<std::byte*>(mappedMemory) + offset, data, static_cast<size_t>(size));
+        if ((properties_ & vk::MemoryPropertyFlagBits::eHostCoherent) != vk::MemoryPropertyFlagBits::eHostCoherent) {
+            vk::MappedMemoryRange range{};
+            range.setMemory(memory_).setOffset(0).setSize(VK_WHOLE_SIZE);
+            device_.flushMappedMemoryRanges(range);
+        }
+        device_.unmapMemory(memory_);
+        return;
+    }
+
+    uploadData(data, size, offset);
 }
 
 void Buffer::download(void* data, vk::DeviceSize size) {
@@ -226,7 +238,7 @@ vk::DescriptorBufferInfo Buffer::getDescriptorInfo() const {
     return info;
 }
 
-void Buffer::uploadData(const void* data, vk::DeviceSize size) {
+void Buffer::uploadData(const void* data, vk::DeviceSize size, vk::DeviceSize offset) {
     LOG_DEBUG("Buffer::uploadData - Starting data upload ({} bytes)", size);
     
     // 使用保存的传输队列家族索引
@@ -289,7 +301,8 @@ void Buffer::uploadData(const void* data, vk::DeviceSize size) {
 
     LOG_DEBUG("Buffer::uploadData - Recording copy command");
     vk::BufferCopy copyRegion{};
-    copyRegion.setSize(size);
+    copyRegion.setDstOffset(offset)
+              .setSize(size);
     commandBuffer.copyBuffer(stagingBuffer, buffer_, copyRegion);
 
     LOG_DEBUG("Buffer::uploadData - Ending command buffer recording");

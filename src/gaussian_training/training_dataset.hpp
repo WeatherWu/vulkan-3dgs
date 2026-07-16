@@ -9,12 +9,6 @@
 
 namespace vulkan3DGS {
 
-struct TrainingImage {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    std::vector<glm::vec4> pixels;
-};
-
 struct TrainingCameraFrame {
     uint32_t imageId = 0;
     uint32_t cameraId = 0;
@@ -65,7 +59,6 @@ public:
                                                              uint32_t preferredDownscale = 4);
     static TrainingDataset loadMipNeRF360Scene(const std::filesystem::path& sceneRoot,
                                                uint32_t preferredDownscale = 4);
-    static TrainingImage loadImage(const TrainingCameraFrame& frame);
 
 private:
     struct ColmapCamera;

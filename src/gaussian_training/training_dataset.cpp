@@ -1,9 +1,8 @@
 #include "gaussian_training/training_dataset.hpp"
 
+#include "image/image_decoder.hpp"
 #include "utils/file_utils.hpp"
 #include "utils/logger.hpp"
-
-#include <stb_image.h>
 
 #include <algorithm>
 #include <array>
@@ -259,16 +258,8 @@ std::filesystem::path resolveImagePath(const std::filesystem::path& imageDirecto
 }
 
 glm::uvec2 readImageDimensions(const std::filesystem::path& path) {
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    if (!stbi_info(path.string().c_str(), &width, &height, &channels)) {
-        throw std::runtime_error("Failed to read training image size: " + path.string());
-    }
-    if (width <= 0 || height <= 0) {
-        throw std::runtime_error("Training image has invalid size: " + path.string());
-    }
-    return glm::uvec2(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    const ImageInfo info = ImageDecoder::probe(path);
+    return glm::uvec2(info.width, info.height);
 }
 
 void fillIntrinsics(const ColmapCameraData& camera,
@@ -419,33 +410,6 @@ TrainingDatasetValidation TrainingDatasetLoader::validateMipNeRF360Scene(const s
         validation.message = error.what();
     }
     return validation;
-}
-
-TrainingImage TrainingDatasetLoader::loadImage(const TrainingCameraFrame& frame) {
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    stbi_uc* data = stbi_load(frame.imagePath.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
-    if (!data) {
-        throw std::runtime_error("Failed to load training image: " + frame.imagePath.string());
-    }
-
-    TrainingImage image{};
-    image.width = static_cast<uint32_t>(width);
-    image.height = static_cast<uint32_t>(height);
-    image.pixels.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
-
-    constexpr float inv255 = 1.0f / 255.0f;
-    for (size_t i = 0; i < image.pixels.size(); ++i) {
-        const size_t offset = i * 4;
-        image.pixels[i] = glm::vec4(static_cast<float>(data[offset + 0]) * inv255,
-                                    static_cast<float>(data[offset + 1]) * inv255,
-                                    static_cast<float>(data[offset + 2]) * inv255,
-                                    static_cast<float>(data[offset + 3]) * inv255);
-    }
-
-    stbi_image_free(data);
-    return image;
 }
 
 } // namespace vulkan3DGS

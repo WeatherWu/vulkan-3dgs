@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -26,7 +27,9 @@ public:
     std::vector<GaussianVisibilityState> downloadGaussianVisibility(uint32_t gaussianCount);
     std::vector<float> downloadLoss(uint32_t pixelCount);
     std::vector<glm::vec4> downloadRenderedColor(uint32_t pixelCount);
-    void uploadTargetColor(const glm::vec4* pixels, uint32_t width, uint32_t height);
+    void uploadTargetColor(const uint8_t* pixels, uint32_t width, uint32_t height);
+    void setTargetColorDescriptor(vk::DescriptorBufferInfo descriptor) { targetColorDescriptorOverride_ = descriptor; }
+    void clearTargetColorDescriptor() { targetColorDescriptorOverride_.reset(); }
     void uploadCamera(const TrainingForwardCamera& camera);
     uint32_t requiredTileItemCount();
     uint32_t densifiedGaussianCount();
@@ -56,7 +59,9 @@ public:
     vk::Buffer tileSortStorageBuffer() const { return tileSortStorage_.getBuffer(); }
     vk::DescriptorBufferInfo tileRangesInfo() const { return tileRanges_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo renderedColorInfo() const { return renderedColor_.getDescriptorInfo(); }
-    vk::DescriptorBufferInfo targetColorInfo() const { return targetColor_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo targetColorInfo() const {
+        return targetColorDescriptorOverride_.value_or(targetColor_.getDescriptorInfo());
+    }
     vk::DescriptorBufferInfo pixelGradsInfo() const { return pixelGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo pixelBlendStatesInfo() const { return pixelBlendStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo gaussianVisibilityInfo() const { return gaussianVisibility_.getDescriptorInfo(); }
@@ -102,6 +107,7 @@ private:
     Buffer tileRanges_;
     Buffer renderedColor_;
     Buffer targetColor_;
+    std::optional<vk::DescriptorBufferInfo> targetColorDescriptorOverride_;
     Buffer pixelGrads_;
     Buffer pixelBlendStates_;
     Buffer gaussianVisibility_;

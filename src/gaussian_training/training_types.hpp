@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
 
@@ -86,6 +88,55 @@ struct TrainingValidationStats {
     uint32_t tileItemCount = 0;
     bool renderedNonEmpty = false;
     bool valid = true;
+};
+
+enum class TrainingCpuProfileStage : uint32_t {
+    FrameUpload = 0,
+    ImageRequest,
+    TargetUpload,
+    PrepareSubmit,
+    TileCountReadback,
+    TileBufferResize,
+    MainSubmit,
+    Validation,
+    DensificationAdopt,
+    Total,
+    Count,
+};
+
+enum class TrainingGpuProfileStage : uint32_t {
+    PrepareTileItems = 0,
+    TileEmit,
+    TileSortAndRanges,
+    Composite,
+    Loss,
+    LossToPixel,
+    PixelTo2DGS,
+    TwoDGSTo3DGS,
+    Optimizer,
+    Densification,
+    Count,
+};
+
+constexpr size_t kTrainingCpuProfileStageCount = static_cast<size_t>(TrainingCpuProfileStage::Count);
+constexpr size_t kTrainingGpuProfileStageCount = static_cast<size_t>(TrainingGpuProfileStage::Count);
+constexpr uint32_t kTrainingGpuTimestampQueryCount =
+    static_cast<uint32_t>(kTrainingGpuProfileStageCount * 2u);
+
+constexpr uint32_t trainingGpuTimestampQuery(TrainingGpuProfileStage stage, bool end) {
+    return static_cast<uint32_t>(stage) * 2u + (end ? 1u : 0u);
+}
+
+struct TrainingTiming {
+    float lastMs = 0.0f;
+    float averageMs = 0.0f;
+    uint32_t sampleCount = 0;
+};
+
+struct TrainingProfilingStats {
+    bool gpuTimestampsAvailable = false;
+    std::array<TrainingTiming, kTrainingCpuProfileStageCount> cpu{};
+    std::array<TrainingTiming, kTrainingGpuProfileStageCount> gpu{};
 };
 
 struct TrainingDensificationStats {

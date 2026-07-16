@@ -31,7 +31,7 @@ public:
 
     // 清理资源
     void cleanup();
-    void upload(const void* data, vk::DeviceSize size);
+    void upload(const void* data, vk::DeviceSize size, vk::DeviceSize offset = 0);
     void download(void* data, vk::DeviceSize size);
 
     // 获取底层对象
@@ -56,7 +56,7 @@ private:
                                    vk::MemoryPropertyFlags properties);
     
     // 内部方法：通过 Staging Buffer 上传数据
-    void uploadData(const void* data, vk::DeviceSize size);
+    void uploadData(const void* data, vk::DeviceSize size, vk::DeviceSize offset = 0);
 };
 
 } // namespace vulkan3DGS

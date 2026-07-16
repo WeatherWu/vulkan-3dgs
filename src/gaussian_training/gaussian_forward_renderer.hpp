@@ -24,6 +24,7 @@ public:
     void setTrainingBuffers(TrainingBuffers& trainingBuffers,
                             vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
+    void setProfilingQueryPool(vk::QueryPool queryPool);
     void forward() override;
     void prepareTileItems();
     void renderPreparedTiles();
@@ -55,6 +56,7 @@ private:
                              vk::AccessFlags dstAccessMask);
     void updateDescriptorSet(vk::DescriptorSet descriptorSet,
                              std::initializer_list<uint32_t> bindings);
+    void writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end);
 
     vk::Device device_ = nullptr;
     vk::PhysicalDevice physicalDevice_ = nullptr;
@@ -89,6 +91,7 @@ private:
 
     TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
+    vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
     bool initialized_ = false;
 };
