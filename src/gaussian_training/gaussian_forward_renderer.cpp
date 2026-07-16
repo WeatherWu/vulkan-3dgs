@@ -334,9 +334,12 @@ void GaussianForwardRenderer::sortTileItems() {
         return;
     }
 
+    LOG_DEBUG("Preparing radix sort for {} training tile items", tileItemCount);
     ensureTileSortResources(tileItemCount);
+    LOG_DEBUG("Training radix sort storage is ready for {} tile items", tileItemCount);
     pushConstants_.tileItemCount = tileItemCount;
 
+    LOG_DEBUG("Recording low-key training radix sort");
     vrdxCmdSortKeyValue(commandBuffer_,
                         radixSorter_,
                         tileItemCount,
@@ -348,11 +351,13 @@ void GaussianForwardRenderer::sortTileItems() {
                         0,
                         VK_NULL_HANDLE,
                         0);
+    LOG_DEBUG("Recorded low-key training radix sort");
 
     shaderMemoryBarrier();
     gatherHighTileKeys(tileItemCount);
     shaderMemoryBarrier();
 
+    LOG_DEBUG("Recording high-key training radix sort");
     vrdxCmdSortKeyValue(commandBuffer_,
                         radixSorter_,
                         tileItemCount,
@@ -364,6 +369,7 @@ void GaussianForwardRenderer::sortTileItems() {
                         0,
                         VK_NULL_HANDLE,
                         0);
+    LOG_DEBUG("Recorded high-key training radix sort");
 
     shaderMemoryBarrier();
     gatherSortedTileItems(tileItemCount);
@@ -395,6 +401,9 @@ void GaussianForwardRenderer::ensureTileSortResources(uint32_t tileItemCount) {
 
     VrdxSorterStorageRequirements sorterRequirements{};
     vrdxGetSorterKeyValueStorageRequirements(radixSorter_, tileItemCount, &sorterRequirements);
+    LOG_DEBUG("Training radix sort requires {} bytes with usage flags 0x{:x}",
+              sorterRequirements.size,
+              sorterRequirements.usage);
     trainingBuffers_->ensureTileSortStorage(tileItemCount,
                                             sorterRequirements.size,
                                             vk::BufferUsageFlags(sorterRequirements.usage));

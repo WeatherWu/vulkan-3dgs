@@ -1,5 +1,7 @@
 #include "gaussian_training/training_buffers.hpp"
 
+#include "utils/logger.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -37,6 +39,7 @@ void TrainingBuffers::cleanup() {
     gaussianVisibility_.cleanup();
     pixelBlendStates_.cleanup();
     pixelGrads_.cleanup();
+    ssimBackwardStates_.cleanup();
     targetColor_.cleanup();
     renderedColor_.cleanup();
     tileRanges_.cleanup();
@@ -89,6 +92,7 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     renderedColor_.cleanup();
     targetColor_.cleanup();
     pixelGrads_.cleanup();
+    ssimBackwardStates_.cleanup();
     pixelBlendStates_.cleanup();
     gaussianVisibility_.cleanup();
     projectedGrads_.cleanup();
@@ -131,6 +135,7 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     createStorageBuffer(renderedColor_, sizeof(glm::vec4) * pixelCount);
     createStorageBuffer(targetColor_, sizeof(uint32_t) * pixelCount);
     createStorageBuffer(pixelGrads_, sizeof(PixelGrad) * pixelCount);
+    createStorageBuffer(ssimBackwardStates_, sizeof(SsimBackwardState) * pixelCount);
     createStorageBuffer(pixelBlendStates_, sizeof(PixelBlendState) * pixelCount);
     createStorageBuffer(gaussianVisibility_, sizeof(GaussianVisibilityState) * safeGaussianCount);
     createZeroedStorageBuffer(densificationStates_, sizeof(GaussianDensificationState) * safeGaussianCount);
@@ -314,8 +319,10 @@ std::vector<GaussianTrainParam> TrainingBuffers::downloadGaussianParams(uint32_t
         return params;
     }
 
+    LOG_DEBUG("Reading back {} training Gaussian parameters", gaussianCount);
     gaussianParams_.download(params.data(),
                              static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianTrainParam));
+    LOG_DEBUG("Completed training Gaussian parameter readback");
     return params;
 }
 
@@ -345,7 +352,9 @@ std::vector<float> TrainingBuffers::downloadLoss(uint32_t pixelCount) {
         return loss;
     }
 
+    LOG_DEBUG("Reading back {} training loss values", pixelCount);
     loss_.download(loss.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(float));
+    LOG_DEBUG("Completed training loss readback");
     return loss;
 }
 
@@ -360,7 +369,9 @@ std::vector<glm::vec4> TrainingBuffers::downloadRenderedColor(uint32_t pixelCoun
         return rendered;
     }
 
+    LOG_DEBUG("Reading back {} rendered training pixels", pixelCount);
     renderedColor_.download(rendered.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(glm::vec4));
+    LOG_DEBUG("Completed rendered training pixel readback");
     return rendered;
 }
 

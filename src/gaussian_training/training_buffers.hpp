@@ -63,6 +63,7 @@ public:
         return targetColorDescriptorOverride_.value_or(targetColor_.getDescriptorInfo());
     }
     vk::DescriptorBufferInfo pixelGradsInfo() const { return pixelGrads_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo ssimBackwardStatesInfo() const { return ssimBackwardStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo pixelBlendStatesInfo() const { return pixelBlendStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo gaussianVisibilityInfo() const { return gaussianVisibility_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densificationStatesInfo() const { return densificationStates_.getDescriptorInfo(); }
@@ -109,6 +110,7 @@ private:
     Buffer targetColor_;
     std::optional<vk::DescriptorBufferInfo> targetColorDescriptorOverride_;
     Buffer pixelGrads_;
+    Buffer ssimBackwardStates_;
     Buffer pixelBlendStates_;
     Buffer gaussianVisibility_;
     Buffer densificationStates_;

@@ -3,6 +3,7 @@
 #include "utils/logger.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -16,6 +17,22 @@ vk::DeviceSize alignUp(vk::DeviceSize value, vk::DeviceSize alignment) {
         return value;
     }
     return ((value + alignment - 1u) / alignment) * alignment;
+}
+
+bool forceSynchronousImageUploads() {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, "VULKAN_3DGS_SYNC_IMAGE_UPLOAD") != 0 || !value) {
+        return false;
+    }
+    const bool enabled = std::strcmp(value, "1") == 0;
+    std::free(value);
+    return enabled;
+#else
+    const char* value = std::getenv("VULKAN_3DGS_SYNC_IMAGE_UPLOAD");
+    return value && std::strcmp(value, "1") == 0;
+#endif
 }
 
 } // namespace
@@ -296,6 +313,12 @@ void DeviceImageCache::resizeSlots(uint32_t slotCount, uint64_t targetBudgetByte
 void DeviceImageCache::initializeUploadResources(vk::PhysicalDevice physicalDevice,
                                                  vk::Queue transferQueue,
                                                  uint32_t transferQueueFamilyIndex) {
+    if (forceSynchronousImageUploads()) {
+        LOG_WARN("Using synchronous device image uploads because VULKAN_3DGS_SYNC_IMAGE_UPLOAD=1");
+        asynchronousUploads_ = false;
+        return;
+    }
+
     vk::PhysicalDeviceTimelineSemaphoreFeatures timelineFeatures{};
     vk::PhysicalDeviceFeatures2 features{};
     features.setPNext(&timelineFeatures);

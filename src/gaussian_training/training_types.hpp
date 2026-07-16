@@ -90,6 +90,12 @@ struct TrainingValidationStats {
     bool valid = true;
 };
 
+struct SsimBackwardState {
+    glm::vec4 base;
+    glm::vec4 targetCoefficient;
+    glm::vec4 renderedCoefficient;
+};
+
 enum class TrainingCpuProfileStage : uint32_t {
     FrameUpload = 0,
     ImageRequest,
@@ -249,6 +255,7 @@ struct alignas(16) AdamState {
 static_assert(sizeof(GaussianTrainParam) == sizeof(glm::vec4) * 19);
 static_assert(sizeof(ProjectedGaussian) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(PixelGrad) == sizeof(glm::vec4));
+static_assert(sizeof(SsimBackwardState) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(PixelBlendState) == sizeof(glm::vec4));
 static_assert(sizeof(GaussianVisibilityState) == sizeof(glm::vec4));
 static_assert(sizeof(GaussianDensificationState) == sizeof(glm::vec4));

@@ -146,6 +146,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(6),
         storageBinding(7),
         storageBinding(8),
+        storageBinding(28),
     };
     lossConfig.pushConstantSize = sizeof(TrainingPushConstants);
 
@@ -162,6 +163,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(6),
         storageBinding(7),
         storageBinding(12),
+        storageBinding(28),
     };
     lossToPixelConfig.pushConstantSize = sizeof(TrainingPushConstants);
 
@@ -204,7 +206,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(23);
+                .setDescriptorCount(25);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
@@ -266,8 +268,9 @@ void GaussianBackwardRenderer::computeLoss() {
     const auto renderedColorInfo = trainingBuffers_->renderedColorInfo();
     const auto targetColorInfo = trainingBuffers_->targetColorInfo();
     const auto lossInfo = trainingBuffers_->lossInfo();
+    const auto ssimBackwardStatesInfo = trainingBuffers_->ssimBackwardStatesInfo();
 
-    std::array<vk::WriteDescriptorSet, 3> writes{};
+    std::array<vk::WriteDescriptorSet, 4> writes{};
     writes[0].setDstSet(lossDescriptorSet_)
              .setDstBinding(6)
              .setDescriptorCount(1)
@@ -283,6 +286,11 @@ void GaussianBackwardRenderer::computeLoss() {
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&lossInfo);
+    writes[3].setDstSet(lossDescriptorSet_)
+             .setDstBinding(28)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&ssimBackwardStatesInfo);
 
     device_.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
@@ -324,6 +332,7 @@ void GaussianBackwardRenderer::computeLoss() {
                                                   &lossReady,
                                                   0,
                                                   nullptr);
+    shaderBufferBarrier({ssimBackwardStatesInfo}, vk::AccessFlagBits::eShaderRead);
 }
 
 void GaussianBackwardRenderer::clearBackwardBuffers() {
@@ -377,8 +386,9 @@ void GaussianBackwardRenderer::computeLossToPixel() {
     const auto renderedColorInfo = trainingBuffers_->renderedColorInfo();
     const auto targetColorInfo = trainingBuffers_->targetColorInfo();
     const auto pixelGradsInfo = trainingBuffers_->pixelGradsInfo();
+    const auto ssimBackwardStatesInfo = trainingBuffers_->ssimBackwardStatesInfo();
 
-    std::array<vk::WriteDescriptorSet, 3> writes{};
+    std::array<vk::WriteDescriptorSet, 4> writes{};
     writes[0].setDstSet(lossToPixelDescriptorSet_)
              .setDstBinding(6)
              .setDescriptorCount(1)
@@ -394,6 +404,11 @@ void GaussianBackwardRenderer::computeLossToPixel() {
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&pixelGradsInfo);
+    writes[3].setDstSet(lossToPixelDescriptorSet_)
+             .setDstBinding(28)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&ssimBackwardStatesInfo);
     device_.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
     commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, lossToPixelPipeline_.getPipeline());

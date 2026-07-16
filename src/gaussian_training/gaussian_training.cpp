@@ -360,8 +360,10 @@ void GaussianTraining::trainStep() {
     prepareSubmitInfo.setCommandBufferCount(1)
                      .setPCommandBuffers(&trainingCommandBuffer_);
     const auto prepareSubmitStart = Clock::now();
+    LOG_DEBUG("Submitting training prepare pass for iteration {}", trainingIteration_ + 1u);
     computeQueue_.submit(prepareSubmitInfo);
     computeQueue_.waitIdle();
+    LOG_DEBUG("Training prepare pass completed for iteration {}", trainingIteration_ + 1u);
     recordCpuProfilingSample(TrainingCpuProfileStage::PrepareSubmit,
                              std::chrono::duration<float, std::milli>(Clock::now() - prepareSubmitStart).count());
 
@@ -395,7 +397,9 @@ void GaussianTraining::trainStep() {
     trainingCommandBuffer_.begin(beginInfo);
 
     gaussianForward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
+    LOG_DEBUG("Recording training main pass for iteration {}", trainingIteration_ + 1u);
     gaussianForward->renderPreparedTiles();
+    LOG_DEBUG("Recorded training forward pass for iteration {}", trainingIteration_ + 1u);
     gaussianBackward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
     gaussianBackward->backward();
 
@@ -409,6 +413,7 @@ void GaussianTraining::trainStep() {
     gaussianBackward->gradientDescent();
 
     trainingCommandBuffer_.end();
+    LOG_DEBUG("Finished recording training main command buffer for iteration {}", trainingIteration_ + 1u);
 
     vk::SubmitInfo submitInfo{};
     submitInfo.setCommandBufferCount(1)
@@ -424,8 +429,12 @@ void GaussianTraining::trainStep() {
                   .setWaitDstStageMask(uploadWaitStage);
     }
     const auto mainSubmitStart = Clock::now();
+    LOG_DEBUG("Submitting training main pass for iteration {} with image upload timeline value {}",
+              trainingIteration_ + 1u,
+              pendingImageUploadValue_);
     computeQueue_.submit(submitInfo);
     computeQueue_.waitIdle();
+    LOG_DEBUG("Training main pass completed for iteration {}", trainingIteration_ + 1u);
     pendingImageUploadValue_ = 0;
     recordCpuProfilingSample(TrainingCpuProfileStage::MainSubmit,
                              std::chrono::duration<float, std::milli>(Clock::now() - mainSubmitStart).count());
@@ -436,7 +445,9 @@ void GaussianTraining::trainStep() {
     if (nextIteration <= 5u ||
         (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u)) {
         const auto validationStart = Clock::now();
+        LOG_DEBUG("Starting training validation readback for iteration {}", nextIteration);
         validateTrainingStep(completedTileItems);
+        LOG_DEBUG("Completed training validation readback for iteration {}", nextIteration);
         recordCpuProfilingSample(TrainingCpuProfileStage::Validation,
                                  std::chrono::duration<float, std::milli>(Clock::now() - validationStart).count());
     }
@@ -1231,7 +1242,11 @@ void GaussianTraining::collectGpuProfilingStats() {
         return;
     }
 
-    std::array<uint64_t, kTrainingGpuTimestampQueryCount> timestamps{};
+    struct TimestampQueryResult {
+        uint64_t timestamp = 0;
+        uint64_t available = 0;
+    };
+    std::array<TimestampQueryResult, kTrainingGpuTimestampQueryCount> timestamps{};
     const VkResult result = vkGetQueryPoolResults(
         static_cast<VkDevice>(profilingDevice_),
         static_cast<VkQueryPool>(profilingQueryPool_),
@@ -1239,9 +1254,9 @@ void GaussianTraining::collectGpuProfilingStats() {
         kTrainingGpuTimestampQueryCount,
         sizeof(timestamps),
         timestamps.data(),
-        sizeof(uint64_t),
-        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-    if (result != VK_SUCCESS) {
+        sizeof(TimestampQueryResult),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (result != VK_SUCCESS && result != VK_NOT_READY) {
         LOG_WARN("Failed to read training GPU timestamps: {}. GPU timing has been disabled for this session.",
                  static_cast<int>(result));
         gpuTimestampProfilingAvailable_ = false;
@@ -1256,15 +1271,30 @@ void GaussianTraining::collectGpuProfilingStats() {
         return;
     }
 
+    static constexpr std::array<const char*, kTrainingGpuProfileStageCount> stageNames = {
+        "Prepare tile items",
+        "Tile emit",
+        "Tile sort and ranges",
+        "Composite",
+        "Loss",
+        "Loss to pixel",
+        "Pixel to 2DGS",
+        "2DGS to 3DGS",
+        "Optimizer",
+        "Densification",
+    };
     for (uint32_t stageIndex = 0; stageIndex < kTrainingGpuProfileStageCount; ++stageIndex) {
         const TrainingGpuProfileStage stage = static_cast<TrainingGpuProfileStage>(stageIndex);
-        const uint64_t begin = timestamps[trainingGpuTimestampQuery(stage, false)];
-        const uint64_t end = timestamps[trainingGpuTimestampQuery(stage, true)];
-        if (begin == 0u && end == 0u) {
+        const TimestampQueryResult& beginResult = timestamps[trainingGpuTimestampQuery(stage, false)];
+        const TimestampQueryResult& endResult = timestamps[trainingGpuTimestampQuery(stage, true)];
+        if (beginResult.available == 0u || endResult.available == 0u) {
             continue;
         }
+        const uint64_t begin = beginResult.timestamp;
+        const uint64_t end = endResult.timestamp;
         const float milliseconds = static_cast<float>(end - begin) * timestampPeriodNanoseconds_ / 1.0e6f;
         recordGpuProfilingSample(stage, milliseconds);
+        LOG_DEBUG("Training GPU stage {}: {} ms", stageNames[stageIndex], milliseconds);
     }
 }
 

@@ -5,6 +5,12 @@ struct PixelGrad {
     float4 color;
 };
 
+struct SsimBackwardState {
+    float4 base;
+    float4 targetCoefficient;
+    float4 renderedCoefficient;
+};
+
 struct ProjectedGaussianGrad {
     float4 centerRadius;
     float4 conicOpacity;
