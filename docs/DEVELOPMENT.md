@@ -124,7 +124,7 @@ The UI reports host, disk, device-cache, staging, upload, hit/miss, eviction, an
 Scheduling modes:
 
 - `Sequential`: ordered frames with no fixed total iteration stop.
-- `3DGS Random`: random-without-replacement viewpoint stack and 30000 total iterations.
+- `3DGS Random`: random-without-replacement viewpoint stack and 30000 total iterations. This is the default mode because it matches the reference 3DGS training loop.
 
 ## Loss And Optimizer
 
@@ -136,7 +136,7 @@ The loss combines L1 and DSSIM:
 
 SSIM uses an 11x11 Gaussian window with sigma 1.5. `SsimBackwardState` stores coefficients used by the optimized backward pass, avoiding the former nested window-over-window computation.
 
-The Adam-style optimizer has independent learning rates for position, SH DC/rest, opacity, scale, and rotation. Position learning rate uses initial/final values, delay multiplier, and maximum-step scheduling.
+The Adam-style optimizer has independent learning rates for position, SH DC/rest, opacity, scale, and rotation. Position learning rate uses initial/final values, delay multiplier, maximum-step scheduling, and the reference 3DGS scene-extent spatial learning-rate scale. The default opacity LR, Adam epsilon, and disabled gradient clipping mirror the reference 3DGS defaults.
 
 ## Training Buffers
 
@@ -238,7 +238,7 @@ C++/Slang structure layouts and descriptor binding numbers must remain synchroni
 
 ## Known Differences From Reference 3DGS
 
-- Random viewpoint-stack scheduling and the 30000-iteration stop are available only in `3DGS Random` mode.
+- Random viewpoint-stack scheduling and the 30000-iteration stop are the default via `3DGS Random`; `Sequential` remains a debug/legacy mode.
 - Forward/backward math remains project-specific and should not yet be described as exact reference parity.
 - Tile sorting uses two stable 32-bit radix passes for the semantic 64-bit key.
 - The training loop still waits for prepare and main submissions each iteration.

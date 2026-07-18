@@ -27,13 +27,13 @@ struct TrainingPushConstants {
     float positionLearningRateMaxSteps = 30000.0f;
     float featureLearningRate = 0.0025f;
     float featureRestLearningRate = 0.000125f;
-    float opacityLearningRate = 0.025f;
+    float opacityLearningRate = 0.05f;
     float scaleLearningRate = 0.005f;
     float rotationLearningRate = 0.001f;
     float optimizerBeta1 = 0.9f;
     float optimizerBeta2 = 0.999f;
-    float optimizerEpsilon = 1e-8f;
-    float optimizerGradClip = 1e3f;
+    float optimizerEpsilon = 1e-15f;
+    float optimizerGradClip = 0.0f;
     float lossDssimWeight = 0.2f;
     uint32_t validationEnabled = 0;
     uint32_t validationIteration = 0;
@@ -42,7 +42,7 @@ struct TrainingPushConstants {
 struct TrainingInitializationConfig {
     bool allowRandomFallback = true;
     uint32_t randomGaussianCount = 10000;
-    uint32_t randomSeed = 1;
+    uint32_t randomSeed = 0;
     float initialOpacity = 0.1f;
     float sceneRadiusScale = 1.0f;
 };
@@ -53,9 +53,9 @@ enum class TrainingImageSelectionMode : uint32_t {
 };
 
 struct TrainingScheduleConfig {
-    TrainingImageSelectionMode imageSelectionMode = TrainingImageSelectionMode::Sequential;
-    uint32_t totalIterations = 0;
-    uint32_t randomSeed = 1;
+    TrainingImageSelectionMode imageSelectionMode = TrainingImageSelectionMode::Random;
+    uint32_t totalIterations = 30000;
+    uint32_t randomSeed = 0;
 };
 
 struct TrainingOptimizerConfig {
@@ -65,13 +65,13 @@ struct TrainingOptimizerConfig {
     float positionLearningRateMaxSteps = 30000.0f;
     float featureLearningRate = 0.0025f;
     float featureRestLearningRate = 0.000125f;
-    float opacityLearningRate = 0.025f;
+    float opacityLearningRate = 0.05f;
     float scaleLearningRate = 0.005f;
     float rotationLearningRate = 0.001f;
     float beta1 = 0.9f;
     float beta2 = 0.999f;
-    float epsilon = 1e-8f;
-    float gradClip = 1e3f;
+    float epsilon = 1e-15f;
+    float gradClip = 0.0f;
     float lossDssimWeight = 0.2f;
     uint32_t maxSHDegree = 3;
     uint32_t shDegreeInterval = 1000;
@@ -220,7 +220,7 @@ struct alignas(16) TrainingDensificationPushConstants {
     float minOpacity = 0.005f;
     float percentDense = 0.01f;
     float screenSizePruneThreshold = 20.0f;
-    uint32_t randomSeed = 1;
+    uint32_t randomSeed = 0;
     uint32_t resetOpacity = 0;
     float worldSizePruneThreshold = 0.1f;
     uint32_t padding1 = 0;

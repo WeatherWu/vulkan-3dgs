@@ -722,9 +722,10 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.trainingIteration = trainingIteration_;
     const uint32_t shInterval = std::max(optimizerConfig_.shDegreeInterval, 1u);
     pushConstants.maxSHDegree = std::min(optimizerConfig_.maxSHDegree, 3u);
-    pushConstants.activeSHDegree = std::min(trainingIteration_ / shInterval, pushConstants.maxSHDegree);
-    pushConstants.positionLearningRate = optimizerConfig_.positionLearningRate;
-    pushConstants.positionLearningRateFinal = optimizerConfig_.positionLearningRateFinal;
+    pushConstants.activeSHDegree = std::min((trainingIteration_ + 1u) / shInterval, pushConstants.maxSHDegree);
+    const float spatialLearningRateScale = std::max(sceneExtent_, 1e-6f);
+    pushConstants.positionLearningRate = optimizerConfig_.positionLearningRate * spatialLearningRateScale;
+    pushConstants.positionLearningRateFinal = optimizerConfig_.positionLearningRateFinal * spatialLearningRateScale;
     pushConstants.positionLearningRateDelayMult = optimizerConfig_.positionLearningRateDelayMult;
     pushConstants.positionLearningRateMaxSteps = optimizerConfig_.positionLearningRateMaxSteps;
     pushConstants.featureLearningRate = optimizerConfig_.featureLearningRate;
@@ -774,8 +775,8 @@ bool GaussianTraining::shouldRunDensification() const {
         return false;
     }
     const uint32_t nextIteration = trainingIteration_ + 1u;
-    if (nextIteration < densificationConfig_.densifyFromIteration ||
-        nextIteration > densificationConfig_.densifyUntilIteration) {
+    if (nextIteration <= densificationConfig_.densifyFromIteration ||
+        nextIteration >= densificationConfig_.densifyUntilIteration) {
         return false;
     }
     const uint32_t interval = std::max(densificationConfig_.densificationInterval, 1u);

@@ -124,7 +124,7 @@ UI 会显示主存、磁盘、显存缓存、staging、上传、命中/未命中
 调度模式：
 
 - `Sequential`：按顺序使用图片，没有固定总迭代停止值。
-- `3DGS Random`：随机不放回 viewpoint stack，总迭代数为 30000。
+- `3DGS Random`：随机不放回 viewpoint stack，总迭代数为 30000。该模式现在是默认值，用于对齐 reference 3DGS 训练循环。
 
 ## Loss 和 Optimizer
 
@@ -136,7 +136,7 @@ Loss 组合 L1 和 DSSIM：
 
 SSIM 使用 sigma 1.5 的 11x11 Gaussian window。`SsimBackwardState` 保存优化后的 backward 系数，避免原先 window 内再次遍历 window 的嵌套计算。
 
-Adam-style optimizer 为 position、SH DC/rest、opacity、scale 和 rotation 提供独立学习率。Position learning rate 支持初始值、最终值、delay multiplier 和最大步数调度。
+Adam-style optimizer 为 position、SH DC/rest、opacity、scale 和 rotation 提供独立学习率。Position learning rate 支持初始值、最终值、delay multiplier、最大步数调度，并乘以 reference 3DGS 使用的 scene extent spatial learning-rate scale。默认 opacity LR、Adam epsilon 和关闭 gradient clipping 的行为与 reference 3DGS 对齐。
 
 ## 训练 Buffer
 
@@ -238,7 +238,7 @@ C++/Slang 结构布局和 descriptor binding 必须保持同步。
 
 ## 与 Reference 3DGS 的已知差异
 
-- 随机 viewpoint stack 和 30000 次迭代停止仅在 `3DGS Random` 模式可用。
+- 随机 viewpoint stack 和 30000 次迭代停止现在通过默认 `3DGS Random` 模式启用；`Sequential` 保留为调试/旧行为模式。
 - Forward/backward 数学仍是项目实现，暂时不能描述为与 reference 完全一致。
 - Tile sort 使用两次稳定的 32-bit radix pass 表达语义上的 64-bit key。
 - 训练循环每次迭代仍会等待 prepare 和 main submission。

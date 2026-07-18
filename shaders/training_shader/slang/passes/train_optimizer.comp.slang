@@ -18,7 +18,11 @@ RWStructuredBuffer<TrainingGaussianValidationPartial> gaussianValidationPartials
 groupshared uint validationNonFiniteGaussianCount[256];
 
 float4 clipGrad(float4 grad) {
-    float gradClip = max(params.optimizerGradClip, 1e-8);
+    if (params.optimizerGradClip <= 0.0) {
+        return grad;
+    }
+
+    float gradClip = max(params.optimizerGradClip, 1e-15);
     return clamp(grad, float4(-gradClip), float4(gradClip));
 }
 
@@ -61,7 +65,7 @@ float4 adamUpdate(inout float4 firstMoment,
     float4 correctedSecondMoment = secondMoment / max(secondMomentCorrection, 1e-8);
     return max(learningRate, 0.0) *
            correctedFirstMoment /
-           (sqrt(correctedSecondMoment) + float4(max(params.optimizerEpsilon, 1e-12)));
+           (sqrt(correctedSecondMoment) + float4(max(params.optimizerEpsilon, 1e-15)));
 }
 
 void updateGaussianParam(inout GaussianTrainParam gaussian,

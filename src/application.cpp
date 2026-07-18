@@ -625,7 +625,6 @@ void Application::drawTrainingControls() {
         ImGui::InputScalar("Fallback Gaussians", ImGuiDataType_U32, &training_initial_gaussians_);
         training_initial_gaussians_ = std::clamp(training_initial_gaussians_, 1u, 1000000u);
         ImGui::InputScalar("Random Seed", ImGuiDataType_U32, &training_random_seed_);
-        training_random_seed_ = std::max(training_random_seed_, 1u);
         ImGui::InputFloat("Initial Opacity", &training_initial_opacity_, 0.01f, 0.05f, "%.4f");
         training_initial_opacity_ = std::clamp(training_initial_opacity_, 0.001f, 0.99f);
         ImGui::InputFloat("Scene Radius Scale", &training_scene_radius_scale_, 0.1f, 1.0f, "%.3f");
@@ -703,10 +702,10 @@ void Application::drawTrainingControls() {
         training_adam_beta1_ = std::clamp(training_adam_beta1_, 0.0f, 0.999999f);
         ImGui::InputFloat("Adam Beta2", &training_adam_beta2_, 0.001f, 0.01f, "%.6g");
         training_adam_beta2_ = std::clamp(training_adam_beta2_, 0.0f, 0.999999f);
-        ImGui::InputFloat("Adam Epsilon", &training_adam_epsilon_, 0.00000001f, 0.0000001f, "%.6g");
-        training_adam_epsilon_ = std::max(training_adam_epsilon_, 1e-12f);
+        ImGui::InputFloat("Adam Epsilon", &training_adam_epsilon_, 1e-15f, 1e-12f, "%.3e");
+        training_adam_epsilon_ = std::max(training_adam_epsilon_, 1e-15f);
         ImGui::InputFloat("Gradient Clip", &training_grad_clip_, 10.0f, 100.0f, "%.6g");
-        training_grad_clip_ = std::max(training_grad_clip_, 1e-8f);
+        training_grad_clip_ = std::max(training_grad_clip_, 0.0f);
         ImGui::InputFloat("DSSIM Weight", &training_loss_dssim_weight_, 0.01f, 0.05f, "%.6g");
         training_loss_dssim_weight_ = std::clamp(training_loss_dssim_weight_, 0.0f, 1.0f);
         if (!canEditTrainingSetup) {
