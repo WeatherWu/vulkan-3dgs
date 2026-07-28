@@ -27,7 +27,7 @@ public:
     void setProfilingQueryPool(vk::QueryPool queryPool);
     void forward() override;
     void prepareTileItems();
-    void renderPreparedTiles();
+    void renderPreparedTiles(uint32_t tileItemCount);
 
     bool isInitialized() const override { return initialized_; }
 
@@ -40,7 +40,7 @@ private:
     void countTileCoverage();
     void prefixTileRanges();
     void emitTileItems();
-    void sortTileItems();
+    void sortTileItems(uint32_t tileItemCount);
     void gatherHighTileKeys(uint32_t tileItemCount);
     void gatherSortedTileItems(uint32_t tileItemCount);
     void rebuildTileRanges();

@@ -128,7 +128,9 @@ void GaussianBackwardRenderer::gradientDescent() {
     }
 
     writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, false);
-    optimizeParameters();
+    if (pushConstants_.optimizerEnabled != 0u || pushConstants_.validationEnabled != 0u) {
+        optimizeParameters();
+    }
     finalizeValidation();
     writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, true);
 }
@@ -147,6 +149,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(6),
         storageBinding(7),
         storageBinding(8),
+        storageBinding(14),
         storageBinding(28),
         storageBinding(29),
     };
@@ -184,6 +187,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
     twoDGSTo3DGSConfig.descriptorBindings = {
         storageBinding(0),
         storageBinding(1),
+        storageBinding(3),
         storageBinding(13),
         storageBinding(16),
         uniformBinding(11),
@@ -195,7 +199,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
         storageBinding(0),
         storageBinding(1),
         storageBinding(2),
-        storageBinding(9),
+        storageBinding(19),
         storageBinding(30),
     };
     optimizerConfig.pushConstantSize = sizeof(TrainingPushConstants);
@@ -220,7 +224,7 @@ void GaussianBackwardRenderer::createBackwardResources() {
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(31);
+                .setDescriptorCount(40);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
@@ -286,10 +290,11 @@ void GaussianBackwardRenderer::computeLoss() {
     const auto renderedColorInfo = trainingBuffers_->renderedColorInfo();
     const auto targetColorInfo = trainingBuffers_->targetColorInfo();
     const auto lossInfo = trainingBuffers_->lossInfo();
+    const auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
     const auto ssimBackwardStatesInfo = trainingBuffers_->ssimBackwardStatesInfo();
     const auto pixelValidationPartialsInfo = trainingBuffers_->pixelValidationPartialsInfo();
 
-    std::array<vk::WriteDescriptorSet, 5> writes{};
+    std::array<vk::WriteDescriptorSet, 6> writes{};
     writes[0].setDstSet(lossDescriptorSet_)
              .setDstBinding(6)
              .setDescriptorCount(1)
@@ -306,11 +311,16 @@ void GaussianBackwardRenderer::computeLoss() {
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&lossInfo);
     writes[3].setDstSet(lossDescriptorSet_)
+             .setDstBinding(14)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&pixelBlendStatesInfo);
+    writes[4].setDstSet(lossDescriptorSet_)
              .setDstBinding(28)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&ssimBackwardStatesInfo);
-    writes[4].setDstSet(lossDescriptorSet_)
+    writes[5].setDstSet(lossDescriptorSet_)
              .setDstBinding(29)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
@@ -528,11 +538,12 @@ void GaussianBackwardRenderer::backpropPixelTo2DGS() {
 void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
     const auto gaussianParamsInfo = trainingBuffers_->gaussianParamsInfo();
     const auto gaussianGradsInfo = trainingBuffers_->gaussianGradsInfo();
+    const auto projectedInfo = trainingBuffers_->projectedInfo();
     const auto projectedGradsInfo = trainingBuffers_->projectedGradsInfo();
     const auto densificationStatesInfo = trainingBuffers_->densificationStatesInfo();
     const auto cameraInfo = trainingBuffers_->cameraInfo();
 
-    std::array<vk::WriteDescriptorSet, 5> writes{};
+    std::array<vk::WriteDescriptorSet, 6> writes{};
     writes[0].setDstSet(twoDGSTo3DGSDescriptorSet_)
              .setDstBinding(0)
              .setDescriptorCount(1)
@@ -544,16 +555,21 @@ void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&gaussianGradsInfo);
     writes[2].setDstSet(twoDGSTo3DGSDescriptorSet_)
+             .setDstBinding(3)
+             .setDescriptorCount(1)
+             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+             .setPBufferInfo(&projectedInfo);
+    writes[3].setDstSet(twoDGSTo3DGSDescriptorSet_)
              .setDstBinding(13)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&projectedGradsInfo);
-    writes[3].setDstSet(twoDGSTo3DGSDescriptorSet_)
+    writes[4].setDstSet(twoDGSTo3DGSDescriptorSet_)
              .setDstBinding(16)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&densificationStatesInfo);
-    writes[4].setDstSet(twoDGSTo3DGSDescriptorSet_)
+    writes[5].setDstSet(twoDGSTo3DGSDescriptorSet_)
              .setDstBinding(11)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eUniformBuffer)
@@ -583,11 +599,20 @@ void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
 }
 
 void GaussianBackwardRenderer::optimizeParameters() {
-    const auto gaussianParamsInfo = trainingBuffers_->gaussianParamsInfo();
+    const bool validateDensified = pushConstants_.validationUsesDensifiedGaussians != 0u;
+    const auto gaussianParamsInfo = validateDensified
+        ? trainingBuffers_->densifiedParamsInfo()
+        : trainingBuffers_->gaussianParamsInfo();
     const auto gaussianGradsInfo = trainingBuffers_->gaussianGradsInfo();
-    const auto adamStatesInfo = trainingBuffers_->adamStatesInfo();
-    const auto countersInfo = trainingBuffers_->countersInfo();
-    const auto gaussianValidationPartialsInfo = trainingBuffers_->gaussianValidationPartialsInfo();
+    const auto adamStatesInfo = validateDensified
+        ? trainingBuffers_->densifiedAdamStatesInfo()
+        : trainingBuffers_->adamStatesInfo();
+    const auto densificationCountersInfo = validateDensified
+        ? trainingBuffers_->densificationCountersInfo()
+        : trainingBuffers_->countersInfo();
+    const auto gaussianValidationPartialsInfo = validateDensified
+        ? trainingBuffers_->densifiedGaussianValidationPartialsInfo()
+        : trainingBuffers_->gaussianValidationPartialsInfo();
 
     std::array<vk::WriteDescriptorSet, 5> writes{};
     writes[0].setDstSet(optimizerDescriptorSet_)
@@ -606,10 +631,10 @@ void GaussianBackwardRenderer::optimizeParameters() {
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&adamStatesInfo);
     writes[3].setDstSet(optimizerDescriptorSet_)
-             .setDstBinding(9)
+             .setDstBinding(19)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
-             .setPBufferInfo(&countersInfo);
+             .setPBufferInfo(&densificationCountersInfo);
     writes[4].setDstSet(optimizerDescriptorSet_)
              .setDstBinding(30)
              .setDescriptorCount(1)
@@ -635,7 +660,7 @@ void GaussianBackwardRenderer::optimizeParameters() {
     }
 
     commandBuffer_.dispatch((pushConstants_.gaussianCount + 255u) / 256u, 1, 1);
-    shaderBufferBarrier({gaussianParamsInfo, adamStatesInfo, countersInfo},
+    shaderBufferBarrier({gaussianParamsInfo, adamStatesInfo},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferRead);
     if (pushConstants_.validationEnabled != 0u) {
         shaderBufferBarrier({gaussianValidationPartialsInfo}, vk::AccessFlagBits::eShaderRead);
@@ -648,7 +673,9 @@ void GaussianBackwardRenderer::finalizeValidation() {
     }
 
     const auto pixelValidationPartialsInfo = trainingBuffers_->pixelValidationPartialsInfo();
-    const auto gaussianValidationPartialsInfo = trainingBuffers_->gaussianValidationPartialsInfo();
+    const auto gaussianValidationPartialsInfo = pushConstants_.validationUsesDensifiedGaussians != 0u
+        ? trainingBuffers_->densifiedGaussianValidationPartialsInfo()
+        : trainingBuffers_->gaussianValidationPartialsInfo();
     const auto validationFinalResultInfo = trainingBuffers_->validationFinalResultInfo();
 
     std::array<vk::WriteDescriptorSet, 3> writes{};

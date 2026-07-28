@@ -167,6 +167,7 @@ private:
     std::mt19937 frameRng_{1u};
     std::vector<size_t> randomFrameStack_;
     uint32_t trainingIteration_ = 0;
+    uint32_t optimizerStep_ = 0;
     uint32_t validationInterval_ = 10;
     TrainingValidationStats validationStats_{};
     TrainingDensificationStats lastDensificationStats_{};

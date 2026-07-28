@@ -187,6 +187,72 @@ void testKtxChunkQuotaAndRecovery(const std::filesystem::path& root) {
             "KTX2 disk cache remained above its quota");
 }
 
+void testStreamerPublishesWholeKtxChunks(const std::filesystem::path& root) {
+    const std::filesystem::path cachePath = root / "streamer-chunk-cache";
+    std::vector<ImageSourceDesc> sources;
+    for (uint64_t id = 0; id < 4; ++id) {
+        const std::filesystem::path path = root / ("streamer-chunk-" + std::to_string(id) + ".tga");
+        writeTga(path, 2, 2, solidPixels(static_cast<uint8_t>(10u + id * 20u), 25, 35));
+        sources.push_back(source(id, path));
+    }
+
+    ImageStreamerConfig config{};
+    config.hostBudgetBytes = 4u * 2u * 2u * 4u;
+    config.diskCache.rootDirectory = cachePath;
+    config.diskCache.chunkLayerCount = 2;
+    config.diskCache.diskQuotaBytes = std::numeric_limits<uint64_t>::max();
+    ImageStreamer streamer(config);
+    streamer.setSources(sources);
+
+    for (uint64_t id = 0; id < sources.size(); ++id) {
+        const ImageHandle image = streamer.request(id);
+        require(image.image().pixels[0] == static_cast<uint8_t>(10u + id * 20u),
+                "ImageStreamer published the wrong KTX2 chunk layer");
+    }
+
+    const ImageStreamerStats stats = streamer.stats();
+    require(stats.hostCachedImages == sources.size(),
+            "ImageStreamer did not publish every image in the loaded chunks");
+    require(stats.disk.misses == 2 && stats.disk.writes == 2,
+            "ImageStreamer loaded a KTX2 chunk more than once during full prefetch");
+}
+
+void testHistoricalChunksAreEvictedFirst(const std::filesystem::path& root) {
+    const std::filesystem::path cachePath = root / "active-history-cache";
+    std::vector<ImageSourceDesc> oldSources;
+    std::vector<ImageSourceDesc> activeSources;
+    for (uint64_t id = 0; id < 2; ++id) {
+        const std::filesystem::path oldPath = root / ("history-" + std::to_string(id) + ".tga");
+        const std::filesystem::path activePath = root / ("active-" + std::to_string(id) + ".tga");
+        writeTga(oldPath, 2, 2, solidPixels(static_cast<uint8_t>(20u + id * 10u), 30, 40));
+        writeTga(activePath, 2, 2, solidPixels(static_cast<uint8_t>(60u + id * 10u), 70, 80));
+        oldSources.push_back(source(id, oldPath));
+        activeSources.push_back(source(id, activePath));
+    }
+
+    ImageDiskCacheConfig config{};
+    config.rootDirectory = cachePath;
+    config.chunkLayerCount = 2;
+    config.diskQuotaBytes = std::numeric_limits<uint64_t>::max();
+    ImageDiskCache cache(config);
+    cache.setSources(oldSources);
+    (void)cache.loadOrCreateChunk(oldSources[0]);
+    cache.setSources(activeSources);
+    (void)cache.loadOrCreateChunk(activeSources[0]);
+
+    ImageDiskCacheStats stats = cache.stats();
+    require(stats.activeFiles == 1 && stats.historicalFiles == 1,
+            "KTX2 cache did not distinguish active and historical chunks");
+
+    config.diskQuotaBytes = stats.activeBytes + stats.activeBytes / 2u;
+    cache.setConfig(config);
+    stats = cache.stats();
+    require(stats.activeFiles == 1 && stats.historicalFiles == 0,
+            "KTX2 quota did not evict historical chunks before active chunks");
+    require(stats.cachedBytes <= config.diskQuotaBytes,
+            "KTX2 active/history cache remained above its quota");
+}
+
 void testPackedRgba8Normalization() {
     const std::array<uint8_t, 4> rgba = {17, 91, 203, 255};
     const uint32_t packed = static_cast<uint32_t>(rgba[0]) |
@@ -220,6 +286,8 @@ int main() {
         testKtxRoundTrip(root);
         testHostBudgetAndSourceReset(root);
         testKtxChunkQuotaAndRecovery(root);
+        testStreamerPublishesWholeKtxChunks(root);
+        testHistoricalChunksAreEvictedFirst(root);
         testPackedRgba8Normalization();
         std::filesystem::remove_all(root, error);
         std::cout << "image cache tests passed\n";

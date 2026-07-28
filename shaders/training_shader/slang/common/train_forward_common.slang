@@ -2,7 +2,7 @@
 
 static const uint TRAIN_TILE_SIZE = 16;
 static const float TRAIN_ALPHA_MAX = 0.99;
-static const float TRAIN_ALPHA_MIN = 1e-4;
+static const float TRAIN_ALPHA_MIN = 1.0 / 255.0;
 static const float TRAIN_TRANSMITTANCE_MIN = 1e-4;
 
 struct TileRange {
@@ -23,7 +23,7 @@ struct PixelComposite {
     float transmittance;
     float accumulatedAlpha;
     uint processedCount;
-    uint lastContributor;
+    uint contributionCount;
 };
 
 uint tileCountX() {
@@ -36,7 +36,7 @@ uint tileIndexForPixel(uint2 pixel) {
 }
 
 float2 pixelCenter(uint2 pixel) {
-    return float2(float(pixel.x) + 0.5, float(pixel.y) + 0.5);
+    return float2(pixel);
 }
 
 TileRange unpackTileRange(uint4 packedRange) {
@@ -89,7 +89,7 @@ PixelComposite makeEmptyComposite() {
     composite.transmittance = 1.0;
     composite.accumulatedAlpha = 0.0;
     composite.processedCount = 0;
-    composite.lastContributor = 0xFFFFFFFFu;
+    composite.contributionCount = 0u;
     return composite;
 }
 

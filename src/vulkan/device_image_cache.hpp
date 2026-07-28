@@ -24,6 +24,7 @@ struct DeviceImageCacheStats {
     uint64_t allocatedBytes = 0;
     uint32_t slotCount = 0;
     uint32_t residentImages = 0;
+    uint32_t totalImages = 0;
     uint64_t hits = 0;
     uint64_t misses = 0;
     uint64_t uploads = 0;

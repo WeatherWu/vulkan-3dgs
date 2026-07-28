@@ -2,7 +2,7 @@
 
 struct TileBounds {
     uint2 minTile;
-    uint2 maxTile;
+    uint2 maxTileExclusive;
     bool valid;
 };
 
@@ -18,26 +18,28 @@ TileBounds trainProjectedTileBounds(ProjectedGaussian gaussian) {
     TileBounds bounds;
     bounds.valid = false;
     bounds.minTile = uint2(0);
-    bounds.maxTile = uint2(0);
+    bounds.maxTileExclusive = uint2(0);
 
     if (gaussian.centerRadius.w <= 0.0 || gaussian.conicOpacity.w <= 0.0) {
         return bounds;
     }
 
-    float2 minPixelF = floor(gaussian.centerRadius.xy - gaussian.centerRadius.ww);
-    float2 maxPixelF = ceil(gaussian.centerRadius.xy + gaussian.centerRadius.ww);
-    int2 minPixel = int2(int(minPixelF.x), int(minPixelF.y));
-    int2 maxPixel = int2(int(maxPixelF.x), int(maxPixelF.y));
+    int radius = int(gaussian.centerRadius.w);
+    int2 tileGrid = int2(int(tileCountX()), int(trainTileCountY()));
+    int2 minTile = int2(
+        int((gaussian.centerRadius.x - float(radius)) / float(TRAIN_TILE_SIZE)),
+        int((gaussian.centerRadius.y - float(radius)) / float(TRAIN_TILE_SIZE))
+    );
+    int2 maxTileExclusive = int2(
+        int((gaussian.centerRadius.x + float(radius) + float(TRAIN_TILE_SIZE - 1u)) / float(TRAIN_TILE_SIZE)),
+        int((gaussian.centerRadius.y + float(radius) + float(TRAIN_TILE_SIZE - 1u)) / float(TRAIN_TILE_SIZE))
+    );
 
-    if (maxPixel.x < 0 || maxPixel.y < 0 || minPixel.x >= int(params.width) || minPixel.y >= int(params.height)) {
-        return bounds;
-    }
-
-    minPixel = clamp(minPixel, int2(0), int2(int(params.width) - 1, int(params.height) - 1));
-    maxPixel = clamp(maxPixel, int2(0), int2(int(params.width) - 1, int(params.height) - 1));
-    bounds.minTile = uint2(uint(minPixel.x) / TRAIN_TILE_SIZE, uint(minPixel.y) / TRAIN_TILE_SIZE);
-    bounds.maxTile = uint2(uint(maxPixel.x) / TRAIN_TILE_SIZE, uint(maxPixel.y) / TRAIN_TILE_SIZE);
-    bounds.valid = true;
+    minTile = clamp(minTile, int2(0), tileGrid);
+    maxTileExclusive = clamp(maxTileExclusive, int2(0), tileGrid);
+    bounds.minTile = uint2(minTile);
+    bounds.maxTileExclusive = uint2(maxTileExclusive);
+    bounds.valid = all(maxTileExclusive > minTile);
     return bounds;
 }
 

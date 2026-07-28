@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <vector>
 #include <stdexcept>
@@ -20,21 +21,42 @@ void TrainingBuffers::initialize(vk::Device device,
     physicalDevice_ = physicalDevice;
     transferQueue_ = transferQueue;
     transferQueueFamilyIndex_ = transferQueueFamilyIndex;
+    try {
+        tileItemCountReadback_.create(
+            device_,
+            physicalDevice_,
+            transferQueue_,
+            transferQueueFamilyIndex_,
+            nullptr,
+            sizeof(glm::uvec4),
+            vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eHostVisible |
+                vk::MemoryPropertyFlagBits::eHostCoherent);
+        tileItemCountReadbackMapped_ = device_.mapMemory(
+            tileItemCountReadback_.getMemory(), 0, sizeof(glm::uvec4));
+    } catch (...) {
+        tileItemCountReadback_.cleanup();
+        tileItemCountReadbackMapped_ = nullptr;
+        throw;
+    }
 }
 
 void TrainingBuffers::cleanup() {
     clearTargetColorDescriptor();
+    if (tileItemCountReadbackMapped_ && tileItemCountReadback_.getMemory() && device_) {
+        device_.unmapMemory(tileItemCountReadback_.getMemory());
+    }
+    tileItemCountReadbackMapped_ = nullptr;
+    tileItemCountReadback_.cleanup();
     camera_.cleanup();
     previewInstances_.cleanup();
     counters_.cleanup();
     loss_.cleanup();
     validationFinalResult_.cleanup();
+    densifiedGaussianValidationPartials_.cleanup();
     gaussianValidationPartials_.cleanup();
     pixelValidationPartials_.cleanup();
     projectedGrads_.cleanup();
-    densificationCandidateStates_.cleanup();
-    densificationCandidateAdamStates_.cleanup();
-    densificationCandidateParams_.cleanup();
     densificationCounters_.cleanup();
     densifiedAdamStates_.cleanup();
     densifiedParams_.cleanup();
@@ -98,13 +120,11 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     ssimBackwardStates_.cleanup();
     pixelValidationPartials_.cleanup();
     gaussianValidationPartials_.cleanup();
+    densifiedGaussianValidationPartials_.cleanup();
     validationFinalResult_.cleanup();
     pixelBlendStates_.cleanup();
     gaussianVisibility_.cleanup();
     projectedGrads_.cleanup();
-    densificationCandidateStates_.cleanup();
-    densificationCandidateAdamStates_.cleanup();
-    densificationCandidateParams_.cleanup();
     densificationCounters_.cleanup();
     densifiedAdamStates_.cleanup();
     densifiedParams_.cleanup();
@@ -248,25 +268,23 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
     if (safeCapacity <= densificationCapacity_ &&
         densifiedParams_.getBuffer() &&
         densifiedAdamStates_.getBuffer() &&
-        densificationCandidateParams_.getBuffer() &&
-        densificationCandidateAdamStates_.getBuffer() &&
-        densificationCandidateStates_.getBuffer() &&
+        densifiedGaussianValidationPartials_.getBuffer() &&
         densificationCounters_.getBuffer()) {
         return;
     }
 
     densifiedParams_.cleanup();
     densifiedAdamStates_.cleanup();
-    densificationCandidateParams_.cleanup();
-    densificationCandidateAdamStates_.cleanup();
-    densificationCandidateStates_.cleanup();
+    densifiedGaussianValidationPartials_.cleanup();
     densificationCounters_.cleanup();
 
     createStorageBuffer(densifiedParams_, sizeof(GaussianTrainParam) * safeCapacity);
-    createZeroedStorageBuffer(densifiedAdamStates_, sizeof(AdamState) * safeCapacity);
-    createStorageBuffer(densificationCandidateParams_, sizeof(GaussianTrainParam) * safeCapacity);
-    createZeroedStorageBuffer(densificationCandidateAdamStates_, sizeof(AdamState) * safeCapacity);
-    createZeroedStorageBuffer(densificationCandidateStates_, sizeof(GaussianDensificationState) * safeCapacity);
+    createStorageBuffer(densifiedAdamStates_, sizeof(AdamState) * safeCapacity);
+    const uint32_t validationPartialCount =
+        (safeCapacity + kTrainingValidationWorkgroupSize - 1u) /
+        kTrainingValidationWorkgroupSize;
+    createStorageBuffer(densifiedGaussianValidationPartials_,
+                        sizeof(TrainingGaussianValidationPartial) * validationPartialCount);
     const std::array<uint32_t, 16> zeroCounters{};
     densificationCounters_.create(device_,
                                   physicalDevice_,
@@ -285,7 +303,7 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     if (gaussianCount == 0 || gaussianCount > densificationCapacity_) {
         throw std::runtime_error("Invalid densified gaussian count");
     }
-    const uint32_t newCapacity = densificationCapacity_;
+    const uint32_t newCapacity = gaussianCount;
 
     gaussianParams_.cleanup();
     adamStates_.cleanup();
@@ -296,10 +314,7 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     projectedGrads_.cleanup();
     previewInstances_.cleanup();
     gaussianValidationPartials_.cleanup();
-    densificationCandidateStates_.cleanup();
-    densificationCandidateAdamStates_.cleanup();
-    densificationCandidateParams_.cleanup();
-
+    densifiedGaussianValidationPartials_.cleanup();
     gaussianParams_ = std::move(densifiedParams_);
     adamStates_ = std::move(densifiedAdamStates_);
     densificationCounters_.cleanup();
@@ -413,9 +428,40 @@ void TrainingBuffers::uploadCamera(const TrainingForwardCamera& camera) {
     camera_.upload(&camera, sizeof(TrainingForwardCamera));
 }
 
+void TrainingBuffers::recordTileItemCountReadback(vk::CommandBuffer commandBuffer) {
+    if (!commandBuffer || !counters_.getBuffer() || !tileItemCountReadback_.getBuffer()) {
+        throw std::runtime_error("Tile item count readback is not initialized");
+    }
+
+    vk::BufferCopy copy{};
+    copy.setSize(sizeof(glm::uvec4));
+    commandBuffer.copyBuffer(counters_.getBuffer(), tileItemCountReadback_.getBuffer(), copy);
+
+    vk::BufferMemoryBarrier hostReadBarrier{};
+    hostReadBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+                   .setDstAccessMask(vk::AccessFlagBits::eHostRead)
+                   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                   .setBuffer(tileItemCountReadback_.getBuffer())
+                   .setOffset(0)
+                   .setSize(sizeof(glm::uvec4));
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                  vk::PipelineStageFlagBits::eHost,
+                                  vk::DependencyFlagBits{},
+                                  0,
+                                  nullptr,
+                                  1,
+                                  &hostReadBarrier,
+                                  0,
+                                  nullptr);
+}
+
 uint32_t TrainingBuffers::requiredTileItemCount() {
+    if (!tileItemCountReadbackMapped_) {
+        throw std::runtime_error("Tile item count readback is not mapped");
+    }
     glm::uvec4 counters{0, 0, 0, 0};
-    counters_.download(&counters, sizeof(counters));
+    std::memcpy(&counters, tileItemCountReadbackMapped_, sizeof(counters));
     return counters.x;
 }
 

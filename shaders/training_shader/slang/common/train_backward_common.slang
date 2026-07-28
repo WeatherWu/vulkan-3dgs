@@ -36,7 +36,7 @@ void atomicAddProjectedGaussianGrad(RWStructuredBuffer<ProjectedGaussianGrad> pr
 }
 
 bool alphaIsDifferentiable(GaussianSample sample) {
-    return sample.alpha >= TRAIN_ALPHA_MIN && sample.alpha < TRAIN_ALPHA_MAX;
+    return sample.alpha >= TRAIN_ALPHA_MIN;
 }
 
 ProjectedGaussianGrad backwardGaussianSample(ProjectedGaussian gaussian,
@@ -62,7 +62,7 @@ ProjectedGaussianGrad backwardGaussianSample(ProjectedGaussian gaussian,
     float c = gaussian.conicOpacity.z;
 
     grad.conicOpacity.x += dLoss_dPower * (-0.5 * dx * dx);
-    grad.conicOpacity.y += dLoss_dPower * (-dx * dy);
+    grad.conicOpacity.y += dLoss_dPower * (-0.5 * dx * dy);
     grad.conicOpacity.z += dLoss_dPower * (-0.5 * dy * dy);
     grad.conicOpacity.w += dLoss_dOpacity;
 

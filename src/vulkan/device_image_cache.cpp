@@ -85,6 +85,7 @@ void DeviceImageCache::initialize(vk::Device device,
     stats_.budgetBytes = safeBudget;
     stats_.allocatedBytes = allocationSize;
     stats_.slotCount = slotCount;
+    stats_.totalImages = imageCount;
     stats_.mode = slotCount >= imageCount
         ? DeviceImageCacheMode::Full
         : (slotCount > 1u ? DeviceImageCacheMode::Partial : DeviceImageCacheMode::Streaming);

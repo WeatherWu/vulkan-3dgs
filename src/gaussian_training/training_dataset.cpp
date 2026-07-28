@@ -197,9 +197,9 @@ std::filesystem::path chooseImageDirectory(const std::filesystem::path& sceneRoo
                                            uint32_t preferredDownscale,
                                            uint32_t& selectedDownscale) {
     std::vector<std::filesystem::path> candidates;
-    if (preferredDownscale > 1) {
-        candidates.push_back(sceneRoot / ("images_" + std::to_string(preferredDownscale)));
-    }
+    candidates.push_back(preferredDownscale > 1
+        ? sceneRoot / ("images_" + std::to_string(preferredDownscale))
+        : sceneRoot / "images");
     candidates.push_back(sceneRoot / "images_4");
     candidates.push_back(sceneRoot / "images_2");
     candidates.push_back(sceneRoot / "images_8");

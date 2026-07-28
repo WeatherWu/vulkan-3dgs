@@ -28,14 +28,11 @@ RWStructuredBuffer<GaussianDensificationState> densificationStates;
 [[vk::binding(19, 0)]]
 RWStructuredBuffer<uint> densificationCounters;
 
-[[vk::binding(25, 0)]]
-RWStructuredBuffer<GaussianTrainParam> candidateParams;
+[[vk::binding(17, 0)]]
+RWStructuredBuffer<GaussianTrainParam> densifiedParams;
 
-[[vk::binding(26, 0)]]
-RWStructuredBuffer<AdamState> candidateAdamStates;
-
-[[vk::binding(27, 0)]]
-RWStructuredBuffer<GaussianDensificationState> candidateDensificationStates;
+[[vk::binding(18, 0)]]
+RWStructuredBuffer<AdamState> densifiedAdamStates;
 
 [[vk::push_constant]]
 ConstantBuffer<TrainingDensificationPushConstants> densifyParams;
@@ -67,6 +64,16 @@ float3x3 trainQuatToMat3ForDensify(float4 q) {
         2.0 * q.y * q.z + 2.0 * q.x * q.w,
         1.0 - 2.0 * q.x * q.x - 2.0 * q.y * q.y
     );
+}
+
+bool finiteGaussianForDensify(GaussianTrainParam gaussian) {
+    bool finite = all(isfinite(gaussian.positionOpacity)) &&
+                  all(isfinite(gaussian.scale)) &&
+                  all(isfinite(gaussian.rotation));
+    for (uint i = 0; i < 16; ++i) {
+        finite = finite && all(isfinite(gaussian.sh[i]));
+    }
+    return finite;
 }
 
 uint hashUint(uint value) {
@@ -138,19 +145,25 @@ float maxActivatedScale(GaussianTrainParam gaussian) {
 }
 
 float averageScreenGrad(GaussianDensificationState densification) {
-    return densification.screenGradCount > 0
+    float grad = densification.screenGradCount > 0
         ? densification.screenGradSum / float(densification.screenGradCount)
         : 0.0;
+    return isnan(grad) ? 0.0 : grad;
 }
 
 bool shouldDensify(GaussianTrainParam gaussian,
                    GaussianDensificationState densification) {
+    if (!finiteGaussianForDensify(gaussian)) {
+        return false;
+    }
+
     float grad = averageScreenGrad(densification);
     if (grad < densifyParams.gradThreshold) {
         return false;
     }
 
-    return maxActivatedScale(gaussian) > 0.0;
+    float maxScale = maxActivatedScale(gaussian);
+    return isfinite(maxScale) && maxScale > 0.0;
 }
 
 bool shouldClone(GaussianTrainParam gaussian,
@@ -184,12 +197,12 @@ GaussianTrainParam makeSplitChild(GaussianTrainParam source, uint sourceIndex, u
         randomNormal(sourceIndex * 17u + childIndex, 2u)
     );
 
-    float4 normalizedRotation = normalize(source.rotation);
+    float4 normalizedRotation = source.rotation / max(length(source.rotation), 1e-12);
     float3 offset = mul(trainQuatToMat3ForDensify(normalizedRotation), randomOffset * scale);
     child.positionOpacity.xyz = source.positionOpacity.xyz + offset;
 
     float childScaleDivisor = 0.8 * max(float(densifyParams.splitChildren), 1.0);
-    child.scale.xyz = log(max(scale / childScaleDivisor, float3(1e-6)));
+    child.scale.xyz = log(scale / childScaleDivisor);
     return child;
 }
 
@@ -202,23 +215,47 @@ GaussianDensificationState zeroDensificationState() {
     return state;
 }
 
-void appendCandidate(GaussianTrainParam gaussian,
-                     AdamState adamState,
-                     GaussianDensificationState densificationState) {
-    uint outputIndex = 0;
-    InterlockedAdd(densificationCounters[0], 1u, outputIndex);
-    if (outputIndex >= densifyParams.maxGaussianCount) {
-        return;
-    }
-
-    candidateParams[outputIndex] = gaussian;
-    candidateAdamStates[outputIndex] = adamState;
-    candidateDensificationStates[outputIndex] = densificationState;
-}
-
 void incrementCounter(inout uint counter) {
     uint ignored = 0;
     InterlockedAdd(counter, 1u, ignored);
+}
+
+void appendCandidate(GaussianTrainParam gaussian,
+                     AdamState adamState,
+                     GaussianDensificationState densificationState) {
+    uint candidateIndex = 0;
+    InterlockedAdd(densificationCounters[0], 1u, candidateIndex);
+    if (candidateIndex >= densifyParams.maxGaussianCount) {
+        return;
+    }
+
+    bool pruneByNonFinite = !finiteGaussianForDensify(gaussian);
+    bool pruneByOpacity = activatedOpacity(gaussian) < densifyParams.minOpacity;
+    bool pruneByScreenSize = densifyParams.pruneByScreenSize != 0u &&
+        loadDensificationMaxScreenRadius(densificationState) > densifyParams.screenSizePruneThreshold;
+    bool pruneByWorldSize = densifyParams.pruneByScreenSize != 0u &&
+        maxActivatedScale(gaussian) > densifyParams.worldSizePruneThreshold * densifyParams.sceneExtent;
+
+    if (pruneByOpacity) {
+        incrementCounter(densificationCounters[2]);
+    }
+    if (pruneByScreenSize) {
+        incrementCounter(densificationCounters[3]);
+    }
+    if (pruneByWorldSize) {
+        incrementCounter(densificationCounters[4]);
+    }
+    if (pruneByNonFinite || pruneByOpacity || pruneByScreenSize || pruneByWorldSize) {
+        incrementCounter(densificationCounters[8]);
+        return;
+    }
+
+    uint outputIndex = 0;
+    InterlockedAdd(densificationCounters[1], 1u, outputIndex);
+    if (outputIndex < densifyParams.maxGaussianCount) {
+        densifiedParams[outputIndex] = gaussian;
+        densifiedAdamStates[outputIndex] = adamState;
+    }
 }
 
 [shader("compute")]
@@ -247,11 +284,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         }
     } else if (clone) {
         incrementCounter(densificationCounters[6]);
-        appendCandidate(makeClone(gaussian), adamState, densification);
+        appendCandidate(makeClone(gaussian), adamState, zeroDensificationState());
         appendCandidate(makeClone(gaussian), makeZeroAdamState(), zeroDensificationState());
     } else {
         incrementCounter(densificationCounters[5]);
-        appendCandidate(makeClone(gaussian), adamState, densification);
+        appendCandidate(makeClone(gaussian), adamState, zeroDensificationState());
     }
 
     GaussianDensificationState zeroState;

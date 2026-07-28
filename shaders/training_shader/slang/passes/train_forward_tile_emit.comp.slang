@@ -37,8 +37,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
-    for (uint tileY = bounds.minTile.y; tileY <= bounds.maxTile.y; ++tileY) {
-        for (uint tileX = bounds.minTile.x; tileX <= bounds.maxTile.x; ++tileX) {
+    for (uint tileY = bounds.minTile.y; tileY < bounds.maxTileExclusive.y; ++tileY) {
+        for (uint tileX = bounds.minTile.x; tileX < bounds.maxTileExclusive.x; ++tileX) {
             uint tileIndex = trainTileIndex(uint2(tileX, tileY));
             uint localOffset = 0;
             InterlockedAdd(tileRanges[tileIndex].z, 1u, localOffset);

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <vector>
 
@@ -17,6 +18,8 @@ using vulkan3DGS::kTrainingValidationWorkgroupSize;
 struct PixelSample {
     float loss = 0.0f;
     std::array<float, 4> rendered{};
+    uint32_t processedCandidates = 0;
+    uint32_t contributors = 0;
 };
 
 bool finiteRendered(const PixelSample& sample) {
@@ -44,9 +47,19 @@ TrainingValidationGpuResult directReduction(const std::vector<PixelSample>& pixe
         } else {
             ++result.invalidRenderedPixelCount;
         }
+        result.processedCandidateSum += static_cast<float>(pixel.processedCandidates);
+        result.contributorSum += static_cast<float>(pixel.contributors);
+        result.maxProcessedCandidates = std::max(result.maxProcessedCandidates,
+                                                 pixel.processedCandidates);
     }
-    for (bool finite : finiteGaussians) {
-        result.nonFiniteGaussianCount += finite ? 0u : 1u;
+    for (size_t index = 0; index < finiteGaussians.size(); ++index) {
+        if (!finiteGaussians[index]) {
+            ++result.nonFiniteGaussianCount;
+            ++result.nonFinitePositionCount;
+            result.firstNonFiniteGaussianIndex = std::min(
+                result.firstNonFiniteGaussianIndex,
+                static_cast<uint32_t>(index));
+        }
     }
     return result;
 }
@@ -76,6 +89,10 @@ TrainingValidationGpuResult groupedReduction(const std::vector<PixelSample>& pix
             } else {
                 ++partial.invalidRenderedPixelCount;
             }
+            partial.processedCandidateSum += static_cast<float>(pixel.processedCandidates);
+            partial.contributorSum += static_cast<float>(pixel.contributors);
+            partial.maxProcessedCandidates = std::max(partial.maxProcessedCandidates,
+                                                      pixel.processedCandidates);
         }
     }
 
@@ -87,7 +104,13 @@ TrainingValidationGpuResult groupedReduction(const std::vector<PixelSample>& pix
         const size_t begin = group * kTrainingValidationWorkgroupSize;
         const size_t end = std::min(begin + kTrainingValidationWorkgroupSize, finiteGaussians.size());
         for (size_t index = begin; index < end; ++index) {
-            gaussianPartials[group].nonFiniteGaussianCount += finiteGaussians[index] ? 0u : 1u;
+            if (!finiteGaussians[index]) {
+                ++gaussianPartials[group].nonFiniteGaussianCount;
+                ++gaussianPartials[group].nonFinitePositionCount;
+                gaussianPartials[group].firstNonFiniteGaussianIndex = std::min(
+                    gaussianPartials[group].firstNonFiniteGaussianIndex,
+                    static_cast<uint32_t>(index));
+            }
         }
     }
 
@@ -100,9 +123,21 @@ TrainingValidationGpuResult groupedReduction(const std::vector<PixelSample>& pix
         result.invalidLossCount += partial.invalidLossCount;
         result.invalidRenderedPixelCount += partial.invalidRenderedPixelCount;
         result.validRenderedPixelCount += partial.validRenderedPixelCount;
+        result.processedCandidateSum += partial.processedCandidateSum;
+        result.contributorSum += partial.contributorSum;
+        result.maxProcessedCandidates = std::max(result.maxProcessedCandidates,
+                                                 partial.maxProcessedCandidates);
     }
     for (const auto& partial : gaussianPartials) {
         result.nonFiniteGaussianCount += partial.nonFiniteGaussianCount;
+        result.nonFinitePositionCount += partial.nonFinitePositionCount;
+        result.nonFiniteOpacityCount += partial.nonFiniteOpacityCount;
+        result.nonFiniteRawScaleCount += partial.nonFiniteRawScaleCount;
+        result.nonFiniteActivatedScaleCount += partial.nonFiniteActivatedScaleCount;
+        result.nonFiniteRotationCount += partial.nonFiniteRotationCount;
+        result.nonFiniteSHCount += partial.nonFiniteSHCount;
+        result.firstNonFiniteGaussianIndex = std::min(result.firstNonFiniteGaussianIndex,
+                                                      partial.firstNonFiniteGaussianIndex);
     }
     return result;
 }
@@ -110,6 +145,11 @@ TrainingValidationGpuResult groupedReduction(const std::vector<PixelSample>& pix
 bool approximatelyEqual(float lhs, float rhs) {
     const float scale = std::max({1.0f, std::abs(lhs), std::abs(rhs)});
     return std::abs(lhs - rhs) <= scale * 1e-4f;
+}
+
+bool approximatelyEqualProfileCount(float lhs, float rhs) {
+    const float scale = std::max({1.0f, std::abs(lhs), std::abs(rhs)});
+    return std::abs(lhs - rhs) <= scale * 1e-3f;
 }
 
 } // namespace
@@ -127,6 +167,8 @@ int main() {
             static_cast<float>(index % 17u) / 16.0f,
             static_cast<float>(index % 19u) / 18.0f,
         };
+        pixels[index].processedCandidates = static_cast<uint32_t>(index % 1024u);
+        pixels[index].contributors = static_cast<uint32_t>(index % 47u);
     }
     pixels[17].loss = std::numeric_limits<float>::quiet_NaN();
     pixels[65539].loss = std::numeric_limits<float>::infinity();
@@ -149,9 +191,21 @@ int main() {
         direct.invalidRenderedPixelCount != grouped.invalidRenderedPixelCount ||
         direct.validRenderedPixelCount != grouped.validRenderedPixelCount ||
         direct.nonFiniteGaussianCount != grouped.nonFiniteGaussianCount ||
+        direct.nonFinitePositionCount != grouped.nonFinitePositionCount ||
+        !approximatelyEqualProfileCount(direct.processedCandidateSum, grouped.processedCandidateSum) ||
+        !approximatelyEqualProfileCount(direct.contributorSum, grouped.contributorSum) ||
+        direct.maxProcessedCandidates != grouped.maxProcessedCandidates ||
+        direct.firstNonFiniteGaussianIndex != grouped.firstNonFiniteGaussianIndex ||
         grouped.invalidLossCount != 2u ||
         grouped.invalidRenderedPixelCount != 2u ||
-        grouped.nonFiniteGaussianCount != 3u) {
+        grouped.nonFiniteGaussianCount != 3u ||
+        grouped.nonFinitePositionCount != 3u ||
+        grouped.firstNonFiniteGaussianIndex != 0u) {
+        std::cerr << "validation reduction mismatch: candidates "
+                  << direct.processedCandidateSum << " / " << grouped.processedCandidateSum
+                  << ", contributors " << direct.contributorSum << " / " << grouped.contributorSum
+                  << ", max " << direct.maxProcessedCandidates << " / " << grouped.maxProcessedCandidates
+                  << '\n';
         return 1;
     }
     return 0;

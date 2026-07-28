@@ -680,8 +680,10 @@ void Application::drawTrainingControls() {
         training_position_lr_ = std::max(training_position_lr_, 0.0f);
         ImGui::InputFloat("Position LR Final", &training_position_lr_final_, 0.000001f, 0.00001f, "%.6g");
         training_position_lr_final_ = std::max(training_position_lr_final_, 0.0f);
-        ImGui::InputFloat("Position LR Delay", &training_position_lr_delay_mult_, 0.01f, 0.05f, "%.6g");
+        ImGui::InputFloat("Position LR Delay Mult", &training_position_lr_delay_mult_, 0.01f, 0.05f, "%.6g");
         training_position_lr_delay_mult_ = std::clamp(training_position_lr_delay_mult_, 0.0f, 1.0f);
+        ImGui::InputFloat("Position LR Delay Steps", &training_position_lr_delay_steps_, 100.0f, 1000.0f, "%.0f");
+        training_position_lr_delay_steps_ = std::max(training_position_lr_delay_steps_, 0.0f);
         ImGui::InputFloat("Position LR Steps", &training_position_lr_max_steps_, 1000.0f, 5000.0f, "%.0f");
         training_position_lr_max_steps_ = std::max(training_position_lr_max_steps_, 1.0f);
         ImGui::InputFloat("Feature LR", &training_feature_lr_, 0.0001f, 0.001f, "%.6g");
@@ -818,12 +820,26 @@ void Application::drawTrainingControls() {
     ImGui::Text("Loss %.6g", validation.meanLoss);
     ImGui::Text("Render alpha %.6g", validation.meanRenderedAlpha);
     ImGui::Text("Tile items %u", validation.tileItemCount);
+    ImGui::Text("Backward candidates avg %.2f, contributors avg %.2f, max candidates %u",
+                validation.meanProcessedCandidatesPerPixel,
+                validation.meanContributorsPerPixel,
+                validation.maxProcessedCandidatesPerPixel);
     if (!validation.valid && training_steps_done_ > 0) {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f),
                            "Validation issue: invalid loss %u, invalid pixels %u, non-finite gaussians %u",
                            validation.invalidLossCount,
                            validation.invalidRenderedPixelCount,
                            validation.nonFiniteGaussianCount);
+        if (validation.nonFiniteGaussianCount > 0u) {
+            ImGui::Text("First non-finite %u; pos %u, opacity %u, raw/active scale %u/%u, rotation %u, SH %u",
+                        validation.firstNonFiniteGaussianIndex,
+                        validation.nonFinitePositionCount,
+                        validation.nonFiniteOpacityCount,
+                        validation.nonFiniteRawScaleCount,
+                        validation.nonFiniteActivatedScaleCount,
+                        validation.nonFiniteRotationCount,
+                        validation.nonFiniteSHCount);
+        }
     }
     if (ImGui::CollapsingHeader("Training Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
         static constexpr const char* cpuStageNames[] = {
@@ -833,6 +849,7 @@ void Application::drawTrainingControls() {
             "Prepare submit/wait",
             "Tile count readback",
             "Tile buffer resize",
+            "Main command record",
             "Main submit/wait",
             "Validation",
             "Densify adopt",
@@ -854,13 +871,15 @@ void Application::drawTrainingControls() {
         ImGui::Text("CPU last / average (ms)");
         for (size_t i = 0; i < kTrainingCpuProfileStageCount; ++i) {
             const auto& timing = profiling.cpu[i];
-            ImGui::Text("%s %.2f / %.2f", cpuStageNames[i], timing.lastMs, timing.averageMs);
+            ImGui::Text("%s %.2f / %.2f (n=%u)",
+                        cpuStageNames[i], timing.lastMs, timing.averageMs, timing.sampleCount);
         }
         if (profiling.gpuTimestampsAvailable) {
             ImGui::Text("GPU last / average (ms)");
             for (size_t i = 0; i < kTrainingGpuProfileStageCount; ++i) {
                 const auto& timing = profiling.gpu[i];
-                ImGui::Text("%s %.2f / %.2f", gpuStageNames[i], timing.lastMs, timing.averageMs);
+                ImGui::Text("%s %.2f / %.2f (n=%u)",
+                            gpuStageNames[i], timing.lastMs, timing.averageMs, timing.sampleCount);
             }
         } else {
             ImGui::TextDisabled("GPU timestamps unavailable on the compute queue");
@@ -878,12 +897,17 @@ void Application::drawTrainingControls() {
                     static_cast<unsigned long long>(cacheStats.hostMisses),
                     static_cast<unsigned long long>(cacheStats.hostWaits),
                     static_cast<unsigned long long>(cacheStats.hostEvictions));
-        ImGui::Text("Prefetch %llu, KTX hit %llu, miss %llu, write %llu",
+        ImGui::Text("Prefetch %llu, KTX chunk hit %llu, miss %llu, write %llu",
                     static_cast<unsigned long long>(cacheStats.prefetchRequests),
                     static_cast<unsigned long long>(cacheStats.disk.hits),
                     static_cast<unsigned long long>(cacheStats.disk.misses),
                     static_cast<unsigned long long>(cacheStats.disk.writes));
-        ImGui::Text("KTX %.1f MiB in %llu chunks, recover %llu, evict %llu",
+        ImGui::Text("KTX active %.1f MiB / %llu chunks, history %.1f MiB / %llu chunks",
+                    static_cast<double>(cacheStats.disk.activeBytes) / bytesPerMiB,
+                    static_cast<unsigned long long>(cacheStats.disk.activeFiles),
+                    static_cast<double>(cacheStats.disk.historicalBytes) / bytesPerMiB,
+                    static_cast<unsigned long long>(cacheStats.disk.historicalFiles));
+        ImGui::Text("KTX total %.1f MiB / %llu chunks, recover %llu, evict %llu",
                     static_cast<double>(cacheStats.disk.cachedBytes) / bytesPerMiB,
                     static_cast<unsigned long long>(cacheStats.disk.cachedFiles),
                     static_cast<unsigned long long>(cacheStats.disk.recoveries),
@@ -891,12 +915,13 @@ void Application::drawTrainingControls() {
         const DeviceImageCacheStats deviceCacheStats = training_.deviceImageCacheStats();
         static constexpr const char* deviceCacheModes[] = {"Streaming", "Partial", "Full"};
         const uint32_t deviceMode = std::min(static_cast<uint32_t>(deviceCacheStats.mode), 2u);
-        ImGui::Text("GPU %s %.1f / %.1f MiB, %u / %u images",
+        ImGui::Text("GPU %s %.1f / %.1f MiB, %u resident / %u slots / %u total",
                     deviceCacheModes[deviceMode],
                     static_cast<double>(deviceCacheStats.allocatedBytes) / bytesPerMiB,
                     static_cast<double>(deviceCacheStats.budgetBytes) / bytesPerMiB,
                     deviceCacheStats.residentImages,
-                    deviceCacheStats.slotCount);
+                    deviceCacheStats.slotCount,
+                    deviceCacheStats.totalImages);
         ImGui::Text("GPU hit %llu, miss %llu, upload %llu, evict %llu",
                     static_cast<unsigned long long>(deviceCacheStats.hits),
                     static_cast<unsigned long long>(deviceCacheStats.misses),
@@ -1215,6 +1240,7 @@ void Application::applyTrainingConfigFromUi() {
     optimizerConfig.positionLearningRate = training_position_lr_;
     optimizerConfig.positionLearningRateFinal = training_position_lr_final_;
     optimizerConfig.positionLearningRateDelayMult = training_position_lr_delay_mult_;
+    optimizerConfig.positionLearningRateDelaySteps = training_position_lr_delay_steps_;
     optimizerConfig.positionLearningRateMaxSteps = training_position_lr_max_steps_;
     optimizerConfig.featureLearningRate = training_feature_lr_;
     optimizerConfig.featureRestLearningRate = training_feature_rest_lr_;

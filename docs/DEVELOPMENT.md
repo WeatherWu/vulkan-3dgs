@@ -89,7 +89,9 @@ An explicit non-zero host budget overrides the automatic value. If the full deco
 Disk cache defaults:
 
 - KTX2 array chunks with 16 layers;
+- each read publishes every layer in the loaded chunk to the host cache;
 - 20 GiB quota;
+- active-dataset and historical chunks are reported separately, with historical chunks evicted first when over quota;
 - platform-specific user cache directory.
 
 Device image cache behavior:
@@ -97,13 +99,13 @@ Device image cache behavior:
 - one aligned storage-buffer slot per resident `RGBA8` image;
 - `Streaming`, `Partial`, and `Full` modes;
 - at least one slot;
-- maximum allocation is the smaller of full-dataset size and one quarter of the device-local heap budget;
+- maximum allocation is the smaller of the aligned full-dataset slot size and one quarter of the device-local heap budget;
 - normal reserve is `max(512 MiB, 15% of heap budget)`, capped at half the heap budget;
 - pre-densification reserve is `max(1 GiB, 25% of heap budget)`, also capped at half;
 - a three-slot persistently mapped staging ring is used when timeline semaphores are available;
 - `VULKAN_3DGS_SYNC_IMAGE_UPLOAD=1` forces synchronous uploads.
 
-The UI reports host, disk, device-cache, staging, upload, hit/miss, eviction, and memory-budget statistics.
+The UI reports host, active/historical disk cache, device resident/slot/total, staging, upload, hit/miss, eviction, and memory-budget statistics.
 
 ## Training Flow
 
@@ -163,16 +165,18 @@ nextIteration % validationInterval_ == 0
 
 The periodic path avoids full-buffer CPU downloads:
 
-1. `train_loss.comp.slang` writes one pixel partial per 256-thread workgroup at binding 29.
+1. `train_loss.comp.slang` writes loss/render checks plus backward candidate and contributor counts into one pixel partial per 256-thread workgroup at binding 29.
 2. `train_optimizer.comp.slang` writes non-finite Gaussian partials at binding 30.
-3. `train_validation_finalize.comp.slang` writes a fixed 64-byte result at binding 31.
+3. `train_validation_finalize.comp.slang` writes a fixed 80-byte result at binding 31.
 4. `GaussianTraining` copies it into a private three-slot host-coherent staging ring and polls fences.
 
 `TrainingValidationStats` and frontend output remain unchanged. Full loss/rendered downloads remain utility APIs but are not part of regular validation. Gaussian parameter download remains used by PLY export.
 
 ## Profiling
 
-CPU stages include frame upload, image request, target upload, prepare submit, tile-count readback, tile resize, main submit, validation, densification adoption, and total step.
+CPU stages include frame upload, image request, target upload, prepare submit, tile-count readback, tile resize, main command recording, main submit, validation, densification adoption, and total step. The UI also reports each stage's actual sample count.
+
+The tile item count is consumed once by `GaussianTraining`. The prepare command copies the 16-byte counter into a persistently mapped host-coherent buffer owned by `TrainingBuffers`; after the existing prepare queue wait, the CPU reads mapped memory and passes the same count explicitly through emit/sort/render.
 
 GPU timestamp stages include tile preparation/emission/sorting, composite, loss, backward stages, optimizer, and densification.
 

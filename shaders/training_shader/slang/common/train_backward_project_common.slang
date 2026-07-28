@@ -53,25 +53,65 @@ float3 backwardDepthToPosition(float dLoss_dDepth) {
     return dLoss_dObject.xyz;
 }
 
+float3 backwardCameraVectorToPosition(float3 dLoss_dCamera) {
+    float4 dLoss_dModel = mul(transpose(trainingCamera.view), float4(dLoss_dCamera, 0.0));
+    float4 dLoss_dObject = mul(transpose(trainingCamera.model), dLoss_dModel);
+    return dLoss_dObject.xyz;
+}
+
 float3x3 backwardConicToCovariance(float2x2 covariancePixel, float3 dLoss_dConic) {
     float a = covariancePixel[0][0];
     float b = covariancePixel[0][1];
     float c = covariancePixel[1][1];
-    float determinant = max(a * c - b * b, 1e-12);
+    float determinant = a * c - b * b;
+    float determinant2Inv = 1.0 / (determinant * determinant + 1e-7);
 
-    float dLoss_dDeterminant =
-        -(dLoss_dConic.x * c - dLoss_dConic.y * b + dLoss_dConic.z * a) /
-        (determinant * determinant);
-
-    float dLoss_da = dLoss_dConic.z / determinant + dLoss_dDeterminant * c;
-    float dLoss_db = -dLoss_dConic.y / determinant - 2.0 * b * dLoss_dDeterminant;
-    float dLoss_dc = dLoss_dConic.x / determinant + dLoss_dDeterminant * a;
+    float dLoss_da = determinant2Inv *
+        (-c * c * dLoss_dConic.x +
+          2.0 * b * c * dLoss_dConic.y +
+          (determinant - a * c) * dLoss_dConic.z);
+    float dLoss_db = determinant2Inv * 2.0 *
+        (b * c * dLoss_dConic.x -
+         (determinant + 2.0 * b * b) * dLoss_dConic.y +
+         a * b * dLoss_dConic.z);
+    float dLoss_dc = determinant2Inv *
+        (-a * a * dLoss_dConic.z +
+          2.0 * a * b * dLoss_dConic.y +
+          (determinant - a * c) * dLoss_dConic.x);
 
     return float3x3(
-        dLoss_da, dLoss_db, 0.0,
-        dLoss_db, dLoss_dc, 0.0,
+        dLoss_da, 0.5 * dLoss_db, 0.0,
+        0.5 * dLoss_db, dLoss_dc, 0.0,
         0.0, 0.0, 0.0
     );
+}
+
+float3 backwardCovariancePixelToPosition(ProjectionLocalState state, float3x3 dLoss_dCovariancePixel3) {
+    float3x3 viewMatrix = trainMat3FromMat4(trainingCamera.view);
+    float3x3 covarianceCamera = mul(mul(viewMatrix, state.covarianceWorld), transpose(viewMatrix));
+    ProjectionClampState clampState = trainClampCameraPositionForProjectionWithGrad(state.cameraPosition.xyz);
+    float3x3 jacobian = trainProjectionJacobian(clampState.cameraPosition);
+    float3x3 dLoss_dJacobian = mul(mul(dLoss_dCovariancePixel3 + transpose(dLoss_dCovariancePixel3),
+                                       jacobian),
+                                   covarianceCamera);
+
+    float cameraZ = max(state.cameraPosition.z, 1e-6);
+    float cameraZ2 = cameraZ * cameraZ;
+    float cameraZ3 = cameraZ2 * cameraZ;
+    float fx = trainingCamera.focalTan.x;
+    float fy = trainingCamera.focalTan.y;
+
+    float dLoss_dCameraX = clampState.gradMask.x *
+        (-fx / cameraZ2) * dLoss_dJacobian[0][2];
+    float dLoss_dCameraY = clampState.gradMask.y *
+        (-fy / cameraZ2) * dLoss_dJacobian[1][2];
+    float dLoss_dCameraZ =
+        (-fx / cameraZ2) * dLoss_dJacobian[0][0] +
+        (-fy / cameraZ2) * dLoss_dJacobian[1][1] +
+        (2.0 * fx * clampState.cameraPosition.x / cameraZ3) * dLoss_dJacobian[0][2] +
+        (2.0 * fy * clampState.cameraPosition.y / cameraZ3) * dLoss_dJacobian[1][2];
+
+    return backwardCameraVectorToPosition(float3(dLoss_dCameraX, dLoss_dCameraY, dLoss_dCameraZ));
 }
 
 float3x3 backwardCovariancePixelToCovariance3D(ProjectionLocalState state, float3x3 dLoss_dCovariancePixel3) {
@@ -85,7 +125,7 @@ float3x3 backwardCovariancePixelToCovariance3D(ProjectionLocalState state, float
 }
 
 float3 backwardCovariance3DToScale(GaussianTrainParam gaussian, float3x3 dLoss_dCovariance3D) {
-    float4 normalizedRotation = normalize(gaussian.rotation);
+    float4 normalizedRotation = trainNormalizeQuaternion(gaussian.rotation);
     float3x3 rotation = trainQuatToMat3(normalizedRotation);
     float3x3 localGrad = mul(mul(transpose(rotation), dLoss_dCovariance3D), rotation);
     float3 scale = trainScaleActivation(gaussian.scale.xyz);
@@ -94,7 +134,10 @@ float3 backwardCovariance3DToScale(GaussianTrainParam gaussian, float3x3 dLoss_d
 }
 
 float4 backwardNormalizeQuat(float4 q, float4 dLoss_dNormalizedQ) {
-    float lengthQ = max(length(q), 1e-8);
+    float lengthQ = length(q);
+    if (lengthQ <= 1e-12) {
+        return dLoss_dNormalizedQ / 1e-12;
+    }
     float4 normalizedQ = q / lengthQ;
     return (dLoss_dNormalizedQ - normalizedQ * dot(normalizedQ, dLoss_dNormalizedQ)) / lengthQ;
 }
@@ -145,9 +188,9 @@ float4 backwardRotationMatrixToQuaternion(float4 normalizedQ, float3x3 dLoss_dRo
 }
 
 float4 backwardCovariance3DToRotation(GaussianTrainParam gaussian, float3x3 dLoss_dCovariance3D) {
-    float4 normalizedRotation = normalize(gaussian.rotation);
+    float4 normalizedRotation = trainNormalizeQuaternion(gaussian.rotation);
     float3x3 rotation = trainQuatToMat3(normalizedRotation);
-    float3 scale = max(trainScaleActivation(gaussian.scale.xyz), float3(1e-6));
+    float3 scale = trainScaleActivation(gaussian.scale.xyz);
     float3x3 scaleMatrix = float3x3(
         scale.x * scale.x, 0.0, 0.0,
         0.0, scale.y * scale.y, 0.0,

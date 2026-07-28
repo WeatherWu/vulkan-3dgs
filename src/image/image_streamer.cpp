@@ -67,7 +67,6 @@ void ImageStreamer::setSources(std::vector<ImageSourceDesc> sources) {
 }
 
 ImageHandle ImageStreamer::request(ImageId id) {
-    ImageSourceDesc source{};
     std::shared_ptr<Entry> entry;
     uint64_t requestGeneration = 0;
     {
@@ -76,7 +75,6 @@ ImageHandle ImageStreamer::request(ImageId id) {
         if (sourceIt == sources_.end()) {
             throw std::runtime_error("Requested image is not registered with ImageStreamer");
         }
-        source = sourceIt->second;
         requestGeneration = generation_;
 
         const auto entryIt = entries_.find(id);
@@ -114,18 +112,22 @@ ImageHandle ImageStreamer::request(ImageId id) {
         entry = std::make_shared<Entry>();
         entry->generation = requestGeneration;
         entries_.insert_or_assign(id, entry);
-    }
-
-    try {
-        auto image = loadSource(source);
-        publishLoaded(id, requestGeneration, image, nullptr);
-        std::lock_guard lock(mutex_);
-        entry->lastUse = ++useCounter_;
-        return ImageHandle(id, entry->image);
-    } catch (...) {
-        const std::exception_ptr error = std::current_exception();
-        publishLoaded(id, requestGeneration, nullptr, error);
-        std::rethrow_exception(error);
+        queue_.push(QueuedRequest{id,
+                                  requestGeneration,
+                                  std::numeric_limits<int>::max(),
+                                  sequence_++});
+        queueCondition_.notify_all();
+        entry->condition.wait(lock, [&] {
+            return entry->state != EntryState::Loading || entry->generation != generation_;
+        });
+        if (entry->generation != generation_) {
+            throw std::runtime_error("Image request was cancelled because the source set changed");
+        }
+        if (entry->state == EntryState::Ready) {
+            entry->lastUse = ++useCounter_;
+            return ImageHandle(id, entry->image);
+        }
+        std::rethrow_exception(entry->error);
     }
 }
 
@@ -206,8 +208,8 @@ uint64_t ImageStreamer::resolveHostBudget() const {
     return std::min(fractionalBudget, reserveBudget);
 }
 
-std::shared_ptr<const ImageRgba8> ImageStreamer::loadSource(const ImageSourceDesc& source) {
-    return std::make_shared<const ImageRgba8>(diskCache_.loadOrCreate(source));
+ImageDiskCacheChunk ImageStreamer::loadSourceChunk(const ImageSourceDesc& source) {
+    return diskCache_.loadOrCreateChunk(source);
 }
 
 void ImageStreamer::workerMain(std::stop_token stopToken) {
@@ -237,7 +239,16 @@ void ImageStreamer::workerMain(std::stop_token stopToken) {
         }
 
         try {
-            publishLoaded(request.id, request.generation, loadSource(source), nullptr);
+            ImageDiskCacheChunk chunk = loadSourceChunk(source);
+            if (chunk.imageIds.size() != chunk.images.size()) {
+                throw std::runtime_error("Image disk cache returned mismatched chunk metadata");
+            }
+            for (size_t index = 0; index < chunk.imageIds.size(); ++index) {
+                publishLoaded(chunk.imageIds[index],
+                              request.generation,
+                              std::make_shared<const ImageRgba8>(std::move(chunk.images[index])),
+                              nullptr);
+            }
         } catch (...) {
             publishLoaded(request.id, request.generation, nullptr, std::current_exception());
         }
@@ -249,8 +260,20 @@ void ImageStreamer::publishLoaded(ImageId id,
                                   std::shared_ptr<const ImageRgba8> image,
                                   std::exception_ptr error) {
     std::lock_guard lock(mutex_);
-    const auto entryIt = entries_.find(id);
-    if (generation != generation_ || entryIt == entries_.end() || entryIt->second->generation != generation) {
+    if (generation != generation_ || !sources_.contains(id)) {
+        return;
+    }
+
+    auto entryIt = entries_.find(id);
+    if (entryIt == entries_.end()) {
+        if (error) {
+            return;
+        }
+        auto entry = std::make_shared<Entry>();
+        entry->generation = generation;
+        entryIt = entries_.insert_or_assign(id, std::move(entry)).first;
+    }
+    if (entryIt->second->generation != generation || entryIt->second->state == EntryState::Ready) {
         return;
     }
 

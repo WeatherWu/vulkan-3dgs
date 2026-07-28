@@ -10,6 +10,7 @@ struct TrainingPushConstants {
     float positionLearningRate;
     float positionLearningRateFinal;
     float positionLearningRateDelayMult;
+    float positionLearningRateDelaySteps;
     float positionLearningRateMaxSteps;
     float featureLearningRate;
     float featureRestLearningRate;
@@ -21,8 +22,11 @@ struct TrainingPushConstants {
     float optimizerEpsilon;
     float optimizerGradClip;
     float lossDssimWeight;
+    uint optimizerStep;
     uint validationEnabled;
     uint validationIteration;
+    uint optimizerEnabled;
+    uint validationUsesDensifiedGaussians;
 };
 
 struct TrainingPixelValidationPartial {
@@ -34,13 +38,21 @@ struct TrainingPixelValidationPartial {
     uint invalidRenderedPixelCount;
     uint validRenderedPixelCount;
     uint padding0;
+    float processedCandidateSum;
+    float contributorSum;
+    uint maxProcessedCandidates;
+    uint padding1;
 };
 
 struct TrainingGaussianValidationPartial {
     uint nonFiniteGaussianCount;
-    uint padding0;
-    uint padding1;
-    uint padding2;
+    uint nonFinitePositionCount;
+    uint nonFiniteOpacityCount;
+    uint nonFiniteRawScaleCount;
+    uint nonFiniteActivatedScaleCount;
+    uint nonFiniteRotationCount;
+    uint nonFiniteSHCount;
+    uint firstNonFiniteGaussianIndex;
 };
 
 struct TrainingValidationGpuResult {
@@ -53,13 +65,17 @@ struct TrainingValidationGpuResult {
     uint validRenderedPixelCount;
     uint nonFiniteGaussianCount;
     uint validationIteration;
+    uint nonFinitePositionCount;
+    uint nonFiniteOpacityCount;
+    uint nonFiniteRawScaleCount;
+    uint nonFiniteActivatedScaleCount;
+    uint nonFiniteRotationCount;
+    uint nonFiniteSHCount;
+    uint firstNonFiniteGaussianIndex;
+    float processedCandidateSum;
+    float contributorSum;
+    uint maxProcessedCandidates;
     uint padding0;
-    uint padding1;
-    uint padding2;
-    uint padding3;
-    uint padding4;
-    uint padding5;
-    uint padding6;
 };
 
 struct GaussianTrainParam {
@@ -79,7 +95,7 @@ struct PixelBlendState {
     float finalTransmittance;
     float accumulatedAlpha;
     uint processedCount;
-    uint lastContributor;
+    uint contributionCount;
 };
 
 #ifndef TRAIN_USE_UINT_RADIUS

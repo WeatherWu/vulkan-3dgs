@@ -124,6 +124,7 @@ void ImageDiskCache::setConfig(ImageDiskCacheConfig config) {
         config_.rootDirectory = defaultRootDirectory();
     }
     config_.chunkLayerCount = std::max(config_.chunkLayerCount, 1u);
+    refreshActiveCachePaths();
     enforceQuota();
 }
 
@@ -148,6 +149,7 @@ void ImageDiskCache::setSources(const std::vector<ImageSourceDesc>& sources) {
         chunk.sources.push_back(source);
         locations_.insert_or_assign(source.id, ChunkLocation{chunks_.size() - 1u, layer});
     }
+    refreshActiveCachePaths();
     enforceQuota();
 }
 
@@ -157,18 +159,29 @@ ImageDiskCacheConfig ImageDiskCache::config() const {
 }
 
 ImageRgba8 ImageDiskCache::loadOrCreate(const ImageSourceDesc& source) {
+    ImageDiskCacheChunk chunk = loadOrCreateChunk(source);
+    const auto requested = std::find(chunk.imageIds.begin(), chunk.imageIds.end(), source.id);
+    if (requested == chunk.imageIds.end()) {
+        throw std::runtime_error("Image disk cache chunk does not contain the requested image");
+    }
+    const size_t requestedIndex = static_cast<size_t>(std::distance(chunk.imageIds.begin(), requested));
+    return std::move(chunk.images.at(requestedIndex));
+}
+
+ImageDiskCacheChunk ImageDiskCache::loadOrCreateChunk(const ImageSourceDesc& source) {
     std::lock_guard lock(mutex_);
     if (!config_.enabled) {
-        return ImageDecoder::decodeRgba8(source);
+        ImageDiskCacheChunk result{};
+        result.imageIds.push_back(source.id);
+        result.images.push_back(ImageDecoder::decodeRgba8(source));
+        return result;
     }
 
     Chunk fallbackChunk{};
     const Chunk* chunk = nullptr;
-    uint32_t requestedLayer = 0;
     const auto location = locations_.find(source.id);
     if (location != locations_.end() && location->second.chunkIndex < chunks_.size()) {
         chunk = &chunks_[location->second.chunkIndex];
-        requestedLayer = location->second.layer;
     } else {
         fallbackChunk.sources.push_back(source);
         chunk = &fallbackChunk;
@@ -177,14 +190,20 @@ ImageRgba8 ImageDiskCache::loadOrCreate(const ImageSourceDesc& source) {
     const std::filesystem::path path = cachePath(*chunk);
     if (std::filesystem::is_regular_file(path)) {
         try {
-            ImageRgba8 image = loadKtx2(path,
-                                        source,
-                                        requestedLayer,
-                                        static_cast<uint32_t>(chunk->sources.size()));
+            std::vector<ImageRgba8> images = loadKtx2(
+                path,
+                source,
+                static_cast<uint32_t>(chunk->sources.size()));
             std::error_code touchError;
             std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now(), touchError);
             ++stats_.hits;
-            return image;
+            ImageDiskCacheChunk result{};
+            result.imageIds.reserve(chunk->sources.size());
+            for (const ImageSourceDesc& chunkSource : chunk->sources) {
+                result.imageIds.push_back(chunkSource.id);
+            }
+            result.images = std::move(images);
+            return result;
         } catch (const std::exception& error) {
             ++stats_.readFailures;
             ++stats_.recoveries;
@@ -200,7 +219,6 @@ ImageRgba8 ImageDiskCache::loadOrCreate(const ImageSourceDesc& source) {
     for (const ImageSourceDesc& chunkSource : chunk->sources) {
         images.push_back(ImageDecoder::decodeRgba8(chunkSource));
     }
-    ImageRgba8 image = images.at(requestedLayer);
     try {
         std::filesystem::create_directories(path.parent_path());
         std::filesystem::path temporaryPath = path;
@@ -228,7 +246,13 @@ ImageRgba8 ImageDiskCache::loadOrCreate(const ImageSourceDesc& source) {
     } catch (const std::exception& error) {
         LOG_WARN("Failed to write image disk cache {}: {}", path.string(), error.what());
     }
-    return image;
+    ImageDiskCacheChunk result{};
+    result.imageIds.reserve(chunk->sources.size());
+    for (const ImageSourceDesc& chunkSource : chunk->sources) {
+        result.imageIds.push_back(chunkSource.id);
+    }
+    result.images = std::move(images);
+    return result;
 }
 
 ImageDiskCacheStats ImageDiskCache::stats() const {
@@ -247,10 +271,9 @@ std::filesystem::path ImageDiskCache::cachePath(const Chunk& chunk) const {
     return config_.rootDirectory / ("chunk-" + hashString(hash) + ".ktx2");
 }
 
-ImageRgba8 ImageDiskCache::loadKtx2(const std::filesystem::path& path,
-                                    const ImageSourceDesc& source,
-                                    uint32_t layer,
-                                    uint32_t layerCount) const {
+std::vector<ImageRgba8> ImageDiskCache::loadKtx2(const std::filesystem::path& path,
+                                                 const ImageSourceDesc& source,
+                                                 uint32_t layerCount) const {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         throw std::runtime_error("Failed to open KTX2 image cache file");
@@ -292,19 +315,27 @@ ImageRgba8 ImageDiskCache::loadKtx2(const std::filesystem::path& path,
         throw std::runtime_error("KTX2 cache image size is invalid");
     }
 
-    ktx_size_t imageOffset = 0;
-    checkKtx(ktxTexture_GetImageOffset(ktxTexture(texture.get()), 0u, layer, 0u, &imageOffset),
-             "Failed to locate KTX2 image data");
     const ktx_uint8_t* data = ktxTexture_GetData(ktxTexture(texture.get()));
-    if (!data || imageOffset + expectedBytes > texture->dataSize) {
-        throw std::runtime_error("KTX2 cache image data is incomplete");
+    if (!data) {
+        throw std::runtime_error("KTX2 cache image data is missing");
     }
 
-    ImageRgba8 image{};
-    image.width = texture->baseWidth;
-    image.height = texture->baseHeight;
-    image.pixels.assign(data + imageOffset, data + imageOffset + expectedBytes);
-    return image;
+    std::vector<ImageRgba8> images;
+    images.reserve(layerCount);
+    for (uint32_t layer = 0; layer < layerCount; ++layer) {
+        ktx_size_t imageOffset = 0;
+        checkKtx(ktxTexture_GetImageOffset(ktxTexture(texture.get()), 0u, layer, 0u, &imageOffset),
+                 "Failed to locate KTX2 image data");
+        if (imageOffset + expectedBytes > texture->dataSize) {
+            throw std::runtime_error("KTX2 cache image data is incomplete");
+        }
+        ImageRgba8 image{};
+        image.width = texture->baseWidth;
+        image.height = texture->baseHeight;
+        image.pixels.assign(data + imageOffset, data + imageOffset + expectedBytes);
+        images.push_back(std::move(image));
+    }
+    return images;
 }
 
 void ImageDiskCache::writeKtx2(const std::filesystem::path& path,
@@ -361,6 +392,7 @@ void ImageDiskCache::enforceQuota(const std::filesystem::path& protectedPath) {
         std::filesystem::path path;
         uint64_t size = 0;
         std::filesystem::file_time_type lastUse{};
+        bool active = false;
     };
     std::vector<CacheFile> files;
     uint64_t totalBytes = 0;
@@ -380,11 +412,19 @@ void ImageDiskCache::enforceQuota(const std::filesystem::path& protectedPath) {
         if (entryError) {
             continue;
         }
-        files.push_back(CacheFile{iterator->path(), size, lastUse});
+        files.push_back(CacheFile{
+            iterator->path(),
+            size,
+            lastUse,
+            activeCachePaths_.contains(iterator->path()),
+        });
         totalBytes += size;
     }
 
     std::sort(files.begin(), files.end(), [](const CacheFile& lhs, const CacheFile& rhs) {
+        if (lhs.active != rhs.active) {
+            return !lhs.active;
+        }
         return lhs.lastUse < rhs.lastUse;
     });
     for (const CacheFile& file : files) {
@@ -401,17 +441,16 @@ void ImageDiskCache::enforceQuota(const std::filesystem::path& protectedPath) {
             stats_.evictedBytes += file.size;
         }
     }
-    stats_.cachedBytes = totalBytes;
-    stats_.cachedFiles = static_cast<uint64_t>(std::count_if(
-        files.begin(), files.end(), [](const CacheFile& file) {
-            std::error_code error;
-            return std::filesystem::is_regular_file(file.path, error);
-        }));
+    refreshDiskUsageStats();
 }
 
 void ImageDiskCache::refreshDiskUsageStats() {
     stats_.cachedBytes = 0;
     stats_.cachedFiles = 0;
+    stats_.activeBytes = 0;
+    stats_.activeFiles = 0;
+    stats_.historicalBytes = 0;
+    stats_.historicalFiles = 0;
     if (!std::filesystem::is_directory(config_.rootDirectory)) {
         return;
     }
@@ -427,7 +466,22 @@ void ImageDiskCache::refreshDiskUsageStats() {
         if (!entryError) {
             stats_.cachedBytes += size;
             ++stats_.cachedFiles;
+            if (activeCachePaths_.contains(iterator->path())) {
+                stats_.activeBytes += size;
+                ++stats_.activeFiles;
+            } else {
+                stats_.historicalBytes += size;
+                ++stats_.historicalFiles;
+            }
         }
+    }
+}
+
+void ImageDiskCache::refreshActiveCachePaths() {
+    activeCachePaths_.clear();
+    activeCachePaths_.reserve(chunks_.size());
+    for (const Chunk& chunk : chunks_) {
+        activeCachePaths_.insert(cachePath(chunk));
     }
 }
 

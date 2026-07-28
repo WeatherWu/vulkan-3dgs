@@ -136,7 +136,7 @@ std::vector<float> estimateSparsePointScaleDistances(const std::vector<TrainingS
         }
 
         const float meanDist2 = dist2Sum / static_cast<float>(std::max(count, 1u));
-        scales[i] = std::sqrt(std::max(meanDist2, 1e-12f));
+        scales[i] = std::sqrt(std::max(meanDist2, 1e-7f));
     }
 
     return scales;
@@ -153,6 +153,13 @@ uint32_t findMemoryType(vk::PhysicalDevice physicalDevice,
         }
     }
     throw std::runtime_error("Failed to find host-visible validation readback memory");
+}
+
+uint64_t alignUp(uint64_t value, uint64_t alignment) {
+    if (alignment <= 1u) {
+        return value;
+    }
+    return ((value + alignment - 1u) / alignment) * alignment;
 }
 
 } // namespace
@@ -223,6 +230,7 @@ void GaussianTraining::cleanup() {
 void GaussianTraining::resize(uint32_t gaussianCount, TrainingExtent extent) {
     buffers_.resize(gaussianCount, extent);
     trainableGaussianCount_ = gaussianCount;
+    optimizerStep_ = 0;
     sceneExtent_ = std::max(sceneExtent_, 1.0f);
 }
 
@@ -353,6 +361,10 @@ void GaussianTraining::trainStep() {
     }
 
     auto pushConstants = createPushConstants();
+    const uint32_t currentIteration = trainingIteration_ + 1u;
+    const bool beforeFinalIteration = scheduleConfig_.totalIterations == 0u ||
+                                      currentIteration < scheduleConfig_.totalIterations;
+    pushConstants.optimizerEnabled = !runDensificationThisStep && beforeFinalIteration ? 1u : 0u;
 
     trainingCommandPool_.reset();
     vk::CommandBufferBeginInfo beginInfo{};
@@ -366,6 +378,7 @@ void GaussianTraining::trainStep() {
 
     gaussianForward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
     gaussianForward->prepareTileItems();
+    buffers_.recordTileItemCountReadback(trainingCommandBuffer_);
 
     trainingCommandBuffer_.end();
 
@@ -382,6 +395,7 @@ void GaussianTraining::trainStep() {
 
     const auto tileCountReadbackStart = Clock::now();
     const uint32_t requiredTileItems = buffers_.requiredTileItemCount();
+    pushConstants.tileItemCount = requiredTileItems;
     recordCpuProfilingSample(TrainingCpuProfileStage::TileCountReadback,
                              std::chrono::duration<float, std::milli>(Clock::now() - tileCountReadbackStart).count());
     if (requiredTileItems > buffers_.tileItemCapacity()) {
@@ -420,12 +434,13 @@ void GaussianTraining::trainStep() {
         }
     }
 
+    const auto mainRecordStart = Clock::now();
     trainingCommandPool_.reset();
     trainingCommandBuffer_.begin(beginInfo);
 
     gaussianForward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
     LOG_DEBUG("Recording training main pass for iteration {}", trainingIteration_ + 1u);
-    gaussianForward->renderPreparedTiles();
+    gaussianForward->renderPreparedTiles(requiredTileItems);
     LOG_DEBUG("Recorded training forward pass for iteration {}", trainingIteration_ + 1u);
     gaussianBackward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
     gaussianBackward->backward();
@@ -435,6 +450,14 @@ void GaussianTraining::trainStep() {
                                            trainingCommandBuffer_,
                                            createDensificationPushConstants(pruneByScreenSize));
         densification_->densifyAndPrune();
+        if (pushConstants.validationEnabled != 0u) {
+            TrainingPushConstants validationPushConstants = pushConstants;
+            validationPushConstants.gaussianCount = buffers_.densificationCapacity();
+            validationPushConstants.validationUsesDensifiedGaussians = 1u;
+            gaussianBackward->setTrainingBuffers(buffers_,
+                                                 trainingCommandBuffer_,
+                                                 validationPushConstants);
+        }
     }
 
     gaussianBackward->gradientDescent();
@@ -445,6 +468,8 @@ void GaussianTraining::trainStep() {
 
     trainingCommandBuffer_.end();
     LOG_DEBUG("Finished recording training main command buffer for iteration {}", trainingIteration_ + 1u);
+    recordCpuProfilingSample(TrainingCpuProfileStage::MainRecord,
+                             std::chrono::duration<float, std::milli>(Clock::now() - mainRecordStart).count());
 
     vk::SubmitInfo submitInfo{};
     submitInfo.setCommandBufferCount(1)
@@ -476,8 +501,11 @@ void GaussianTraining::trainStep() {
     recordCpuProfilingSample(TrainingCpuProfileStage::MainSubmit,
                              std::chrono::duration<float, std::milli>(Clock::now() - mainSubmitStart).count());
     collectGpuProfilingStats();
+    if (pushConstants.optimizerEnabled != 0u) {
+        ++optimizerStep_;
+    }
 
-    const uint32_t nextIteration = trainingIteration_ + 1u;
+    const uint32_t nextIteration = currentIteration;
     if (nextIteration <= 5u ||
         (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u)) {
         const auto validationStart = Clock::now();
@@ -565,6 +593,7 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     buffers_.uploadGaussianParams(params.data(), static_cast<uint32_t>(params.size()));
     trainableGaussianCount_ = static_cast<uint32_t>(params.size());
     trainingIteration_ = 0;
+    optimizerStep_ = 0;
     deviceCacheGrowthResumeIteration_ = 0;
     frameRng_.seed(scheduleConfig_.randomSeed);
     randomFrameStack_.clear();
@@ -642,7 +671,6 @@ bool GaussianTraining::exportToPLY(const std::filesystem::path& path) {
     file << "property float rot_3\n";
     file << "end_header\n";
 
-    constexpr float epsilon = 1e-8f;
     for (const auto& gaussian : params) {
         const glm::vec3 position(gaussian.positionOpacity);
         file.write(reinterpret_cast<const char*>(&position.x), sizeof(float));
@@ -675,7 +703,7 @@ bool GaussianTraining::exportToPLY(const std::filesystem::path& path) {
         };
         file.write(reinterpret_cast<const char*>(logScale), sizeof(float) * 3);
 
-        const glm::vec4 rotation = glm::normalize(gaussian.rotation);
+        const glm::vec4 rotation = gaussian.rotation;
         file.write(reinterpret_cast<const char*>(&rotation.w), sizeof(float));
         file.write(reinterpret_cast<const char*>(&rotation.x), sizeof(float));
         file.write(reinterpret_cast<const char*>(&rotation.y), sizeof(float));
@@ -727,6 +755,7 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.positionLearningRate = optimizerConfig_.positionLearningRate * spatialLearningRateScale;
     pushConstants.positionLearningRateFinal = optimizerConfig_.positionLearningRateFinal * spatialLearningRateScale;
     pushConstants.positionLearningRateDelayMult = optimizerConfig_.positionLearningRateDelayMult;
+    pushConstants.positionLearningRateDelaySteps = optimizerConfig_.positionLearningRateDelaySteps;
     pushConstants.positionLearningRateMaxSteps = optimizerConfig_.positionLearningRateMaxSteps;
     pushConstants.featureLearningRate = optimizerConfig_.featureLearningRate;
     pushConstants.featureRestLearningRate = optimizerConfig_.featureRestLearningRate;
@@ -738,6 +767,7 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.optimizerEpsilon = optimizerConfig_.epsilon;
     pushConstants.optimizerGradClip = optimizerConfig_.gradClip;
     pushConstants.lossDssimWeight = std::clamp(optimizerConfig_.lossDssimWeight, 0.0f, 1.0f);
+    pushConstants.optimizerStep = optimizerStep_ + 1u;
     const uint32_t nextIteration = trainingIteration_ + 1u;
     pushConstants.validationEnabled =
         (nextIteration <= 5u ||
@@ -898,7 +928,11 @@ uint64_t GaussianTraining::initialDeviceImageCacheBudget() const {
 
     const TrainingCameraFrame& firstFrame = dataset_.frames.front();
     const uint64_t imageBytes = static_cast<uint64_t>(firstFrame.width) * firstFrame.height * sizeof(uint32_t);
-    const uint64_t fullDatasetBytes = imageBytes * dataset_.size();
+    const vk::PhysicalDeviceLimits limits = physicalDevice_.getProperties().limits;
+    const uint64_t slotStride = alignUp(
+        imageBytes,
+        std::max<uint64_t>(limits.minStorageBufferOffsetAlignment, 1u));
+    const uint64_t fullDatasetBytes = slotStride * dataset_.size();
     const vk::PhysicalDeviceMemoryProperties memory = physicalDevice_.getMemoryProperties();
     uint64_t largestDeviceLocalHeap = 0;
     uint32_t deviceLocalHeapIndex = 0;
@@ -994,11 +1028,22 @@ void GaussianTraining::validateTrainingStep(const TrainingValidationGpuResult& r
     stats.invalidLossCount = result.invalidLossCount;
     stats.invalidRenderedPixelCount = result.invalidRenderedPixelCount;
     stats.nonFiniteGaussianCount = result.nonFiniteGaussianCount;
+    stats.nonFinitePositionCount = result.nonFinitePositionCount;
+    stats.nonFiniteOpacityCount = result.nonFiniteOpacityCount;
+    stats.nonFiniteRawScaleCount = result.nonFiniteRawScaleCount;
+    stats.nonFiniteActivatedScaleCount = result.nonFiniteActivatedScaleCount;
+    stats.nonFiniteRotationCount = result.nonFiniteRotationCount;
+    stats.nonFiniteSHCount = result.nonFiniteSHCount;
+    stats.firstNonFiniteGaussianIndex = result.firstNonFiniteGaussianIndex;
     if (result.validRenderedPixelCount > 0u) {
         const float validRenderedCount = static_cast<float>(result.validRenderedPixelCount);
         stats.meanRenderedAlpha = result.alphaSum / validRenderedCount;
         stats.meanRenderedLuminance = result.luminanceSum / validRenderedCount;
     }
+    const float validationPixelCount = static_cast<float>(pixelCount);
+    stats.meanProcessedCandidatesPerPixel = result.processedCandidateSum / validationPixelCount;
+    stats.meanContributorsPerPixel = result.contributorSum / validationPixelCount;
+    stats.maxProcessedCandidatesPerPixel = result.maxProcessedCandidates;
     stats.renderedNonEmpty = stats.meanRenderedAlpha > 1e-5f ||
                              std::abs(stats.meanRenderedLuminance) > 1e-5f;
 
@@ -1011,12 +1056,19 @@ void GaussianTraining::validateTrainingStep(const TrainingValidationGpuResult& r
     validationStats_ = stats;
 
     if (!stats.valid) {
-        LOG_WARN("Training validation issue at iteration {}: loss={} invalidLoss={} invalidPixels={} nonFiniteGaussians={} tileItems={} alpha={} luminance={}",
+        LOG_WARN("Training validation issue at iteration {}: loss={} invalidLoss={} invalidPixels={} nonFiniteGaussians={} firstNonFinite={} categories(position={}, opacity={}, rawScale={}, activatedScale={}, rotation={}, sh={}) tileItems={} alpha={} luminance={}",
                  result.validationIteration,
                  stats.meanLoss,
                  stats.invalidLossCount,
                  stats.invalidRenderedPixelCount,
                  stats.nonFiniteGaussianCount,
+                 stats.firstNonFiniteGaussianIndex,
+                 stats.nonFinitePositionCount,
+                 stats.nonFiniteOpacityCount,
+                 stats.nonFiniteRawScaleCount,
+                 stats.nonFiniteActivatedScaleCount,
+                 stats.nonFiniteRotationCount,
+                 stats.nonFiniteSHCount,
                  stats.tileItemCount,
                  stats.meanRenderedAlpha,
                  stats.meanRenderedLuminance);
@@ -1044,8 +1096,7 @@ std::vector<GaussianTrainParam> GaussianTraining::createSparsePointInitialGaussi
 
     for (size_t i = 0; i < dataset_.sparsePoints.size(); ++i) {
         const auto& point = dataset_.sparsePoints[i];
-        const float initialScale = std::clamp(initialScales[i], 1e-6f, sceneRadius);
-        const float rawScale = std::log(initialScale);
+        const float rawScale = std::log(initialScales[i]);
         GaussianTrainParam param{};
         param.positionOpacity = glm::vec4(point.position, rawOpacity);
         param.scale = glm::vec4(glm::vec3(rawScale), 0.0f);
@@ -1135,8 +1186,8 @@ glm::mat4 GaussianTraining::createProjectionMatrix(const TrainingCameraFrame& fr
     glm::mat4 projection(0.0f);
     projection[0][0] = 2.0f * frame.fx / width;
     projection[1][1] = -2.0f * frame.fy / height;
-    projection[2][0] = 1.0f - 2.0f * frame.cx / width;
-    projection[2][1] = 2.0f * frame.cy / height - 1.0f;
+    projection[2][0] = 2.0f * frame.cx / width - 1.0f;
+    projection[2][1] = 1.0f - 2.0f * frame.cy / height;
     projection[2][2] = farPlane / (farPlane - nearPlane);
     projection[2][3] = 1.0f;
     projection[3][2] = -(farPlane * nearPlane) / (farPlane - nearPlane);

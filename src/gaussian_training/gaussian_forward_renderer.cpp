@@ -126,7 +126,7 @@ void GaussianForwardRenderer::forward() {
     }
 
     prepareTileItems();
-    renderPreparedTiles();
+    renderPreparedTiles(pushConstants_.tileItemCount);
 }
 
 void GaussianForwardRenderer::prepareTileItems() {
@@ -139,13 +139,14 @@ void GaussianForwardRenderer::prepareTileItems() {
     writeProfilingTimestamp(TrainingGpuProfileStage::PrepareTileItems, true);
 }
 
-void GaussianForwardRenderer::renderPreparedTiles() {
+void GaussianForwardRenderer::renderPreparedTiles(uint32_t tileItemCount) {
+    pushConstants_.tileItemCount = tileItemCount;
     writeProfilingTimestamp(TrainingGpuProfileStage::TileEmit, false);
     emitTileItems();
     writeProfilingTimestamp(TrainingGpuProfileStage::TileEmit, true);
 
     writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, false);
-    sortTileItems();
+    sortTileItems(tileItemCount);
     rebuildTileRanges();
     writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, true);
 
@@ -166,7 +167,7 @@ void GaussianForwardRenderer::createForwardResources() {
     clearPipeline_.initialize(device_, "shaders/train_clear.comp.spv",
                               pipelineConfig({storageBinding(1), storageBinding(6), storageBinding(8), storageBinding(9), storageBinding(14), storageBinding(15)}));
     projectPipeline_.initialize(device_, "shaders/train_forward_project.comp.spv",
-                                pipelineConfig({storageBinding(0), storageBinding(3), uniformBinding(11)}));
+                                 pipelineConfig({storageBinding(0), storageBinding(3), uniformBinding(11), storageBinding(16)}));
     tileClearPipeline_.initialize(device_, "shaders/train_forward_tile_clear.comp.spv",
                                   pipelineConfig({storageBinding(5)}));
     tileCountPipeline_.initialize(device_, "shaders/train_forward_tile_count.comp.spv",
@@ -190,7 +191,7 @@ void GaussianForwardRenderer::createForwardResources() {
     }
 
     forwardPipeline_.initialize(device_, forwardShader,
-                                pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14), storageBinding(15), storageBinding(16)}));
+                                pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14), storageBinding(15)}));
 
     VrdxSorterCreateInfo sorterInfo{};
     sorterInfo.physicalDevice = physicalDevice_;
@@ -288,9 +289,10 @@ void GaussianForwardRenderer::clearForwardBuffers() {
 }
 
 void GaussianForwardRenderer::projectGaussians() {
-    updateDescriptorSet(projectDescriptorSet_, {0, 3, 11});
+    updateDescriptorSet(projectDescriptorSet_, {0, 3, 11, 16});
     bindAndDispatch(projectPipeline_, projectDescriptorSet_, ceilDiv(pushConstants_.gaussianCount, 256u));
-    shaderBufferBarrier({trainingBuffers_->projectedInfo()},
+    shaderBufferBarrier({trainingBuffers_->projectedInfo(),
+                         trainingBuffers_->densificationStatesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
@@ -328,8 +330,7 @@ void GaussianForwardRenderer::emitTileItems() {
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
-void GaussianForwardRenderer::sortTileItems() {
-    const uint32_t tileItemCount = trainingBuffers_->requiredTileItemCount();
+void GaussianForwardRenderer::sortTileItems(uint32_t tileItemCount) {
     if (tileItemCount <= 1) {
         return;
     }
@@ -337,8 +338,6 @@ void GaussianForwardRenderer::sortTileItems() {
     LOG_DEBUG("Preparing radix sort for {} training tile items", tileItemCount);
     ensureTileSortResources(tileItemCount);
     LOG_DEBUG("Training radix sort storage is ready for {} tile items", tileItemCount);
-    pushConstants_.tileItemCount = tileItemCount;
-
     LOG_DEBUG("Recording low-key training radix sort");
     vrdxCmdSortKeyValue(commandBuffer_,
                         radixSorter_,
@@ -410,7 +409,7 @@ void GaussianForwardRenderer::ensureTileSortResources(uint32_t tileItemCount) {
 }
 
 void GaussianForwardRenderer::compositePixels() {
-    updateDescriptorSet(forwardDescriptorSet_, {3, 4, 5, 6, 14, 15, 16});
+    updateDescriptorSet(forwardDescriptorSet_, {3, 4, 5, 6, 14, 15});
     bindAndDispatch(forwardPipeline_, forwardDescriptorSet_, ceilDiv(extent_.width, 16u), ceilDiv(extent_.height, 16u));
     shaderBufferBarrier({trainingBuffers_->renderedColorInfo(),
                          trainingBuffers_->pixelBlendStatesInfo(),

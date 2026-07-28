@@ -8,3 +8,6 @@ add_test(NAME training_ssim_tests COMMAND training_ssim_tests)
 add_executable(training_validation_tests training_validation_tests.cpp)
 target_link_libraries(training_validation_tests PRIVATE vulkan_3dgs_core)
 add_test(NAME training_validation_tests COMMAND training_validation_tests)
+
+add_executable(training_math_tests training_math_tests.cpp)
+add_test(NAME training_math_tests COMMAND training_math_tests)

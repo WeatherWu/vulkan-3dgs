@@ -148,10 +148,11 @@ private:
     float training_position_lr_ = 0.00016f;
     float training_position_lr_final_ = 0.0000016f;
     float training_position_lr_delay_mult_ = 0.01f;
+    float training_position_lr_delay_steps_ = 0.0f;
     float training_position_lr_max_steps_ = 30000.0f;
     float training_feature_lr_ = 0.0025f;
     float training_feature_rest_lr_ = 0.000125f;
-    float training_opacity_lr_ = 0.05f;
+    float training_opacity_lr_ = 0.025f;
     float training_scale_lr_ = 0.005f;
     float training_rotation_lr_ = 0.001f;
     float training_adam_beta1_ = 0.9f;

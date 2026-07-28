@@ -12,6 +12,9 @@ StructuredBuffer<uint> targetColor;
 [[vk::binding(8, 0)]]
 RWStructuredBuffer<float> lossBuffer;
 
+[[vk::binding(14, 0)]]
+StructuredBuffer<PixelBlendState> pixelBlendStates;
+
 [[vk::binding(28, 0)]]
 RWStructuredBuffer<SsimBackwardState> ssimBackwardStates;
 
@@ -25,6 +28,9 @@ groupshared float validationLuminanceSum[256];
 groupshared uint validationInvalidLossCount[256];
 groupshared uint validationInvalidRenderedCount[256];
 groupshared uint validationValidRenderedCount[256];
+groupshared float validationProcessedCandidateSum[256];
+groupshared float validationContributorSum[256];
+groupshared uint validationMaxProcessedCandidates[256];
 
 static const int SSIM_RADIUS = 5;
 static const float SSIM_C1 = 0.0001;
@@ -83,35 +89,28 @@ float ssimColor(uint centerIndex, out SsimBackwardState backwardState) {
     targetSqMean /= weightSum;
     renderedTargetMean /= weightSum;
 
-    float3 renderedVariance = max(renderedSqMean - renderedMean * renderedMean, float3(0.0));
-    float3 targetVariance = max(targetSqMean - targetMean * targetMean, float3(0.0));
+    float3 renderedVariance = renderedSqMean - renderedMean * renderedMean;
+    float3 targetVariance = targetSqMean - targetMean * targetMean;
     float3 covariance = renderedTargetMean - renderedMean * targetMean;
 
     float3 A = 2.0 * renderedMean * targetMean + SSIM_C1;
     float3 B = 2.0 * covariance + SSIM_C2;
     float3 C = renderedMean * renderedMean + targetMean * targetMean + SSIM_C1;
     float3 D = renderedVariance + targetVariance + SSIM_C2;
-    float3 rawSsim = (A * B) / max(C * D, float3(1e-8));
-    float3 clampMask = float3(
-        rawSsim.x > 0.0 && rawSsim.x < 1.0 ? 1.0 : 0.0,
-        rawSsim.y > 0.0 && rawSsim.y < 1.0 ? 1.0 : 0.0,
-        rawSsim.z > 0.0 && rawSsim.z < 1.0 ? 1.0 : 0.0
-    );
-    float3 derivativeScale = -clampMask * rawSsim / 3.0;
-    float3 safeA = max(A, float3(1e-8));
-    float3 safeB = max(B, float3(1e-8));
-    float3 safeC = max(C, float3(1e-8));
-    float3 safeD = max(D, float3(1e-8));
-    backwardState.base = float4(derivativeScale *
-        (2.0 * targetMean / safeA -
-         2.0 * targetMean / safeB -
-         2.0 * renderedMean / safeC +
-         2.0 * renderedMean / safeD), 0.0);
-    backwardState.targetCoefficient = float4(derivativeScale * (2.0 / safeB), 0.0);
-    backwardState.renderedCoefficient = float4(derivativeScale * (-2.0 / safeD), 0.0);
+    float3 numerator = A * B;
+    float3 denominator = C * D;
+    float3 denominatorSquared = denominator * denominator;
+    float3 lossScale = float3(-1.0 / 3.0);
+    backwardState.base = float4(lossScale *
+        (2.0 * targetMean * (B - A) * denominator -
+         2.0 * numerator * renderedMean * (D - C)) /
+        denominatorSquared, 0.0);
+    backwardState.targetCoefficient = float4(
+        lossScale * (2.0 * A * denominator) / denominatorSquared, 0.0);
+    backwardState.renderedCoefficient = float4(
+        lossScale * (-2.0 * numerator * C) / denominatorSquared, 0.0);
 
-    float3 ssim = clamp(rawSsim, float3(0.0), float3(1.0));
-
+    float3 ssim = numerator / denominator;
     return (ssim.x + ssim.y + ssim.z) / 3.0;
 }
 
@@ -124,17 +123,22 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
     bool active = index < params.pixelCount;
     float pixelLoss = 0.0;
     float4 rendered = float4(0.0);
+    uint processedCandidateCount = 0u;
+    uint contributorCount = 0u;
 
     if (active) {
         SsimBackwardState backwardState;
         rendered = renderedColor[index];
         float l1 = l1Color(rendered.xyz, unpackTargetColor(targetColor[index]).xyz);
-        float dssim = clamp(1.0 - ssimColor(index, backwardState), 0.0, 1.0);
+        float dssim = 1.0 - ssimColor(index, backwardState);
         ssimBackwardStates[index] = backwardState;
         float dssimWeight = clamp(params.lossDssimWeight, 0.0, 1.0);
         pixelLoss = ((1.0 - dssimWeight) * l1 + dssimWeight * dssim) /
                     max(float(params.pixelCount), 1.0);
         lossBuffer[index] = pixelLoss;
+        PixelBlendState blendState = pixelBlendStates[index];
+        processedCandidateCount = blendState.processedCount;
+        contributorCount = blendState.contributionCount;
     }
 
     if (params.validationEnabled == 0u) {
@@ -153,6 +157,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
     validationInvalidLossCount[localIndex] = active && !finiteLoss ? 1u : 0u;
     validationInvalidRenderedCount[localIndex] = active && !finiteRendered ? 1u : 0u;
     validationValidRenderedCount[localIndex] = finiteRendered ? 1u : 0u;
+    validationProcessedCandidateSum[localIndex] = float(processedCandidateCount);
+    validationContributorSum[localIndex] = float(contributorCount);
+    validationMaxProcessedCandidates[localIndex] = processedCandidateCount;
     GroupMemoryBarrierWithGroupSync();
 
     for (uint stride = 128u; stride > 0u; stride >>= 1u) {
@@ -165,6 +172,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
             validationInvalidLossCount[localIndex] += validationInvalidLossCount[localIndex + stride];
             validationInvalidRenderedCount[localIndex] += validationInvalidRenderedCount[localIndex + stride];
             validationValidRenderedCount[localIndex] += validationValidRenderedCount[localIndex + stride];
+            validationProcessedCandidateSum[localIndex] += validationProcessedCandidateSum[localIndex + stride];
+            validationContributorSum[localIndex] += validationContributorSum[localIndex + stride];
+            validationMaxProcessedCandidates[localIndex] = max(
+                validationMaxProcessedCandidates[localIndex],
+                validationMaxProcessedCandidates[localIndex + stride]);
         }
         GroupMemoryBarrierWithGroupSync();
     }
@@ -179,6 +191,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
         partial.invalidRenderedPixelCount = validationInvalidRenderedCount[0];
         partial.validRenderedPixelCount = validationValidRenderedCount[0];
         partial.padding0 = 0u;
+        partial.processedCandidateSum = validationProcessedCandidateSum[0];
+        partial.contributorSum = validationContributorSum[0];
+        partial.maxProcessedCandidates = validationMaxProcessedCandidates[0];
+        partial.padding1 = 0u;
         pixelValidationPartials[groupID.x] = partial;
     }
 }

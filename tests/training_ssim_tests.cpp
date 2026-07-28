@@ -69,31 +69,28 @@ double centerLossAndState(const std::vector<double>& rendered,
         }
     }
 
-    const double renderedVariance = std::max(renderedSqMean - renderedMean * renderedMean, 0.0);
-    const double targetVariance = std::max(targetSqMean - targetMean * targetMean, 0.0);
+    const double renderedVariance = renderedSqMean - renderedMean * renderedMean;
+    const double targetVariance = targetSqMean - targetMean * targetMean;
     const double covariance = renderedTargetMean - renderedMean * targetMean;
     const double a = 2.0 * renderedMean * targetMean + kC1;
     const double b = 2.0 * covariance + kC2;
     const double c = renderedMean * renderedMean + targetMean * targetMean + kC1;
     const double d = renderedVariance + targetVariance + kC2;
-    const double rawSsim = (a * b) / std::max(c * d, 1e-8);
-    const double clampedSsim = std::clamp(rawSsim, 0.0, 1.0);
+    const double numerator = a * b;
+    const double denominator = c * d;
+    const double rawSsim = numerator / denominator;
 
     if (state) {
-        const double mask = rawSsim > 0.0 && rawSsim < 1.0 ? 1.0 : 0.0;
-        const double scale = -mask * rawSsim / 3.0;
-        const double safeA = std::max(a, 1e-8);
-        const double safeB = std::max(b, 1e-8);
-        const double safeC = std::max(c, 1e-8);
-        const double safeD = std::max(d, 1e-8);
-        state->base = scale * (2.0 * targetMean / safeA -
-                               2.0 * targetMean / safeB -
-                               2.0 * renderedMean / safeC +
-                               2.0 * renderedMean / safeD);
-        state->targetCoefficient = scale * (2.0 / safeB);
-        state->renderedCoefficient = scale * (-2.0 / safeD);
+        const double denominatorSquared = denominator * denominator;
+        constexpr double lossScale = -1.0 / 3.0;
+        state->base = lossScale *
+            (2.0 * targetMean * (b - a) * denominator -
+             2.0 * numerator * renderedMean * (d - c)) /
+            denominatorSquared;
+        state->targetCoefficient = lossScale * 2.0 * a * denominator / denominatorSquared;
+        state->renderedCoefficient = lossScale * -2.0 * numerator * c / denominatorSquared;
     }
-    return (1.0 - clampedSsim) / 3.0;
+    return (1.0 - rawSsim) / 3.0;
 }
 
 double totalLoss(const std::vector<double>& rendered, const std::vector<double>& target) {
@@ -137,16 +134,9 @@ double analyticGradient(const std::vector<double>& rendered,
     return gradient / static_cast<double>(kWidth * kHeight);
 }
 
-} // namespace
-
-int main() {
-    std::vector<double> rendered(static_cast<size_t>(kWidth * kHeight));
-    std::vector<double> target(static_cast<size_t>(kWidth * kHeight));
-    for (size_t i = 0; i < rendered.size(); ++i) {
-        rendered[i] = 0.2 + 0.6 * static_cast<double>((i * 17u) % 31u) / 30.0;
-        target[i] = 0.15 + 0.7 * static_cast<double>((i * 11u + 3u) % 29u) / 28.0;
-    }
-
+bool verifyGradient(const std::vector<double>& rendered,
+                    const std::vector<double>& target,
+                    const char* label) {
     constexpr int sampleX = 3;
     constexpr int sampleY = 2;
     constexpr double epsilon = 1e-5;
@@ -157,8 +147,36 @@ int main() {
     const double finiteDifference = (totalLoss(plus, target) - totalLoss(minus, target)) / (2.0 * epsilon);
     const double analytic = analyticGradient(rendered, target, sampleX, sampleY);
     if (std::abs(finiteDifference - analytic) > 2e-5) {
-        std::cerr << "SSIM gradient mismatch: analytic=" << analytic
+        std::cerr << label << " SSIM gradient mismatch: analytic=" << analytic
                   << " finiteDifference=" << finiteDifference << '\n';
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+int main() {
+    std::vector<double> rendered(static_cast<size_t>(kWidth * kHeight));
+    std::vector<double> target(static_cast<size_t>(kWidth * kHeight));
+    for (size_t i = 0; i < rendered.size(); ++i) {
+        rendered[i] = 0.2 + 0.6 * static_cast<double>((i * 17u) % 31u) / 30.0;
+        target[i] = 0.15 + 0.7 * static_cast<double>((i * 11u + 3u) % 29u) / 28.0;
+    }
+
+    if (!verifyGradient(rendered, target, "regular")) {
+        return 1;
+    }
+
+    for (size_t i = 0; i < rendered.size(); ++i) {
+        rendered[i] = 0.1 + 0.8 * static_cast<double>((i * 13u) % 37u) / 36.0;
+        target[i] = 1.0 - rendered[i];
+    }
+    if (centerLossAndState(rendered, target, 3, 2, nullptr) <= 1.0 / 3.0) {
+        std::cerr << "negative SSIM test input did not produce negative SSIM\n";
+        return 1;
+    }
+    if (!verifyGradient(rendered, target, "negative")) {
         return 1;
     }
 

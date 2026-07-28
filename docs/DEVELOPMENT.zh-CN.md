@@ -89,7 +89,9 @@ budget = min(可用 RAM * 10%, 可用 RAM - 2 GiB)
 磁盘缓存默认配置：
 
 - 每个 KTX2 array chunk 包含 16 层；
+- 每次读取一个完整 chunk，并将其中全部层一起发布到主存缓存；
 - 20 GiB 配额；
+- 统计区分当前数据集 active chunk 和历史 chunk，超配额时优先淘汰历史 chunk；
 - 使用平台对应的用户缓存目录。
 
 显存图片缓存行为：
@@ -97,13 +99,13 @@ budget = min(可用 RAM * 10%, 可用 RAM - 2 GiB)
 - 每个驻留 `RGBA8` 图片占用一个对齐的 storage-buffer 槽；
 - 支持 `Streaming`、`Partial`、`Full` 三种模式；
 - 至少保留一个槽；
-- 最大分配量取完整数据集大小和 device-local heap budget 四分之一中的较小值；
+- 最大分配量取对齐后的完整数据集槽位大小和 device-local heap budget 四分之一中的较小值；
 - 普通预留为 `max(512 MiB, heap budget 的 15%)`，并限制为不超过 heap budget 的一半；
 - 稠密化前预留为 `max(1 GiB, heap budget 的 25%)`，同样限制为不超过一半；
 - 支持 timeline semaphore 时使用三槽持久映射 staging ring；
 - `VULKAN_3DGS_SYNC_IMAGE_UPLOAD=1` 可强制同步上传。
 
-UI 会显示主存、磁盘、显存缓存、staging、上传、命中/未命中、淘汰和 memory budget 数据。
+UI 会显示主存、active/history 磁盘缓存、显存 resident/slot/total、staging、上传、命中/未命中、淘汰和 memory budget 数据。
 
 ## 训练流程
 
@@ -163,16 +165,18 @@ nextIteration % validationInterval_ == 0
 
 周期验证避免下载完整 GPU buffer：
 
-1. `train_loss.comp.slang` 在 binding 29 为每个 256-thread workgroup 写入一个 pixel partial。
+1. `train_loss.comp.slang` 在 binding 29 为每个 256-thread workgroup 写入 loss、渲染检查、反向候选数和实际贡献数 pixel partial。
 2. `train_optimizer.comp.slang` 在 binding 30 写入非有限 Gaussian partial。
-3. `train_validation_finalize.comp.slang` 在 binding 31 写入固定 64 字节结果。
+3. `train_validation_finalize.comp.slang` 在 binding 31 写入固定 80 字节结果。
 4. `GaussianTraining` 将结果复制到私有的三槽 host-coherent staging ring，并轮询 fence。
 
 `TrainingValidationStats` 和前端输出保持不变。完整 loss/rendered 下载 API 仍然保留，但不再用于常规 validation。Gaussian 参数下载仍用于 PLY 导出。
 
 ## Profiling
 
-CPU 阶段包括 frame upload、image request、target upload、prepare submit、tile-count readback、tile resize、main submit、validation、densification adoption 和 total step。
+CPU 阶段包括 frame upload、image request、target upload、prepare submit、tile-count readback、tile resize、main command record、main submit、validation、densification adoption 和 total step。UI 同时显示每个阶段的实际 sample count。
+
+Tile item count 只在 `GaussianTraining` 中读取一次。prepare command 将 16 字节 counter 复制到 `TrainingBuffers` 持有的持久映射 host-coherent buffer；prepare queue wait 完成后，CPU 直接读取映射内存，并将同一个 count 显式传给 emit/sort/render 流程。
 
 GPU timestamp 阶段包括 tile preparation/emission/sorting、composite、loss、各 backward 阶段、optimizer 和 densification。
 

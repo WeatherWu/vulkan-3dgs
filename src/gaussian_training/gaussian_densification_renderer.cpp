@@ -110,23 +110,12 @@ void GaussianDensificationRenderer::densifyAndPrune() {
     shaderBufferBarrier({trainingBuffers_->densificationCountersInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 
-    updateDescriptorSet(densifyPruneDescriptorSet_, {0, 2, 16, 19, 25, 26, 27});
+    updateDescriptorSet(densifyPruneDescriptorSet_, {0, 2, 16, 17, 18, 19});
     bindAndDispatch(densifyPrunePipeline_, densifyPruneDescriptorSet_, ceilDiv(pushConstants_.gaussianCount, 256u));
-    shaderBufferBarrier({trainingBuffers_->densificationCandidateParamsInfo(),
-                         trainingBuffers_->densificationCandidateAdamStatesInfo(),
-                         trainingBuffers_->densificationCandidateStatesInfo(),
-                         trainingBuffers_->densificationCountersInfo(),
-                         trainingBuffers_->densificationStatesInfo()},
-                        vk::AccessFlagBits::eShaderRead |
-                            vk::AccessFlagBits::eShaderWrite);
-
-    updateDescriptorSet(finalizePruneDescriptorSet_, {17, 18, 19, 25, 26, 27});
-    bindAndDispatch(finalizePrunePipeline_,
-                    finalizePruneDescriptorSet_,
-                    ceilDiv(pushConstants_.maxGaussianCount, 256u));
     shaderBufferBarrier({trainingBuffers_->densifiedParamsInfo(),
                          trainingBuffers_->densifiedAdamStatesInfo(),
-                         trainingBuffers_->densificationCountersInfo()},
+                         trainingBuffers_->densificationCountersInfo(),
+                         trainingBuffers_->densificationStatesInfo()},
                         vk::AccessFlagBits::eShaderRead |
                             vk::AccessFlagBits::eShaderWrite);
 
@@ -160,9 +149,6 @@ void GaussianDensificationRenderer::createResources() {
     const char* densifyPruneShader = useUintRadiusFallback
         ? "shaders/train_densify_prune_uint_radius.comp.spv"
         : "shaders/train_densify_prune.comp.spv";
-    const char* finalizePruneShader = useUintRadiusFallback
-        ? "shaders/train_densify_finalize_prune_uint_radius.comp.spv"
-        : "shaders/train_densify_finalize_prune.comp.spv";
     if (useUintRadiusFallback) {
         LOG_INFO("Using uint maxScreenRadius fallback training densify/prune shader");
     }
@@ -171,17 +157,10 @@ void GaussianDensificationRenderer::createResources() {
                                                      pipelineConfig({storageBinding(0),
                                                                      storageBinding(2),
                                                                      storageBinding(16),
+                                                                     storageBinding(17),
+                                                                     storageBinding(18),
                                                                      storageBinding(19),
-                                                                     storageBinding(25),
-                                                                     storageBinding(26),
-                                                                     storageBinding(27)}));
-    finalizePrunePipeline_.initialize(device_, finalizePruneShader,
-                                      pipelineConfig({storageBinding(17),
-                                                      storageBinding(18),
-                                                      storageBinding(19),
-                                                      storageBinding(25),
-                                                      storageBinding(26),
-                                                      storageBinding(27)}));
+                                                                     }));
     opacityResetPipeline_.initialize(device_, "shaders/train_opacity_reset.comp.spv",
                                      pipelineConfig({storageBinding(17),
                                                      storageBinding(18),
@@ -189,18 +168,17 @@ void GaussianDensificationRenderer::createResources() {
 
     std::array<vk::DescriptorPoolSize, 1> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(17);
+                .setDescriptorCount(10);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(4);
+            .setMaxSets(3);
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
-    std::array<vk::DescriptorSetLayout, 4> layouts = {
+    std::array<vk::DescriptorSetLayout, 3> layouts = {
         clearPipeline_.getDescriptorSetLayout(),
         densifyPrunePipeline_.getDescriptorSetLayout(),
-        finalizePrunePipeline_.getDescriptorSetLayout(),
         opacityResetPipeline_.getDescriptorSetLayout(),
     };
 
@@ -212,8 +190,7 @@ void GaussianDensificationRenderer::createResources() {
     std::vector<vk::DescriptorSet> sets = device_.allocateDescriptorSets(allocInfo);
     clearDescriptorSet_ = sets[0];
     densifyPruneDescriptorSet_ = sets[1];
-    finalizePruneDescriptorSet_ = sets[2];
-    opacityResetDescriptorSet_ = sets[3];
+    opacityResetDescriptorSet_ = sets[2];
 }
 
 void GaussianDensificationRenderer::destroyResources() {
@@ -222,12 +199,10 @@ void GaussianDensificationRenderer::destroyResources() {
         descriptorPool_ = nullptr;
         clearDescriptorSet_ = nullptr;
         densifyPruneDescriptorSet_ = nullptr;
-        finalizePruneDescriptorSet_ = nullptr;
         opacityResetDescriptorSet_ = nullptr;
     }
 
     opacityResetPipeline_.cleanup();
-    finalizePrunePipeline_.cleanup();
     densifyPrunePipeline_.cleanup();
     clearPipeline_.cleanup();
 }
@@ -240,22 +215,15 @@ void GaussianDensificationRenderer::updateDescriptorSet(vk::DescriptorSet descri
     auto densifiedParamsInfo = trainingBuffers_->densifiedParamsInfo();
     auto densifiedAdamStatesInfo = trainingBuffers_->densifiedAdamStatesInfo();
     auto densificationCountersInfo = trainingBuffers_->densificationCountersInfo();
-    auto candidateParamsInfo = trainingBuffers_->densificationCandidateParamsInfo();
-    auto candidateAdamStatesInfo = trainingBuffers_->densificationCandidateAdamStatesInfo();
-    auto candidateStatesInfo = trainingBuffers_->densificationCandidateStatesInfo();
-
-    std::array<vk::DescriptorBufferInfo, 28> infos{};
+    std::array<vk::DescriptorBufferInfo, 20> infos{};
     infos[0] = gaussianParamsInfo;
     infos[2] = adamStatesInfo;
     infos[16] = densificationStatesInfo;
     infos[17] = densifiedParamsInfo;
     infos[18] = densifiedAdamStatesInfo;
     infos[19] = densificationCountersInfo;
-    infos[25] = candidateParamsInfo;
-    infos[26] = candidateAdamStatesInfo;
-    infos[27] = candidateStatesInfo;
 
-    std::array<vk::WriteDescriptorSet, 8> writes{};
+    std::array<vk::WriteDescriptorSet, 6> writes{};
     uint32_t writeCount = 0;
     for (uint32_t binding : bindings) {
         if (!infos[binding].buffer) {

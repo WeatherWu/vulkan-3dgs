@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <glm/glm.hpp>
 
 namespace vulkan3DGS {
@@ -24,10 +25,11 @@ struct TrainingPushConstants {
     float positionLearningRate = 0.00016f;
     float positionLearningRateFinal = 0.0000016f;
     float positionLearningRateDelayMult = 0.01f;
+    float positionLearningRateDelaySteps = 0.0f;
     float positionLearningRateMaxSteps = 30000.0f;
     float featureLearningRate = 0.0025f;
     float featureRestLearningRate = 0.000125f;
-    float opacityLearningRate = 0.05f;
+    float opacityLearningRate = 0.025f;
     float scaleLearningRate = 0.005f;
     float rotationLearningRate = 0.001f;
     float optimizerBeta1 = 0.9f;
@@ -35,8 +37,11 @@ struct TrainingPushConstants {
     float optimizerEpsilon = 1e-15f;
     float optimizerGradClip = 0.0f;
     float lossDssimWeight = 0.2f;
+    uint32_t optimizerStep = 1;
     uint32_t validationEnabled = 0;
     uint32_t validationIteration = 0;
+    uint32_t optimizerEnabled = 1;
+    uint32_t validationUsesDensifiedGaussians = 0;
 };
 
 struct TrainingInitializationConfig {
@@ -62,10 +67,11 @@ struct TrainingOptimizerConfig {
     float positionLearningRate = 0.00016f;
     float positionLearningRateFinal = 0.0000016f;
     float positionLearningRateDelayMult = 0.01f;
+    float positionLearningRateDelaySteps = 0.0f;
     float positionLearningRateMaxSteps = 30000.0f;
     float featureLearningRate = 0.0025f;
     float featureRestLearningRate = 0.000125f;
-    float opacityLearningRate = 0.05f;
+    float opacityLearningRate = 0.025f;
     float scaleLearningRate = 0.005f;
     float rotationLearningRate = 0.001f;
     float beta1 = 0.9f;
@@ -85,7 +91,17 @@ struct TrainingValidationStats {
     uint32_t invalidLossCount = 0;
     uint32_t invalidRenderedPixelCount = 0;
     uint32_t nonFiniteGaussianCount = 0;
+    uint32_t nonFinitePositionCount = 0;
+    uint32_t nonFiniteOpacityCount = 0;
+    uint32_t nonFiniteRawScaleCount = 0;
+    uint32_t nonFiniteActivatedScaleCount = 0;
+    uint32_t nonFiniteRotationCount = 0;
+    uint32_t nonFiniteSHCount = 0;
+    uint32_t firstNonFiniteGaussianIndex = std::numeric_limits<uint32_t>::max();
     uint32_t tileItemCount = 0;
+    float meanProcessedCandidatesPerPixel = 0.0f;
+    float meanContributorsPerPixel = 0.0f;
+    uint32_t maxProcessedCandidatesPerPixel = 0;
     bool renderedNonEmpty = false;
     bool valid = true;
 };
@@ -101,13 +117,21 @@ struct alignas(16) TrainingPixelValidationPartial {
     uint32_t invalidRenderedPixelCount = 0;
     uint32_t validRenderedPixelCount = 0;
     uint32_t padding0 = 0;
+    float processedCandidateSum = 0.0f;
+    float contributorSum = 0.0f;
+    uint32_t maxProcessedCandidates = 0;
+    uint32_t padding1 = 0;
 };
 
 struct alignas(16) TrainingGaussianValidationPartial {
     uint32_t nonFiniteGaussianCount = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
+    uint32_t nonFinitePositionCount = 0;
+    uint32_t nonFiniteOpacityCount = 0;
+    uint32_t nonFiniteRawScaleCount = 0;
+    uint32_t nonFiniteActivatedScaleCount = 0;
+    uint32_t nonFiniteRotationCount = 0;
+    uint32_t nonFiniteSHCount = 0;
+    uint32_t firstNonFiniteGaussianIndex = std::numeric_limits<uint32_t>::max();
 };
 
 struct alignas(16) TrainingValidationGpuResult {
@@ -120,13 +144,17 @@ struct alignas(16) TrainingValidationGpuResult {
     uint32_t validRenderedPixelCount = 0;
     uint32_t nonFiniteGaussianCount = 0;
     uint32_t validationIteration = 0;
+    uint32_t nonFinitePositionCount = 0;
+    uint32_t nonFiniteOpacityCount = 0;
+    uint32_t nonFiniteRawScaleCount = 0;
+    uint32_t nonFiniteActivatedScaleCount = 0;
+    uint32_t nonFiniteRotationCount = 0;
+    uint32_t nonFiniteSHCount = 0;
+    uint32_t firstNonFiniteGaussianIndex = std::numeric_limits<uint32_t>::max();
+    float processedCandidateSum = 0.0f;
+    float contributorSum = 0.0f;
+    uint32_t maxProcessedCandidates = 0;
     uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
-    uint32_t padding3 = 0;
-    uint32_t padding4 = 0;
-    uint32_t padding5 = 0;
-    uint32_t padding6 = 0;
 };
 
 struct SsimBackwardState {
@@ -142,6 +170,7 @@ enum class TrainingCpuProfileStage : uint32_t {
     PrepareSubmit,
     TileCountReadback,
     TileBufferResize,
+    MainRecord,
     MainSubmit,
     Validation,
     DensificationAdopt,
@@ -247,7 +276,7 @@ struct alignas(16) PixelBlendState {
     float finalTransmittance = 1.0f;
     float accumulatedAlpha = 0.0f;
     uint32_t processedCount = 0;
-    uint32_t lastContributor = UINT32_MAX;
+    uint32_t contributionCount = 0;
 };
 
 struct alignas(16) GaussianVisibilityState {
@@ -303,9 +332,9 @@ static_assert(sizeof(GaussianGrad) == sizeof(glm::vec4) * 19);
 static_assert(sizeof(TrainingForwardCamera) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(AdamState) == sizeof(GaussianGrad) * 2);
 static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 4);
-static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 6);
-static_assert(sizeof(TrainingPixelValidationPartial) == sizeof(glm::vec4) * 2);
-static_assert(sizeof(TrainingGaussianValidationPartial) == sizeof(glm::vec4));
-static_assert(sizeof(TrainingValidationGpuResult) == sizeof(glm::vec4) * 4);
+static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 7);
+static_assert(sizeof(TrainingPixelValidationPartial) == sizeof(glm::vec4) * 3);
+static_assert(sizeof(TrainingGaussianValidationPartial) == sizeof(glm::vec4) * 2);
+static_assert(sizeof(TrainingValidationGpuResult) == sizeof(glm::vec4) * 5);
 
 } // namespace vulkan3DGS

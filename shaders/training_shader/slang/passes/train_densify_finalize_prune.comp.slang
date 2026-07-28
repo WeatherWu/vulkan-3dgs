@@ -45,6 +45,16 @@ float3 trainScaleActivationForDensify(float3 rawScale) {
     return exp(rawScale);
 }
 
+bool finiteGaussianForDensify(GaussianTrainParam gaussian) {
+    bool finite = all(isfinite(gaussian.positionOpacity)) &&
+                  all(isfinite(gaussian.scale)) &&
+                  all(isfinite(gaussian.rotation));
+    for (uint i = 0; i < 16; ++i) {
+        finite = finite && all(isfinite(gaussian.sh[i]));
+    }
+    return finite;
+}
+
 float activatedOpacity(GaussianTrainParam gaussian) {
     return trainOpacityActivationForDensify(gaussian.positionOpacity.w);
 }
@@ -83,6 +93,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     AdamState adamState = candidateAdamStates[candidateIndex];
     GaussianDensificationState densification = candidateDensificationStates[candidateIndex];
 
+    bool pruneByNonFinite = !finiteGaussianForDensify(gaussian);
     bool pruneByOpacity = activatedOpacity(gaussian) < densifyParams.minOpacity;
     bool pruneByScreenSize = densifyParams.pruneByScreenSize != 0u &&
         loadDensificationMaxScreenRadius(densification) > densifyParams.screenSizePruneThreshold;
@@ -99,7 +110,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         incrementCounter(densificationCounters[4]);
     }
 
-    if (pruneByOpacity || pruneByScreenSize || pruneByWorldSize) {
+    if (pruneByNonFinite || pruneByOpacity || pruneByScreenSize || pruneByWorldSize) {
         incrementCounter(densificationCounters[8]);
         return;
     }

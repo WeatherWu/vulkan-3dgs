@@ -18,16 +18,12 @@ RWStructuredBuffer<PixelBlendState> pixelBlendStates;
 [[vk::binding(15, 0)]]
 RWStructuredBuffer<GaussianVisibilityState> gaussianVisibility;
 
-[[vk::binding(16, 0)]]
-RWStructuredBuffer<GaussianDensificationState> densificationStates;
-
 void accumulateGaussianVisibility(uint gaussianIndex, GaussianSample sample, ProjectedGaussian gaussian) {
     uint ignoredCount = 0;
     float ignoredFloat = 0.0;
     InterlockedAdd(gaussianVisibility[gaussianIndex].contributionCount, 1u, ignoredCount);
     InterlockedAdd(gaussianVisibility[gaussianIndex].alphaSum, sample.alpha, ignoredFloat);
     atomicMaxVisibilityScreenRadius(gaussianVisibility[gaussianIndex], gaussian.centerRadius.w);
-    atomicMaxDensificationScreenRadius(densificationStates[gaussianIndex], gaussian.centerRadius.w);
 }
 
 PixelComposite renderPixelFromTile(uint2 pixel) {
@@ -46,13 +42,15 @@ PixelComposite renderPixelFromTile(uint2 pixel) {
             continue;
         }
 
-        compositeGaussianFrontToBack(composite, sample);
-        composite.processedCount = itemOffset + 1u;
-        composite.lastContributor = gaussianIndex;
-        accumulateGaussianVisibility(gaussianIndex, sample, projectedGaussians[gaussianIndex]);
-        if (composite.transmittance <= TRAIN_TRANSMITTANCE_MIN) {
+        float testTransmittance = composite.transmittance * (1.0 - sample.alpha);
+        if (testTransmittance < TRAIN_TRANSMITTANCE_MIN) {
             break;
         }
+
+        compositeGaussianFrontToBack(composite, sample);
+        composite.processedCount = itemOffset + 1u;
+        composite.contributionCount += 1u;
+        accumulateGaussianVisibility(gaussianIndex, sample, projectedGaussians[gaussianIndex]);
     }
 
     return composite;
@@ -74,6 +72,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     blendState.finalTransmittance = composite.transmittance;
     blendState.accumulatedAlpha = composite.accumulatedAlpha;
     blendState.processedCount = composite.processedCount;
-    blendState.lastContributor = composite.lastContributor;
+    blendState.contributionCount = composite.contributionCount;
     pixelBlendStates[index] = blendState;
 }

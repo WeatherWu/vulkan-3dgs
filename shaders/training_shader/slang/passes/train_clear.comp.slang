@@ -47,7 +47,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         blendState.finalTransmittance = 1.0;
         blendState.accumulatedAlpha = 0.0;
         blendState.processedCount = 0;
-        blendState.lastContributor = 0xFFFFFFFFu;
+        blendState.contributionCount = 0u;
         pixelBlendStates[index] = blendState;
     }
 

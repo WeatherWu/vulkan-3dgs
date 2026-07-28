@@ -18,6 +18,11 @@ struct ProjectionResult {
     float4 color;
 };
 
+struct ProjectionClampState {
+    float3 cameraPosition;
+    float2 gradMask;
+};
+
 [[vk::binding(11, 0)]]
 ConstantBuffer<TrainingForwardCamera> trainingCamera;
 
@@ -69,9 +74,13 @@ float3 trainScaleActivationBackward(float3 rawScale) {
     return trainScaleActivation(rawScale);
 }
 
+float4 trainNormalizeQuaternion(float4 rotation) {
+    return rotation / max(length(rotation), 1e-12);
+}
+
 float3x3 trainCovariance3D(GaussianTrainParam gaussian) {
-    float3 scale = max(trainScaleActivation(gaussian.scale.xyz), float3(1e-6));
-    float3x3 rotation = trainQuatToMat3(normalize(gaussian.rotation));
+    float3 scale = trainScaleActivation(gaussian.scale.xyz);
+    float3x3 rotation = trainQuatToMat3(trainNormalizeQuaternion(gaussian.rotation));
     float3x3 scaleMatrix = float3x3(
         scale.x * scale.x, 0.0, 0.0,
         0.0, scale.y * scale.y, 0.0,
@@ -92,16 +101,25 @@ float3x3 trainProjectionJacobian(float3 cameraPosition) {
     );
 }
 
-float3 trainClampCameraPositionForProjection(float3 cameraPosition) {
-    float3 clampedCameraPosition = cameraPosition;
+ProjectionClampState trainClampCameraPositionForProjectionWithGrad(float3 cameraPosition) {
+    ProjectionClampState state;
+    state.cameraPosition = cameraPosition;
     float limX = 1.3 * trainingCamera.focalTan.z;
     float limY = 1.3 * trainingCamera.focalTan.w;
     float invZ = 1.0 / max(cameraPosition.z, 1e-6);
     float txtz = cameraPosition.x * invZ;
     float tytz = cameraPosition.y * invZ;
-    clampedCameraPosition.x = clamp(txtz, -limX, limX) * cameraPosition.z;
-    clampedCameraPosition.y = clamp(tytz, -limY, limY) * cameraPosition.z;
-    return clampedCameraPosition;
+    state.cameraPosition.x = clamp(txtz, -limX, limX) * cameraPosition.z;
+    state.cameraPosition.y = clamp(tytz, -limY, limY) * cameraPosition.z;
+    state.gradMask = float2(
+        txtz < -limX || txtz > limX ? 0.0 : 1.0,
+        tytz < -limY || tytz > limY ? 0.0 : 1.0
+    );
+    return state;
+}
+
+float3 trainClampCameraPositionForProjection(float3 cameraPosition) {
+    return trainClampCameraPositionForProjectionWithGrad(cameraPosition).cameraPosition;
 }
 
 float2x2 trainCovariance2DPixel(float3 cameraPosition, float3x3 covarianceWorld) {
@@ -128,16 +146,18 @@ float trainGaussianRadius(float2x2 covariancePixel) {
     float a = covariancePixel[0][0];
     float b = covariancePixel[0][1];
     float c = covariancePixel[1][1];
-    float delta = sqrt(max((a - c) * (a - c) + 4.0 * b * b, 0.0));
-    float lambdaMax = max(0.5 * (a + c + delta), 0.0);
+    float determinant = a * c - b * b;
+    float midpoint = 0.5 * (a + c);
+    float eigenDelta = sqrt(max(0.1, midpoint * midpoint - determinant));
+    float lambdaMax = max(max(midpoint + eigenDelta, midpoint - eigenDelta), 0.0);
     return ceil(3.0 * sqrt(lambdaMax));
 }
 
 float2 trainNdcToPixel(float2 ndc) {
     float2 screenSize = trainingCamera.viewport.zw;
     return float2(
-        (ndc.x * 0.5 + 0.5) * screenSize.x,
-        (0.5 - ndc.y * 0.5) * screenSize.y
+        ((ndc.x + 1.0) * screenSize.x - 1.0) * 0.5,
+        ((1.0 - ndc.y) * screenSize.y - 1.0) * 0.5
     );
 }
 
@@ -159,15 +179,12 @@ ProjectionResult trainProjectGaussian(GaussianTrainParam gaussian) {
 
     float4 modelPosition4 = mul(trainingCamera.model, float4(gaussian.positionOpacity.xyz, 1.0));
     float4 cameraPosition4 = mul(trainingCamera.view, modelPosition4);
-    float4 clipPosition = mul(trainingCamera.projection, cameraPosition4);
-    if (clipPosition.w <= 1e-6) {
+    if (cameraPosition4.z <= 0.2) {
         return result;
     }
 
+    float4 clipPosition = mul(trainingCamera.projection, cameraPosition4);
     float3 ndc = clipPosition.xyz / clipPosition.w;
-    if (ndc.x < -1.3 || ndc.x > 1.3 || ndc.y < -1.3 || ndc.y > 1.3 || ndc.z < 0.0 || ndc.z > 1.0) {
-        return result;
-    }
 
     float3x3 modelMatrix = trainMat3FromMat4(trainingCamera.model);
     float3x3 covarianceWorld = mul(mul(modelMatrix, trainCovariance3D(gaussian)), transpose(modelMatrix));

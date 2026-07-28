@@ -100,7 +100,7 @@ private:
     };
 
     uint64_t resolveHostBudget() const;
-    std::shared_ptr<const ImageRgba8> loadSource(const ImageSourceDesc& source);
+    ImageDiskCacheChunk loadSourceChunk(const ImageSourceDesc& source);
     void workerMain(std::stop_token stopToken);
     void publishLoaded(ImageId id,
                        uint64_t generation,

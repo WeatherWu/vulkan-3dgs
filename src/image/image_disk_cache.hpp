@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "image/image_types.hpp"
@@ -27,6 +28,15 @@ struct ImageDiskCacheStats {
     uint64_t evictedBytes = 0;
     uint64_t cachedBytes = 0;
     uint64_t cachedFiles = 0;
+    uint64_t activeBytes = 0;
+    uint64_t activeFiles = 0;
+    uint64_t historicalBytes = 0;
+    uint64_t historicalFiles = 0;
+};
+
+struct ImageDiskCacheChunk {
+    std::vector<ImageId> imageIds;
+    std::vector<ImageRgba8> images;
 };
 
 class ImageDiskCache {
@@ -34,6 +44,7 @@ public:
     explicit ImageDiskCache(ImageDiskCacheConfig config = {});
 
     ImageRgba8 loadOrCreate(const ImageSourceDesc& source);
+    ImageDiskCacheChunk loadOrCreateChunk(const ImageSourceDesc& source);
     void setConfig(ImageDiskCacheConfig config);
     void setSources(const std::vector<ImageSourceDesc>& sources);
 
@@ -53,19 +64,20 @@ private:
     };
 
     std::filesystem::path cachePath(const Chunk& chunk) const;
-    ImageRgba8 loadKtx2(const std::filesystem::path& path,
-                        const ImageSourceDesc& source,
-                        uint32_t layer,
-                        uint32_t layerCount) const;
+    std::vector<ImageRgba8> loadKtx2(const std::filesystem::path& path,
+                                     const ImageSourceDesc& source,
+                                     uint32_t layerCount) const;
     void writeKtx2(const std::filesystem::path& path,
                    const std::vector<ImageRgba8>& images) const;
     void enforceQuota(const std::filesystem::path& protectedPath = {});
     void refreshDiskUsageStats();
+    void refreshActiveCachePaths();
 
     ImageDiskCacheConfig config_;
     ImageDiskCacheStats stats_{};
     std::vector<Chunk> chunks_;
     std::unordered_map<ImageId, ChunkLocation> locations_;
+    std::unordered_set<std::filesystem::path> activeCachePaths_;
     mutable std::mutex mutex_;
 };
 
