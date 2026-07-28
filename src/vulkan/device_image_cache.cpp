@@ -45,6 +45,7 @@ void DeviceImageCache::initialize(vk::Device device,
                                   vk::PhysicalDevice physicalDevice,
                                   vk::Queue transferQueue,
                                   uint32_t transferQueueFamilyIndex,
+                                  uint32_t computeQueueFamilyIndex,
                                   uint32_t width,
                                   uint32_t height,
                                   uint32_t imageCount,
@@ -58,6 +59,7 @@ void DeviceImageCache::initialize(vk::Device device,
     physicalDevice_ = physicalDevice;
     transferQueue_ = transferQueue;
     transferQueueFamilyIndex_ = transferQueueFamilyIndex;
+    computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     imageCount_ = imageCount;
     const vk::PhysicalDeviceLimits limits = physicalDevice.getProperties().limits;
     imageBytes_ = static_cast<vk::DeviceSize>(width) * static_cast<vk::DeviceSize>(height) * sizeof(uint32_t);
@@ -78,7 +80,8 @@ void DeviceImageCache::initialize(vk::Device device,
                    nullptr,
                    allocationSize,
                    vk::BufferUsageFlagBits::eStorageBuffer,
-                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+                   vk::MemoryPropertyFlagBits::eDeviceLocal,
+                   {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 
     slots_.assign(slotCount, Slot{});
     stats_ = {};
@@ -126,6 +129,7 @@ void DeviceImageCache::cleanup() {
     physicalDevice_ = nullptr;
     transferQueue_ = nullptr;
     transferQueueFamilyIndex_ = 0;
+    computeQueueFamilyIndex_ = 0;
     imageCount_ = 0;
     deviceLocalHeapIndex_ = 0;
     initialized_ = false;
@@ -295,7 +299,8 @@ void DeviceImageCache::resizeSlots(uint32_t slotCount, uint64_t targetBudgetByte
                        nullptr,
                        allocationSize,
                        vk::BufferUsageFlagBits::eStorageBuffer,
-                       vk::MemoryPropertyFlagBits::eDeviceLocal);
+                       vk::MemoryPropertyFlagBits::eDeviceLocal,
+                       {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 
     stats_.evictions += imageSlots_.size();
     imageSlots_.clear();

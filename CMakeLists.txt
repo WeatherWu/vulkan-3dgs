@@ -181,7 +181,7 @@ add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
 add_subdirectory(src)
 add_subdirectory(apps)
 if(BUILD_TESTING)
-    add_subdirectory(tests)
+    add_subdirectory(tests test)
 endif()
 
 # 确保在构建库之前编译着色器

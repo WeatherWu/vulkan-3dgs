@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.hpp>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <string>
 #include <GLFW/glfw3.h>
@@ -24,7 +25,7 @@ public:
 
     friend class vulkan3DGS::Device;
     
-    void initialize(GLFWwindow* window);
+    void initialize(GLFWwindow* window, std::optional<std::string> gpuSelector = std::nullopt);
     void cleanup();
     
     // 查询是否已初始化

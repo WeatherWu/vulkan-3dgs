@@ -30,7 +30,8 @@ public:
     void initialize(vk::Device device,
                     vk::PhysicalDevice physicalDevice,
                     vk::Queue transferQueue,
-                    uint32_t transferQueueFamilyIndex);
+                    uint32_t transferQueueFamilyIndex,
+                    uint32_t computeQueueFamilyIndex);
     void cleanup();
     void resize(uint32_t gaussianCount, TrainingExtent extent);
     void initializeTrainingRenderers(vk::Device device,

@@ -43,6 +43,15 @@ The project has two separate Gaussian paths:
 
 The training path is not a wrapper around `GaussianRenderer`; it owns independent GPU resources and compute pipelines.
 
+The application maintains two logical device roles:
+
+- the presentation device requires graphics, presentation to the current GLFW Surface, swapchain, push descriptors, anisotropy, and shader draw parameters; it owns normal rendering and ImGui;
+- the training device never queries the Surface and requires only a compute queue, push descriptors, and buffer float32 atomic add from `VK_EXT_shader_atomic_float`; transfers use a dedicated queue when available or the compute queue otherwise.
+
+The `Training` panel GPU selector and `--gpu` affect only the training device. Switching it releases existing training GPU resources and requires the dataset to be loaded again without recreating GLFW, ImGui, or the swapchain. Training `Buffer` instances must explicitly use queue-family indices from the training device instead of reading queue families from the global presentation `Context`.
+
+Only the presentation device initializes the global Vulkan-Hpp dispatcher. A training device must not reinitialize it because device-level swapchain function pointers could otherwise be overwritten by a logical device that did not enable the swapchain extension.
+
 ## Gaussian PLY Data
 
 The normal renderer supports binary little-endian 3DGS-style PLY properties:
@@ -137,6 +146,8 @@ The loss combines L1 and DSSIM:
 ```
 
 SSIM uses an 11x11 Gaussian window with sigma 1.5. `SsimBackwardState` stores coefficients used by the optimized backward pass, avoiding the former nested window-over-window computation.
+
+Pixel-to-2DGS projection-gradient atomics cover only the nine differentiable values: center XY, conic/opacity XYZW, and RGB. Depth, integer screen radius, and color padding remain zero and are not atomically accumulated.
 
 The Adam-style optimizer has independent learning rates for position, SH DC/rest, opacity, scale, and rotation. Position learning rate uses initial/final values, delay multiplier, maximum-step scheduling, and the reference 3DGS scene-extent spatial learning-rate scale. The default opacity LR, Adam epsilon, and disabled gradient clipping mirror the reference 3DGS defaults.
 

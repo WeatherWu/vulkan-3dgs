@@ -21,8 +21,6 @@ void atomicAddProjectedGaussianGrad(RWStructuredBuffer<ProjectedGaussianGrad> pr
                                     ProjectedGaussianGrad grad) {
     atomicAddFloat(projectedGrads[gaussianIndex].centerRadius.x, grad.centerRadius.x);
     atomicAddFloat(projectedGrads[gaussianIndex].centerRadius.y, grad.centerRadius.y);
-    atomicAddFloat(projectedGrads[gaussianIndex].centerRadius.z, grad.centerRadius.z);
-    atomicAddFloat(projectedGrads[gaussianIndex].centerRadius.w, grad.centerRadius.w);
 
     atomicAddFloat(projectedGrads[gaussianIndex].conicOpacity.x, grad.conicOpacity.x);
     atomicAddFloat(projectedGrads[gaussianIndex].conicOpacity.y, grad.conicOpacity.y);
@@ -32,7 +30,6 @@ void atomicAddProjectedGaussianGrad(RWStructuredBuffer<ProjectedGaussianGrad> pr
     atomicAddFloat(projectedGrads[gaussianIndex].color.x, grad.color.x);
     atomicAddFloat(projectedGrads[gaussianIndex].color.y, grad.color.y);
     atomicAddFloat(projectedGrads[gaussianIndex].color.z, grad.color.z);
-    atomicAddFloat(projectedGrads[gaussianIndex].color.w, grad.color.w);
 }
 
 bool alphaIsDifferentiable(GaussianSample sample) {

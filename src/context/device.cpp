@@ -1,11 +1,16 @@
 #include "device.hpp"
 #include "context.hpp"
+#include "device_selection.hpp"
 #include "utils/logger.hpp"
 #include "vulkan/command_pool.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <set>
+#include <sstream>
+#include <utility>
 
 namespace vulkan3DGS {
 
@@ -57,9 +62,96 @@ int deviceScore(vk::PhysicalDeviceType type) {
     }
 }
 
+std::string formatVulkanVersion(uint32_t version) {
+    std::ostringstream stream;
+    stream << VK_API_VERSION_MAJOR(version) << '.'
+           << VK_API_VERSION_MINOR(version) << '.'
+           << VK_API_VERSION_PATCH(version);
+    return stream.str();
+}
+
+std::string formatDriverVersion(uint32_t version) {
+    std::ostringstream stream;
+    stream << version << " (0x" << std::hex << std::uppercase << version << ')';
+    return stream.str();
+}
+
+template <typename Uuid>
+std::string formatDeviceUuid(const Uuid& uuid) {
+    if (std::all_of(uuid.begin(), uuid.end(), [](uint8_t byte) { return byte == 0; })) {
+        return {};
+    }
+
+    std::ostringstream stream;
+    stream << std::hex << std::setfill('0');
+    for (size_t index = 0; index < uuid.size(); ++index) {
+        if (index == 4 || index == 6 || index == 8 || index == 10) {
+            stream << '-';
+        }
+        stream << std::setw(2) << static_cast<unsigned int>(uuid[index]);
+    }
+    return stream.str();
+}
+
+uint64_t largestDeviceLocalHeap(vk::PhysicalDevice device) {
+    const vk::PhysicalDeviceMemoryProperties memory = device.getMemoryProperties();
+    uint64_t largestHeap = 0;
+    for (uint32_t index = 0; index < memory.memoryHeapCount; ++index) {
+        if ((memory.memoryHeaps[index].flags & vk::MemoryHeapFlagBits::eDeviceLocal) !=
+            vk::MemoryHeapFlags{}) {
+            largestHeap = std::max(largestHeap,
+                                   static_cast<uint64_t>(memory.memoryHeaps[index].size));
+        }
+    }
+    return largestHeap;
+}
+
+std::string formatMemorySize(uint64_t bytes) {
+    constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(1)
+           << static_cast<double>(bytes) / bytesPerGiB << " GiB";
+    return stream.str();
+}
+
+Device::PhysicalDeviceInfo physicalDeviceInfo(vk::PhysicalDevice device, uint32_t vulkanIndex) {
+    vk::PhysicalDeviceIDProperties idProperties{};
+    vk::PhysicalDeviceProperties2 properties2{};
+    properties2.pNext = &idProperties;
+    device.getProperties2(&properties2);
+
+    const vk::PhysicalDeviceProperties& properties = properties2.properties;
+    Device::PhysicalDeviceInfo info{};
+    info.vulkanIndex = vulkanIndex;
+    info.name = properties.deviceName.data();
+    info.uuid = formatDeviceUuid(idProperties.deviceUUID);
+    info.typeName = deviceTypeName(properties.deviceType);
+    info.apiVersion = formatVulkanVersion(properties.apiVersion);
+    info.driverVersion = formatDriverVersion(properties.driverVersion);
+    info.deviceLocalMemoryBytes = largestDeviceLocalHeap(device);
+    return info;
+}
+
+std::string suitableDeviceList(const std::vector<Device::PhysicalDeviceInfo>& devices) {
+    std::ostringstream stream;
+    for (const Device::PhysicalDeviceInfo& device : devices) {
+        stream << "\n  [" << device.vulkanIndex << "] " << device.name
+               << " (" << device.typeName << ", "
+               << formatMemorySize(device.deviceLocalMemoryBytes);
+        if (!device.uuid.empty()) {
+            stream << ", UUID " << device.uuid;
+        }
+        stream << ')';
+    }
+    return stream.str();
+}
+
 } // namespace
 
-Device::Device(vk::SurfaceKHR surface) : surface_(surface) {}
+Device::Device(vk::SurfaceKHR surface,
+               std::optional<std::string> gpuSelector,
+               DeviceRole role)
+    : surface_(surface), gpuSelector_(std::move(gpuSelector)), role_(role) {}
 
 Device::~Device() {
     cleanup();
@@ -70,19 +162,27 @@ void Device::createDevice() {
     
     vk::DeviceCreateInfo createInfo;
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
-    std::vector<const char*> enabledExtensions = deviceExtensions_;
+    std::vector<const char*> enabledExtensions = role_ == DeviceRole::Training
+        ? trainingDeviceExtensions_
+        : presentationDeviceExtensions_;
     float properties = 1.0;
     
-    if (!queueFamilyIndices_.graphicsIndex || !queueFamilyIndices_.presentIndex) {
-        LOG_ERROR("Queue family indices not set");
-        throw std::runtime_error("Queue family indices not set");
+    if (role_ == DeviceRole::Presentation &&
+        (!queueFamilyIndices_.graphicsIndex || !queueFamilyIndices_.presentIndex)) {
+        throw std::runtime_error("Presentation queue family indices not set");
+    }
+    if (role_ == DeviceRole::Training && !queueFamilyIndices_.computeIndex) {
+        throw std::runtime_error("Training compute queue family index not set");
     }
     
     // 收集所有需要创建的队列家族索引（去重）
-    std::set<uint32_t> uniqueQueueFamilies = {
-        queueFamilyIndices_.graphicsIndex.value(),
-        queueFamilyIndices_.presentIndex.value()
-    };
+    std::set<uint32_t> uniqueQueueFamilies;
+    if (role_ == DeviceRole::Presentation) {
+        uniqueQueueFamilies.insert(queueFamilyIndices_.graphicsIndex.value());
+        uniqueQueueFamilies.insert(queueFamilyIndices_.presentIndex.value());
+    } else {
+        uniqueQueueFamilies.insert(queueFamilyIndices_.computeIndex.value());
+    }
     
     // 如果有专用传输队列且与图形/呈现队列不同，则添加
     if (queueFamilyIndices_.transferIndex.has_value()) {
@@ -105,9 +205,11 @@ void Device::createDevice() {
     
     createInfo.setQueueCreateInfos(queueCreateInfos);
 
-    // 配置设备特性。计算相关扩展按支持情况启用，不作为全局设备筛选条件。
+    // 显示和训练逻辑设备只启用各自实际使用的核心特性。
     vk::PhysicalDeviceFeatures deviceFeatures{};
-    deviceFeatures.setSamplerAnisotropy(VK_TRUE);
+    if (role_ == DeviceRole::Presentation) {
+        deviceFeatures.setSamplerAnisotropy(VK_TRUE);
+    }
 
     const auto availableExtensions = phyDevice_.enumerateDeviceExtensionProperties();
     auto supportsExtension = [&availableExtensions](const char* name) {
@@ -116,13 +218,21 @@ void Device::createDevice() {
                                return std::strcmp(extension.extensionName.data(), name) == 0;
                            });
     };
+    auto enableExtension = [&enabledExtensions](const char* name) {
+        if (std::find_if(enabledExtensions.begin(), enabledExtensions.end(),
+                         [name](const char* enabled) {
+                             return std::strcmp(enabled, name) == 0;
+                         }) == enabledExtensions.end()) {
+            enabledExtensions.push_back(name);
+        }
+    };
 
     const bool supportsAtomicFloatExtension = supportsExtension(vk::EXTShaderAtomicFloatExtensionName);
     const bool supportsAtomicFloat2Extension = supportsExtension(vk::EXTShaderAtomicFloat2ExtensionName);
     const bool supportsMemoryBudgetExtension = supportsExtension(vk::EXTMemoryBudgetExtensionName);
 
     if (supportsMemoryBudgetExtension) {
-        enabledExtensions.push_back(vk::EXTMemoryBudgetExtensionName);
+        enableExtension(vk::EXTMemoryBudgetExtensionName);
         LOG_INFO("Enabled optional device extension: {}", vk::EXTMemoryBudgetExtensionName);
     }
 
@@ -149,7 +259,9 @@ void Device::createDevice() {
     phyDevice_.getFeatures2(&supportedFeatures2);
 
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
-    vulkan11Features.setShaderDrawParameters(VK_TRUE);
+    if (role_ == DeviceRole::Presentation) {
+        vulkan11Features.setShaderDrawParameters(VK_TRUE);
+    }
     vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
     vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloat2Features{};
     vk::PhysicalDeviceTimelineSemaphoreFeatures timelineSemaphoreFeatures{};
@@ -163,7 +275,7 @@ void Device::createDevice() {
     if (supportsAtomicFloatExtension &&
         supportedAtomicFloatFeatures.shaderBufferFloat32Atomics &&
         supportedAtomicFloatFeatures.shaderBufferFloat32AtomicAdd) {
-        enabledExtensions.push_back(vk::EXTShaderAtomicFloatExtensionName);
+        enableExtension(vk::EXTShaderAtomicFloatExtensionName);
         atomicFloatFeatures.setShaderBufferFloat32Atomics(VK_TRUE)
                            .setShaderBufferFloat32AtomicAdd(VK_TRUE);
         appendFeature(atomicFloatFeatures);
@@ -175,7 +287,7 @@ void Device::createDevice() {
 
     if (supportsAtomicFloat2Extension &&
         supportedAtomicFloat2Features.shaderBufferFloat32AtomicMinMax) {
-        enabledExtensions.push_back(vk::EXTShaderAtomicFloat2ExtensionName);
+        enableExtension(vk::EXTShaderAtomicFloat2ExtensionName);
         atomicFloat2Features.setShaderBufferFloat32AtomicMinMax(VK_TRUE);
         appendFeature(atomicFloat2Features);
         LOG_INFO("Enabled optional device extension: {}", vk::EXTShaderAtomicFloat2ExtensionName);
@@ -201,21 +313,17 @@ void Device::createDevice() {
         throw std::runtime_error("Failed to create Vulkan device");
     }
     
-    // 第三步：使用Device更新调度器以获取Device级别的函数
-    VULKAN_HPP_DEFAULT_DISPATCHER.init(device_);
-    LOG_DEBUG("Vulkan dispatcher updated with device");
+    // 全局 Vulkan-Hpp dispatcher 始终由 presentation device 持有，避免训练设备
+    // 未启用 swapchain 时覆盖显示路径的扩展函数指针。
+    if (role_ == DeviceRole::Presentation) {
+        VULKAN_HPP_DEFAULT_DISPATCHER.init(device_);
+        LOG_DEBUG("Vulkan dispatcher updated with presentation device");
+    }
     
     // 第四步：获取队列句柄
-    graphicsQueue_ = device_.getQueue(queueFamilyIndices_.graphicsIndex.value(), 0);
-    presentQueue_ = device_.getQueue(queueFamilyIndices_.presentIndex.value(), 0);
-    
-    if (queueFamilyIndices_.transferIndex.has_value()) {
-        transferQueue_ = device_.getQueue(queueFamilyIndices_.transferIndex.value(), 0);
-        LOG_DEBUG("Dedicated transfer queue retrieved (family {})", queueFamilyIndices_.transferIndex.value());
-    } else {
-        // 如果没有专用传输队列，回退到图形队列
-        transferQueue_ = graphicsQueue_;
-        LOG_DEBUG("Using graphics queue as transfer queue");
+    if (role_ == DeviceRole::Presentation) {
+        graphicsQueue_ = device_.getQueue(queueFamilyIndices_.graphicsIndex.value(), 0);
+        presentQueue_ = device_.getQueue(queueFamilyIndices_.presentIndex.value(), 0);
     }
     
     if (queueFamilyIndices_.computeIndex.has_value()) {
@@ -226,8 +334,18 @@ void Device::createDevice() {
         computeQueue_ = graphicsQueue_;
         LOG_DEBUG("Using graphics queue as compute queue");
     }
+
+    if (queueFamilyIndices_.transferIndex.has_value()) {
+        transferQueue_ = device_.getQueue(queueFamilyIndices_.transferIndex.value(), 0);
+        LOG_DEBUG("Dedicated transfer queue retrieved (family {})", queueFamilyIndices_.transferIndex.value());
+    } else {
+        transferQueue_ = role_ == DeviceRole::Training ? computeQueue_ : graphicsQueue_;
+        LOG_DEBUG("Using {} queue as transfer queue",
+                  role_ == DeviceRole::Training ? "compute" : "graphics");
+    }
     
-    LOG_INFO("Vulkan device created successfully");
+    LOG_INFO("Vulkan {} device created successfully",
+             role_ == DeviceRole::Training ? "training" : "presentation");
 }
 
 
@@ -235,16 +353,22 @@ void Device::pickPhysicalDevice(vk::SurfaceKHR& surface) {
     auto& context = Context::Instance();
     auto devices = context.getInstance().enumeratePhysicalDevices();
     
-    LOG_DEBUG("Found {} physical device(s)", devices.size());
+    LOG_DEBUG("Found {} physical device(s) while selecting the {} device",
+              devices.size(), role_ == DeviceRole::Training ? "training" : "presentation");
     
     if (devices.empty()) {
         LOG_ERROR("Failed to find GPUs with Vulkan support");
         throw std::runtime_error("Failed to find GPUs with Vulkan support");
     }
     
-    int bestScore = -10001;
-    QueueFamilyIndices bestQueueFamilyIndices;
-    size_t bestDeviceIndex = 0;
+    struct SuitableDevice {
+        vk::PhysicalDevice device;
+        QueueFamilyIndices queueFamilyIndices;
+        int score = 0;
+    };
+
+    availablePhysicalDeviceInfos_.clear();
+    std::vector<SuitableDevice> suitableDevices;
     
     for (size_t i = 0; i < devices.size(); ++i) {
         auto properties = devices[i].getProperties();
@@ -259,25 +383,65 @@ void Device::pickPhysicalDevice(vk::SurfaceKHR& surface) {
         if (isDeviceSuitable(devices[i], surface, candidateQueueFamilyIndices)) {
             int score = deviceScore(properties.deviceType);
             LOG_DEBUG("Physical device {} is suitable with score {}", properties.deviceName, score);
-            
-            if (score > bestScore) {
-                phyDevice_ = devices[i];
-                bestQueueFamilyIndices = candidateQueueFamilyIndices;
-                bestScore = score;
-                bestDeviceIndex = i;
-            }
+
+            PhysicalDeviceInfo info = physicalDeviceInfo(devices[i], static_cast<uint32_t>(i));
+            LOG_INFO("Suitable {} GPU [{}]: {} ({}), UUID {}, Vulkan {}, driver {}, device-local {}",
+                     role_ == DeviceRole::Training ? "training" : "presentation",
+                     info.vulkanIndex,
+                     info.name,
+                     info.typeName,
+                     info.uuid.empty() ? "unavailable" : info.uuid,
+                     info.apiVersion,
+                     info.driverVersion,
+                     formatMemorySize(info.deviceLocalMemoryBytes));
+            availablePhysicalDeviceInfos_.push_back(std::move(info));
+            suitableDevices.push_back({devices[i], candidateQueueFamilyIndices, score});
         }
     }
-    
-    if (phyDevice_ == VK_NULL_HANDLE) {
+
+    if (suitableDevices.empty()) {
         LOG_ERROR("Failed to find a suitable GPU");
         throw std::runtime_error("Failed to find a suitable GPU");
     }
-    
-    vk::PhysicalDeviceProperties device_properties = phyDevice_.getProperties();
-    queueFamilyIndices_ = bestQueueFamilyIndices;
-    LOG_DEBUG("Selected device {} with score {}", bestDeviceIndex, bestScore);
-    LOG_INFO("Selected physical device: {} ({})", device_properties.deviceName, deviceTypeName(device_properties.deviceType));
+
+    size_t selectedCandidateIndex = 0;
+    if (gpuSelector_.has_value()) {
+        std::vector<GpuSelectionCandidate> selectionCandidates;
+        selectionCandidates.reserve(availablePhysicalDeviceInfos_.size());
+        for (const PhysicalDeviceInfo& info : availablePhysicalDeviceInfos_) {
+            selectionCandidates.push_back({info.vulkanIndex, info.name, info.uuid});
+        }
+
+        const GpuSelectionResult result = selectGpuCandidate(selectionCandidates, *gpuSelector_);
+        if (!result) {
+            const std::string error = result.error + ". Suitable GPUs:" +
+                                      suitableDeviceList(availablePhysicalDeviceInfos_);
+            LOG_ERROR("{}", error);
+            throw std::runtime_error(error);
+        }
+        selectedCandidateIndex = *result.candidateIndex;
+    } else {
+        for (size_t index = 1; index < suitableDevices.size(); ++index) {
+            if (suitableDevices[index].score > suitableDevices[selectedCandidateIndex].score) {
+                selectedCandidateIndex = index;
+            }
+        }
+    }
+
+    const SuitableDevice& selectedDevice = suitableDevices[selectedCandidateIndex];
+    phyDevice_ = selectedDevice.device;
+    queueFamilyIndices_ = selectedDevice.queueFamilyIndices;
+    selectedPhysicalDeviceInfo_ = availablePhysicalDeviceInfos_[selectedCandidateIndex];
+    LOG_INFO("Selected {} device [{}]: {} ({})",
+             role_ == DeviceRole::Training ? "training" : "presentation",
+             selectedPhysicalDeviceInfo_.vulkanIndex,
+             selectedPhysicalDeviceInfo_.name, selectedPhysicalDeviceInfo_.typeName);
+    LOG_INFO("Selected {} GPU details: UUID {}, Vulkan {}, driver {}, device-local {}",
+             role_ == DeviceRole::Training ? "training" : "presentation",
+             selectedPhysicalDeviceInfo_.uuid.empty() ? "unavailable" : selectedPhysicalDeviceInfo_.uuid,
+             selectedPhysicalDeviceInfo_.apiVersion,
+             selectedPhysicalDeviceInfo_.driverVersion,
+             formatMemorySize(selectedPhysicalDeviceInfo_.deviceLocalMemoryBytes));
 }
 
 bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface, QueueFamilyIndices& queueFamilyIndices) {
@@ -297,31 +461,56 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface,
             queueFamilyIndices.graphicsIndex = i;
         }
         
-        // 查找呈现队列
-        vk::Bool32 present_support = false;
-        vk::Result result = device.getSurfaceSupportKHR(i, surface, &present_support);
-        if (result == vk::Result::eSuccess && present_support) {
-            queueFamilyIndices.presentIndex = i;
+        // 训练设备不需要查询窗口 Surface 的呈现能力。
+        if (role_ == DeviceRole::Presentation) {
+            vk::Bool32 present_support = false;
+            vk::Result result = device.getSurfaceSupportKHR(i, surface, &present_support);
+            if (result == vk::Result::eSuccess && present_support) {
+                queueFamilyIndices.presentIndex = i;
+            }
         }
 
-        // 查找专用计算队列（支持计算但不支持图形）
-        if ((queueFamily.queueFlags & vk::QueueFlagBits::eCompute) &&
-            !(queueFamily.queueFlags & vk::QueueFlagBits::eGraphics)) {
-            // 优先选择专用计算队列
-            if (!queueFamilyIndices.computeIndex.has_value()) {
+        // 查找计算队列，优先使用不带 graphics 的专用队列。
+        if (queueFamily.queueFlags & vk::QueueFlagBits::eCompute) {
+            const bool candidateDedicated =
+                !(queueFamily.queueFlags & vk::QueueFlagBits::eGraphics);
+            const bool currentDedicated = queueFamilyIndices.computeIndex.has_value() &&
+                !(queue_families[*queueFamilyIndices.computeIndex].queueFlags &
+                  vk::QueueFlagBits::eGraphics);
+            if (!queueFamilyIndices.computeIndex.has_value() ||
+                (candidateDedicated && !currentDedicated)) {
                 queueFamilyIndices.computeIndex = i;
-                LOG_DEBUG("Found dedicated compute queue family: {}", i);
+                if (candidateDedicated) {
+                    LOG_DEBUG("Found dedicated compute queue family: {}", i);
+                }
             }
         }
         
-        // 查找专用传输队列（支持传输但不支持图形和计算）
-        if ((queueFamily.queueFlags & vk::QueueFlagBits::eTransfer) &&
-            !(queueFamily.queueFlags & vk::QueueFlagBits::eGraphics) &&
-            !(queueFamily.queueFlags & vk::QueueFlagBits::eCompute)) {
-            // 优先选择专用传输队列
-            if (!queueFamilyIndices.transferIndex.has_value()) {
+        // 查找传输队列，优先使用不带 graphics/compute 的专用队列。
+        if (queueFamily.queueFlags & vk::QueueFlagBits::eTransfer) {
+            const bool candidateDedicated =
+                !(queueFamily.queueFlags & vk::QueueFlagBits::eGraphics) &&
+                !(queueFamily.queueFlags & vk::QueueFlagBits::eCompute);
+            const bool currentDedicated = queueFamilyIndices.transferIndex.has_value() &&
+                !(queue_families[*queueFamilyIndices.transferIndex].queueFlags &
+                  vk::QueueFlagBits::eGraphics) &&
+                !(queue_families[*queueFamilyIndices.transferIndex].queueFlags &
+                  vk::QueueFlagBits::eCompute);
+            if (!queueFamilyIndices.transferIndex.has_value() ||
+                (candidateDedicated && !currentDedicated)) {
                 queueFamilyIndices.transferIndex = i;
             }
+        }
+    }
+
+    if (role_ == DeviceRole::Training && queueFamilyIndices.computeIndex.has_value()) {
+        const bool hasDedicatedTransfer = queueFamilyIndices.transferIndex.has_value() &&
+            !(queue_families[*queueFamilyIndices.transferIndex].queueFlags &
+              vk::QueueFlagBits::eGraphics) &&
+            !(queue_families[*queueFamilyIndices.transferIndex].queueFlags &
+              vk::QueueFlagBits::eCompute);
+        if (!hasDedicatedTransfer) {
+            queueFamilyIndices.transferIndex = queueFamilyIndices.computeIndex;
         }
     }
     
@@ -340,7 +529,10 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface,
     }
 
     std::set<std::string> required_extensions;
-    for (const char* extension : deviceExtensions_) {
+    const auto& deviceExtensions = role_ == DeviceRole::Training
+        ? trainingDeviceExtensions_
+        : presentationDeviceExtensions_;
+    for (const char* extension : deviceExtensions) {
         required_extensions.insert(extension);
     }
     
@@ -355,8 +547,9 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface,
     }
     
     // 检查交换链支持
-    bool swapchain_adequate = false;
-    if (extensions_supported && queueFamilyIndices.presentIndex.has_value()) {
+    bool swapchain_adequate = role_ == DeviceRole::Training;
+    if (role_ == DeviceRole::Presentation &&
+        extensions_supported && queueFamilyIndices.presentIndex.has_value()) {
         auto formats = device.getSurfaceFormatsKHR(surface);
         auto present_modes = device.getSurfacePresentModesKHR(surface);
         swapchain_adequate = !formats.empty() && !present_modes.empty();
@@ -365,24 +558,37 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface,
     // 检查特性支持
     vk::PhysicalDeviceFeatures supported_features = device.getFeatures();
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
+    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{};
     vk::PhysicalDeviceFeatures2 features2{};
     features2.setPNext(&vulkan11Features);
+    vulkan11Features.setPNext(&atomicFloatFeatures);
     device.getFeatures2(&features2);
     
-    bool featuresSupported = supported_features.samplerAnisotropy &&
-                             vulkan11Features.shaderDrawParameters;
+    const bool featuresSupported = role_ == DeviceRole::Training
+        ? atomicFloatFeatures.shaderBufferFloat32Atomics &&
+              atomicFloatFeatures.shaderBufferFloat32AtomicAdd
+        : supported_features.samplerAnisotropy &&
+              vulkan11Features.shaderDrawParameters;
+    const bool queuesSupported = role_ == DeviceRole::Training
+        ? queueFamilyIndices.computeIndex.has_value()
+        : static_cast<bool>(queueFamilyIndices);
     
-    if (!queueFamilyIndices) {
-        LOG_DEBUG("Device {} rejected: missing graphics or present queue", properties.deviceName);
+    if (!queuesSupported) {
+        LOG_DEBUG("Device {} rejected: missing {} queue",
+                  properties.deviceName,
+                  role_ == DeviceRole::Training ? "compute" : "graphics or present");
     }
-    if (extensions_supported && queueFamilyIndices.presentIndex.has_value() && !swapchain_adequate) {
+    if (role_ == DeviceRole::Presentation && extensions_supported &&
+        queueFamilyIndices.presentIndex.has_value() && !swapchain_adequate) {
         LOG_DEBUG("Device {} rejected: inadequate swapchain support", properties.deviceName);
     }
     if (!featuresSupported) {
-        LOG_DEBUG("Device {} rejected: missing required Vulkan features", properties.deviceName);
+        LOG_DEBUG("Device {} rejected: missing required {} Vulkan features",
+                  properties.deviceName,
+                  role_ == DeviceRole::Training ? "training" : "presentation");
     }
     
-    return queueFamilyIndices &&
+    return queuesSupported &&
            extensions_supported && swapchain_adequate &&
            featuresSupported;
 }

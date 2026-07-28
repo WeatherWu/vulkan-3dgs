@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.hpp>
 #include <cstddef>
+#include <initializer_list>
 #include "vulkan/command_pool.hpp"
 
 namespace vulkan3DGS {
@@ -27,7 +28,8 @@ public:
                 const void* data,
                 vk::DeviceSize size,
                 vk::BufferUsageFlags usage,
-                vk::MemoryPropertyFlags properties);
+                vk::MemoryPropertyFlags properties,
+                std::initializer_list<uint32_t> queueFamilyIndices = {});
 
     // 清理资源
     void cleanup();

@@ -15,6 +15,8 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <iomanip>
+#include <sstream>
 
 #include <ImGuiFileDialog.h>
 namespace vulkan3DGS {
@@ -55,9 +57,22 @@ std::filesystem::path existingDirectoryOrCurrent(const std::string& value) {
     return std::filesystem::current_path();
 }
 
+std::string gpuDisplayLabel(const Device::PhysicalDeviceInfo& info) {
+    constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
+    std::ostringstream stream;
+    stream << '[' << info.vulkanIndex << "] " << info.name << " (" << info.typeName
+           << ", " << std::fixed << std::setprecision(1)
+           << static_cast<double>(info.deviceLocalMemoryBytes) / bytesPerGiB << " GiB)";
+    return stream.str();
+}
+
 } // namespace
 
-Application::Application(const std::string& title, int width, int height, RenderMode mode) 
+Application::Application(const std::string& title,
+                         int width,
+                         int height,
+                         RenderMode mode,
+                         std::optional<std::string> gpuSelector)
     : current_mode_(mode) {
     // 设置日志级别为DEBUG（仅在Debug模式下）
 #ifdef _DEBUG
@@ -87,6 +102,12 @@ Application::Application(const std::string& title, int width, int height, Render
     renderer_->setImGuiDrawCallback([this]() {
         drawImGuiControls();
     });
+
+    training_device_ = std::make_unique<Device>(vk::SurfaceKHR{},
+                                                std::move(gpuSelector),
+                                                DeviceRole::Training);
+    training_device_->createDevice();
+    syncTrainingGpuSelection();
 
     window_->set_resize_callback([this](int width, int height) {
         if (width <= 0 || height <= 0) {
@@ -135,6 +156,10 @@ void Application::run() {
 
 void Application::tick() {
     window_->poll_events();
+
+    if (pending_training_gpu_selector_.has_value()) {
+        applyPendingTrainingGpuSelection();
+    }
 
     double currentTime = glfwGetTime();
     float deltaTime = 0.0f;
@@ -305,6 +330,11 @@ void Application::setTrueCamera(const vulkan3DGS::Camera& camera) {
 void Application::cleanup() {
     training_.cleanup();
     training_initialized_ = false;
+    training_device_.reset();
+
+    if (vulkan_context_ && vulkan_context_->isInitialized()) {
+        VULKAN_HPP_DEFAULT_DISPATCHER.init(vulkan_context_->Device());
+    }
 
     if (renderer_) {
         renderer_->cleanup();
@@ -513,6 +543,101 @@ void Application::drawImGuiControls() {
     drawTrainingControls();
 }
 
+void Application::drawTrainingGpuControl() {
+    if (!training_device_) {
+        ImGui::TextDisabled("Training GPU unavailable");
+        return;
+    }
+
+    const auto& availableGpus = training_device_->getAvailablePhysicalDeviceInfos();
+    const auto& selectedGpu = training_device_->getSelectedPhysicalDeviceInfo();
+    if (availableGpus.empty()) {
+        ImGui::TextDisabled("Training GPU unavailable");
+        return;
+    }
+
+    training_gpu_ui_selection_ = std::min(training_gpu_ui_selection_, availableGpus.size() - 1);
+    const std::string previewLabel = gpuDisplayLabel(availableGpus[training_gpu_ui_selection_]);
+    if (training_running_) {
+        ImGui::BeginDisabled();
+    }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("Training GPU", previewLabel.c_str())) {
+        for (size_t index = 0; index < availableGpus.size(); ++index) {
+            const Device::PhysicalDeviceInfo& gpu = availableGpus[index];
+            const std::string label = gpuDisplayLabel(gpu);
+            const bool isSelected = index == training_gpu_ui_selection_;
+            if (ImGui::Selectable(label.c_str(), isSelected)) {
+                training_gpu_ui_selection_ = index;
+                if (gpu.vulkanIndex != selectedGpu.vulkanIndex) {
+                    pending_training_gpu_selector_ = gpu.uuid.empty()
+                        ? std::to_string(gpu.vulkanIndex)
+                        : gpu.uuid;
+                }
+            }
+            if (isSelected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (training_running_) {
+        ImGui::EndDisabled();
+    }
+    if (ImGui::IsItemHovered()) {
+        const Device::PhysicalDeviceInfo& gpu = availableGpus[training_gpu_ui_selection_];
+        ImGui::BeginTooltip();
+        ImGui::Text("Vulkan %s", gpu.apiVersion.c_str());
+        ImGui::Text("Driver %s", gpu.driverVersion.c_str());
+        if (!gpu.uuid.empty()) {
+            ImGui::Text("UUID %s", gpu.uuid.c_str());
+        }
+        ImGui::EndTooltip();
+    }
+}
+
+void Application::syncTrainingGpuSelection() {
+    if (!training_device_) {
+        training_gpu_ui_selection_ = 0;
+        return;
+    }
+    const auto& availableGpus = training_device_->getAvailablePhysicalDeviceInfos();
+    const uint32_t selectedIndex =
+        training_device_->getSelectedPhysicalDeviceInfo().vulkanIndex;
+    const auto selected = std::find_if(
+        availableGpus.begin(), availableGpus.end(), [selectedIndex](const Device::PhysicalDeviceInfo& info) {
+            return info.vulkanIndex == selectedIndex;
+        });
+    training_gpu_ui_selection_ = selected == availableGpus.end()
+        ? 0
+        : static_cast<size_t>(std::distance(availableGpus.begin(), selected));
+}
+
+void Application::applyPendingTrainingGpuSelection() {
+    const std::string selector = *pending_training_gpu_selector_;
+    pending_training_gpu_selector_.reset();
+    training_running_ = false;
+
+    try {
+        training_.cleanup();
+        training_initialized_ = false;
+        training_dataset_loaded_ = false;
+        training_steps_done_ = 0;
+
+        auto replacement = std::make_unique<Device>(vk::SurfaceKHR{}, selector, DeviceRole::Training);
+        replacement->createDevice();
+        training_device_ = std::move(replacement);
+        syncTrainingGpuSelection();
+
+        const auto& gpu = training_device_->getSelectedPhysicalDeviceInfo();
+        setTrainingStatus("Training GPU selected: [" + std::to_string(gpu.vulkanIndex) +
+                          "] " + gpu.name + ". Dataset must be loaded again.");
+    } catch (const std::exception& error) {
+        syncTrainingGpuSelection();
+        setTrainingError(std::string("Failed to switch training GPU: ") + error.what());
+    }
+}
+
 void Application::handleDroppedFiles(const std::vector<std::string>& paths) {
     if (paths.empty()) {
         return;
@@ -583,6 +708,9 @@ void Application::updateModelMatrix() {
 
 void Application::drawTrainingControls() {
     ImGui::Begin("Training");
+
+    drawTrainingGpuControl();
+    ImGui::Separator();
 
     if (training_running_) {
         ImGui::BeginDisabled();
@@ -1021,18 +1149,22 @@ void Application::loadTrainingDatasetFromUi() {
     }
 
     try {
-        auto& context = Context::Instance();
-        auto& device = context.getDevice();
+        if (!training_device_) {
+            throw std::runtime_error("Training GPU is not initialized");
+        }
+        auto& device = *training_device_;
+        const uint32_t computeFamily = device.getQueueFamilyIndices().computeIndex.value();
         auto transferFamily = device.getQueueFamilyIndices().transferIndex.value_or(
-            device.getQueueFamilyIndices().graphicsIndex.value());
+            computeFamily);
         if (training_.isInitialized()) {
             training_.cleanup();
             training_initialized_ = false;
         }
-        training_.initialize(context.Device(),
-                             context.PhysicalDevice(),
-                             context.getTransferQueue(),
-                             transferFamily);
+        training_.initialize(device.getDevice(),
+                             device.getPhysicalDevice(),
+                             device.getTransferQueue(),
+                             transferFamily,
+                             computeFamily);
         training_.loadMipNeRF360Dataset(inputBufferString(training_dataset_path_),
                                         static_cast<uint32_t>(training_downscale_));
         training_initialized_ = false;
@@ -1059,19 +1191,21 @@ void Application::initializeTrainingIfNeeded() {
         throw std::runtime_error("Renderer is not initialized");
     }
 
-    auto& context = Context::Instance();
-    auto& device = context.getDevice();
-    auto computeFamily = device.getQueueFamilyIndices().computeIndex.value_or(
-        device.getQueueFamilyIndices().graphicsIndex.value());
+    if (!training_device_) {
+        throw std::runtime_error("Training GPU is not initialized");
+    }
+    auto& device = *training_device_;
+    auto computeFamily = device.getQueueFamilyIndices().computeIndex.value();
     auto transferFamily = device.getQueueFamilyIndices().transferIndex.value_or(
-        device.getQueueFamilyIndices().graphicsIndex.value());
+        computeFamily);
 
-    training_.initialize(context.Device(),
-                         context.PhysicalDevice(),
-                         context.getTransferQueue(),
-                         transferFamily);
-    training_.initializeTrainingRenderers(context.Device(),
-                                          context.PhysicalDevice(),
+    training_.initialize(device.getDevice(),
+                         device.getPhysicalDevice(),
+                         device.getTransferQueue(),
+                         transferFamily,
+                         computeFamily);
+    training_.initializeTrainingRenderers(device.getDevice(),
+                                          device.getPhysicalDevice(),
                                           device.getComputeQueue(),
                                           computeFamily,
                                           std::max(training_.gaussianCount(), 1u),

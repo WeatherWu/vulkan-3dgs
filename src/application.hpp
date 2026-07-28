@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include <array>
@@ -15,6 +16,7 @@ namespace vulkan3DGS {
 
 class Window;
 class Context;
+class Device;
 class Renderer;
 class GaussianModel;
 
@@ -30,7 +32,11 @@ enum class RenderMode {
 
 class Application {
 public:
-    Application(const std::string& title, int width, int height, RenderMode mode = RenderMode::GaussianGraphics);
+    Application(const std::string& title,
+                int width,
+                int height,
+                RenderMode mode = RenderMode::GaussianGraphics,
+                std::optional<std::string> gpuSelector = std::nullopt);
     virtual ~Application();
     
     void run();
@@ -77,6 +83,9 @@ private:
     // 工厂方法：根据渲染模式创建对应的渲染器实例
     std::unique_ptr<Renderer> createRenderer(RenderMode mode);
     void drawImGuiControls();
+    void drawTrainingGpuControl();
+    void applyPendingTrainingGpuSelection();
+    void syncTrainingGpuSelection();
     void resetOrbitFromModel();
     void updateOrbitCamera(float delta_time);
     void updateOrbitInput(float delta_time);
@@ -127,6 +136,9 @@ private:
     double last_tick_time_ = 0.0;
     PresentModePreference present_mode_preference_ = PresentModePreference::MaxFps;
     bool present_mode_dirty_ = false;
+    std::unique_ptr<Device> training_device_;
+    size_t training_gpu_ui_selection_ = 0;
+    std::optional<std::string> pending_training_gpu_selector_;
 
     GaussianTraining training_;
     bool training_initialized_ = false;

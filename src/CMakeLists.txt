@@ -28,6 +28,7 @@ add_library(vulkan_3dgs_core STATIC
     # Context 模块（Vulkan 基础环境）
     context/context.cpp
     context/device.cpp
+    context/device_selection.cpp
     
     # Vulkan 资源封装（通用模块）
     vulkan/command_pool.cpp

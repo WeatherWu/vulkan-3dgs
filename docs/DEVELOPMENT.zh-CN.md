@@ -43,6 +43,15 @@ tests/                                 CPU 和缓存测试
 
 训练路径不是 `GaussianRenderer` 的封装，它拥有独立的 GPU 资源和 compute pipeline。
 
+应用维护两个逻辑设备角色：
+
+- presentation device 要求 graphics、当前 GLFW Surface 的 present、swapchain、push descriptor、anisotropy 和 shader draw parameters，负责普通渲染与 ImGui；
+- training device 不查询 Surface，只要求 compute queue、push descriptor 和 `VK_EXT_shader_atomic_float` 的 buffer float32 atomic add，transfer 可使用专用队列或回退到 compute queue。
+
+`Training` 面板的 GPU 选择和 `--gpu` 只作用于 training device。切换训练设备会清理已有训练 GPU 资源并要求重新加载数据集，不重建 GLFW、ImGui 或 swapchain。训练 `Buffer` 必须显式使用 training device 的 transfer/compute queue-family 索引，不能从全局 presentation `Context` 获取队列族。
+
+全局 Vulkan-Hpp dispatcher 只由 presentation device 初始化。Training device 不重新初始化 dispatcher，否则其未启用的 swapchain 函数可能覆盖显示路径的 device-level 函数指针。
+
 ## Gaussian PLY 数据
 
 普通渲染器支持 binary little-endian 3DGS 风格 PLY 属性：
@@ -137,6 +146,8 @@ Loss 组合 L1 和 DSSIM：
 ```
 
 SSIM 使用 sigma 1.5 的 11x11 Gaussian window。`SsimBackwardState` 保存优化后的 backward 系数，避免原先 window 内再次遍历 window 的嵌套计算。
+
+Pixel-to-2DGS 投影梯度只对九个可微分量执行原子累加：center XY、conic/opacity XYZW 和 RGB。深度、整数屏幕半径及颜色 padding 保持为零，不执行原子加。
 
 Adam-style optimizer 为 position、SH DC/rest、opacity、scale 和 rotation 提供独立学习率。Position learning rate 支持初始值、最终值、delay multiplier、最大步数调度，并乘以 reference 3DGS 使用的 scene extent spatial learning-rate scale。默认 opacity LR、Adam epsilon 和关闭 gradient clipping 的行为与 reference 3DGS 对齐。
 

@@ -16,11 +16,13 @@ namespace vulkan3DGS {
 void TrainingBuffers::initialize(vk::Device device,
                                  vk::PhysicalDevice physicalDevice,
                                  vk::Queue transferQueue,
-                                 uint32_t transferQueueFamilyIndex) {
+                                 uint32_t transferQueueFamilyIndex,
+                                 uint32_t computeQueueFamilyIndex) {
     device_ = device;
     physicalDevice_ = physicalDevice;
     transferQueue_ = transferQueue;
     transferQueueFamilyIndex_ = transferQueueFamilyIndex;
+    computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     try {
         tileItemCountReadback_.create(
             device_,
@@ -31,7 +33,8 @@ void TrainingBuffers::initialize(vk::Device device,
             sizeof(glm::uvec4),
             vk::BufferUsageFlagBits::eTransferDst,
             vk::MemoryPropertyFlagBits::eHostVisible |
-                vk::MemoryPropertyFlagBits::eHostCoherent);
+                vk::MemoryPropertyFlagBits::eHostCoherent,
+            {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
         tileItemCountReadbackMapped_ = device_.mapMemory(
             tileItemCountReadback_.getMemory(), 0, sizeof(glm::uvec4));
     } catch (...) {
@@ -88,6 +91,7 @@ void TrainingBuffers::cleanup() {
     physicalDevice_ = nullptr;
     transferQueue_ = nullptr;
     transferQueueFamilyIndex_ = 0;
+    computeQueueFamilyIndex_ = 0;
 }
 
 void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
@@ -145,8 +149,9 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
                        sizeof(AdamState) * safeGaussianCount,
                        vk::BufferUsageFlagBits::eStorageBuffer |
                            vk::BufferUsageFlagBits::eTransferSrc |
-                           vk::BufferUsageFlagBits::eTransferDst,
-                       vk::MemoryPropertyFlagBits::eDeviceLocal);
+                       vk::BufferUsageFlagBits::eTransferDst,
+                       vk::MemoryPropertyFlagBits::eDeviceLocal,
+                       {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     createStorageBuffer(projected_, sizeof(ProjectedGaussian) * safeGaussianCount);
     tileItemCapacity_ = static_cast<uint32_t>(
         std::min<uint64_t>(std::max<uint64_t>(static_cast<uint64_t>(safeGaussianCount) * 8ull, 1ull),
@@ -185,8 +190,9 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
                      sizeof(glm::uvec4),
                      vk::BufferUsageFlagBits::eStorageBuffer |
                          vk::BufferUsageFlagBits::eTransferSrc |
-                         vk::BufferUsageFlagBits::eTransferDst,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal);
+                     vk::BufferUsageFlagBits::eTransferDst,
+                     vk::MemoryPropertyFlagBits::eDeviceLocal,
+                     {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * safeGaussianCount);
     createUniformBuffer(camera_, sizeof(TrainingForwardCamera));
 
@@ -256,7 +262,8 @@ void TrainingBuffers::ensureTileSortStorage(uint32_t tileItemCapacity,
                             nullptr,
                             sortStorageSize,
                             sortStorageUsage,
-                            vk::MemoryPropertyFlagBits::eDeviceLocal);
+                            vk::MemoryPropertyFlagBits::eDeviceLocal,
+                            {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 }
 
 void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
@@ -294,8 +301,9 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
                                   zeroCounters.size() * sizeof(uint32_t),
                                   vk::BufferUsageFlagBits::eStorageBuffer |
                                       vk::BufferUsageFlagBits::eTransferSrc |
-                                      vk::BufferUsageFlagBits::eTransferDst,
-                                  vk::MemoryPropertyFlagBits::eDeviceLocal);
+                                  vk::BufferUsageFlagBits::eTransferDst,
+                                  vk::MemoryPropertyFlagBits::eDeviceLocal,
+                                  {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     densificationCapacity_ = safeCapacity;
 }
 
@@ -497,7 +505,8 @@ void TrainingBuffers::createStorageBuffer(Buffer& buffer, vk::DeviceSize size) {
                   vk::BufferUsageFlagBits::eStorageBuffer |
                       vk::BufferUsageFlagBits::eTransferSrc |
                       vk::BufferUsageFlagBits::eTransferDst,
-                  vk::MemoryPropertyFlagBits::eDeviceLocal);
+                  vk::MemoryPropertyFlagBits::eDeviceLocal,
+                  {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 }
 
 void TrainingBuffers::createZeroedStorageBuffer(Buffer& buffer, vk::DeviceSize size) {
@@ -511,7 +520,8 @@ void TrainingBuffers::createZeroedStorageBuffer(Buffer& buffer, vk::DeviceSize s
                   vk::BufferUsageFlagBits::eStorageBuffer |
                       vk::BufferUsageFlagBits::eTransferSrc |
                       vk::BufferUsageFlagBits::eTransferDst,
-                  vk::MemoryPropertyFlagBits::eDeviceLocal);
+                  vk::MemoryPropertyFlagBits::eDeviceLocal,
+                  {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 }
 
 void TrainingBuffers::createUniformBuffer(Buffer& buffer, vk::DeviceSize size) {
@@ -524,7 +534,8 @@ void TrainingBuffers::createUniformBuffer(Buffer& buffer, vk::DeviceSize size) {
                   vk::BufferUsageFlagBits::eUniformBuffer |
                       vk::BufferUsageFlagBits::eTransferDst,
                   vk::MemoryPropertyFlagBits::eHostVisible |
-                      vk::MemoryPropertyFlagBits::eHostCoherent);
+                      vk::MemoryPropertyFlagBits::eHostCoherent,
+                  {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 }
 
 } // namespace vulkan3DGS

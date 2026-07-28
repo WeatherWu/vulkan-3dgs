@@ -173,7 +173,8 @@ GaussianTraining::~GaussianTraining() {
 void GaussianTraining::initialize(vk::Device device,
                                   vk::PhysicalDevice physicalDevice,
                                   vk::Queue transferQueue,
-                                  uint32_t transferQueueFamilyIndex) {
+                                  uint32_t transferQueueFamilyIndex,
+                                  uint32_t computeQueueFamilyIndex) {
     if (initialized_) {
         return;
     }
@@ -182,7 +183,12 @@ void GaussianTraining::initialize(vk::Device device,
     physicalDevice_ = physicalDevice;
     transferQueue_ = transferQueue;
     transferQueueFamilyIndex_ = transferQueueFamilyIndex;
-    buffers_.initialize(device, physicalDevice, transferQueue, transferQueueFamilyIndex);
+    computeQueueFamilyIndex_ = computeQueueFamilyIndex;
+    buffers_.initialize(device,
+                        physicalDevice,
+                        transferQueue,
+                        transferQueueFamilyIndex,
+                        computeQueueFamilyIndex);
     initialized_ = true;
 }
 
@@ -296,7 +302,8 @@ void GaussianTraining::initializeTraining(GLFWwindow* window,
     initialize(device,
                physicalDevice,
                transferQueue,
-                       transferQueueFamilyIndex);
+               transferQueueFamilyIndex,
+               computeQueueFamilyIndex);
     resize(gaussianCount, extent);
     (void)window;
     initializeTrainingRenderers(device,
@@ -889,6 +896,7 @@ void GaussianTraining::initializeDeviceImageCache() {
                           physicalDevice_,
                           transferQueue_,
                           transferQueueFamilyIndex_,
+                          computeQueueFamilyIndex_,
                           firstFrame.width,
                           firstFrame.height,
                           static_cast<uint32_t>(dataset_.size()),

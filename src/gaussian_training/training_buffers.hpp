@@ -14,7 +14,8 @@ public:
     void initialize(vk::Device device,
                     vk::PhysicalDevice physicalDevice,
                     vk::Queue transferQueue,
-                    uint32_t transferQueueFamilyIndex);
+                    uint32_t transferQueueFamilyIndex,
+                    uint32_t computeQueueFamilyIndex);
     void cleanup();
 
     void resize(uint32_t gaussianCount, TrainingExtent extent);
@@ -91,6 +92,7 @@ private:
     vk::PhysicalDevice physicalDevice_ = nullptr;
     vk::Queue transferQueue_ = nullptr;
     uint32_t transferQueueFamilyIndex_ = 0;
+    uint32_t computeQueueFamilyIndex_ = 0;
 
     uint32_t gaussianCapacity_ = 0;
     uint32_t densificationCapacity_ = 0;

@@ -4,8 +4,8 @@
 #include "utils/logger.hpp"
 #include <cstring>
 #include <stdexcept>
-#include <array>
 #include <algorithm>
+#include <vector>
 
 namespace vulkan3DGS {
 
@@ -62,7 +62,8 @@ void Buffer::create(vk::Device device,
                     const void* data,
                     vk::DeviceSize size,
                     vk::BufferUsageFlags usage,
-                    vk::MemoryPropertyFlags properties) {
+                    vk::MemoryPropertyFlags properties,
+                    std::initializer_list<uint32_t> queueFamilyIndices) {
     LOG_DEBUG("Buffer::create - Starting buffer creation (size: {} bytes)", size);
     
     device_ = device;
@@ -74,15 +75,22 @@ void Buffer::create(vk::Device device,
 
     // 1. 创建目标缓冲区
     LOG_DEBUG("Buffer::create - Creating Vulkan buffer");
-    std::array<uint32_t, 3> queueFamilies = {
-        transferQueueFamilyIndex_,
-        Context::Instance().getDevice().getQueueFamilyIndices().graphicsIndex.value(),
-        Context::Instance().getDevice().getQueueFamilyIndices().computeIndex.value_or(
-            Context::Instance().getDevice().getQueueFamilyIndices().graphicsIndex.value())
-    };
+    std::vector<uint32_t> queueFamilies;
+    if (queueFamilyIndices.size() > 0) {
+        queueFamilies.assign(queueFamilyIndices.begin(), queueFamilyIndices.end());
+    } else {
+        queueFamilies = {
+            transferQueueFamilyIndex_,
+            Context::Instance().getDevice().getQueueFamilyIndices().graphicsIndex.value(),
+            Context::Instance().getDevice().getQueueFamilyIndices().computeIndex.value_or(
+                Context::Instance().getDevice().getQueueFamilyIndices().graphicsIndex.value())
+        };
+    }
+    queueFamilies.push_back(transferQueueFamilyIndex_);
     std::sort(queueFamilies.begin(), queueFamilies.end());
     auto uniqueEnd = std::unique(queueFamilies.begin(), queueFamilies.end());
-    uint32_t queueFamilyCount = static_cast<uint32_t>(std::distance(queueFamilies.begin(), uniqueEnd));
+    queueFamilies.erase(uniqueEnd, queueFamilies.end());
+    uint32_t queueFamilyCount = static_cast<uint32_t>(queueFamilies.size());
 
     vk::BufferCreateInfo bufferInfo{};
     bufferInfo.setSize(size)

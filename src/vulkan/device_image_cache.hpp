@@ -52,6 +52,7 @@ public:
                     vk::PhysicalDevice physicalDevice,
                     vk::Queue transferQueue,
                     uint32_t transferQueueFamilyIndex,
+                    uint32_t computeQueueFamilyIndex,
                     uint32_t width,
                     uint32_t height,
                     uint32_t imageCount,
@@ -95,6 +96,7 @@ private:
     vk::PhysicalDevice physicalDevice_ = nullptr;
     vk::Queue transferQueue_ = nullptr;
     uint32_t transferQueueFamilyIndex_ = 0;
+    uint32_t computeQueueFamilyIndex_ = 0;
     uint32_t imageCount_ = 0;
     uint32_t deviceLocalHeapIndex_ = 0;
     vk::Buffer stagingBuffer_ = nullptr;

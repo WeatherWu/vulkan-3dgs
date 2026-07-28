@@ -45,6 +45,17 @@ Run:
 .\build\bin\Release\vulkan-3dgs.exe
 ```
 
+After startup, select the training device from the `Training GPU` combo in the `Training` panel. The presentation device continues to own the Surface and ImGui, while the training device requires compute, push descriptors, and float32 atomic add but does not require graphics, presentation, or a swapchain. Switching the training GPU releases existing training GPU resources and requires the dataset to be loaded again; the application does not restart.
+
+A training GPU can also be selected at startup by Vulkan enumeration index, device name, or UUID:
+
+```powershell
+.\build\bin\Release\vulkan-3dgs.exe --gpu 1
+.\build\bin\Release\vulkan-3dgs.exe --gpu "NVIDIA GeForce RTX 4090"
+```
+
+Without `--gpu`, automatic selection prefers a discrete GPU that passes the training requirements.
+
 Ubuntu example:
 
 ```bash

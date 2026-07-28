@@ -8,8 +8,23 @@
 
 namespace vulkan3DGS {
 
+enum class DeviceRole {
+    Presentation,
+    Training,
+};
+
 class Device {
 public:
+    struct PhysicalDeviceInfo {
+        uint32_t vulkanIndex = 0;
+        std::string name;
+        std::string uuid;
+        std::string typeName;
+        std::string apiVersion;
+        std::string driverVersion;
+        uint64_t deviceLocalMemoryBytes = 0;
+    };
+
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsIndex;
         std::optional<uint32_t> presentIndex;
@@ -21,7 +36,9 @@ public:
         }
     };
 
-    Device(vk::SurfaceKHR surface);
+    Device(vk::SurfaceKHR surface,
+           std::optional<std::string> gpuSelector = std::nullopt,
+           DeviceRole role = DeviceRole::Presentation);
     Device() = default;
     ~Device();
     
@@ -39,12 +56,19 @@ public:
     vk::Queue getComputeQueue() { return computeQueue_; }  // 新增：获取计算队列
     
     const QueueFamilyIndices& getQueueFamilyIndices() const { return queueFamilyIndices_; }
+    const PhysicalDeviceInfo& getSelectedPhysicalDeviceInfo() const { return selectedPhysicalDeviceInfo_; }
+    const std::vector<PhysicalDeviceInfo>& getAvailablePhysicalDeviceInfos() const {
+        return availablePhysicalDeviceInfos_;
+    }
+    DeviceRole role() const { return role_; }
     
     vk::CommandPool createCommandPool(uint32_t queue_family_index, vk::CommandPoolCreateFlags flags = {});
     void destroyCommandPool(vk::CommandPool command_pool);
     
 private:
     vk::SurfaceKHR surface_ = nullptr;  // 保存surface供createDevice使用
+    std::optional<std::string> gpuSelector_;
+    DeviceRole role_ = DeviceRole::Presentation;
     vk::PhysicalDevice phyDevice_ = nullptr;
     vk::Device device_ = nullptr;
 
@@ -53,10 +77,16 @@ private:
     vk::Queue transferQueue_ = nullptr;
     vk::Queue computeQueue_ = nullptr;  // 新增：计算队列
     QueueFamilyIndices queueFamilyIndices_;
+    PhysicalDeviceInfo selectedPhysicalDeviceInfo_;
+    std::vector<PhysicalDeviceInfo> availablePhysicalDeviceInfos_;
     
-    const std::vector<const char*> deviceExtensions_ = {
+    const std::vector<const char*> presentationDeviceExtensions_ = {
         vk::KHRSwapchainExtensionName,
         vk::KHRPushDescriptorExtensionName
+    };
+    const std::vector<const char*> trainingDeviceExtensions_ = {
+        vk::KHRPushDescriptorExtensionName,
+        vk::EXTShaderAtomicFloatExtensionName
     };
 };
 

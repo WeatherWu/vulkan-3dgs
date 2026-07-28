@@ -45,6 +45,17 @@ cmake --build build --config Release
 .\build\bin\Release\vulkan-3dgs.exe
 ```
 
+应用启动后可在 `Training` 面板的 `Training GPU` 下拉框中选择训练显卡。显示与 ImGui 继续使用支持 Surface present 的显示设备，训练设备只要求 compute、push descriptor 和 float32 atomic add，不要求 graphics、present 或 swapchain。切换训练显卡会清理旧训练 GPU 资源，数据集需要重新加载，但应用不会重启。
+
+也可以在启动时按 Vulkan 枚举索引、设备名称或 UUID 指定训练显卡：
+
+```powershell
+.\build\bin\Release\vulkan-3dgs.exe --gpu 1
+.\build\bin\Release\vulkan-3dgs.exe --gpu "NVIDIA GeForce RTX 4090"
+```
+
+未指定 `--gpu` 时，程序自动选择通过训练适用性检查的独立显卡。
+
 Ubuntu 示例：
 
 ```bash

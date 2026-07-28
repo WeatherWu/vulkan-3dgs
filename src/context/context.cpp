@@ -12,6 +12,7 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <set>
 #include <string>
 #include <memory>
+#include <utility>
 
 namespace vulkan3DGS {
 
@@ -69,7 +70,7 @@ void Context::initializeVulkanLoader() {
     LOG_DEBUG("Vulkan dynamic loader initialized");
 }
 
-void Context::initialize(GLFWwindow* window) {
+void Context::initialize(GLFWwindow* window, std::optional<std::string> gpuSelector) {
     // 防止重复初始化导致设备丢失
     if (device_ != nullptr) {
         LOG_WARN("Context already initialized, skipping duplicate initialization");
@@ -86,7 +87,7 @@ void Context::initialize(GLFWwindow* window) {
         setupDebugMessenger();
     }
 
-    device_ = std::make_unique<vulkan3DGS::Device>(surface_);
+    device_ = std::make_unique<vulkan3DGS::Device>(surface_, std::move(gpuSelector));
     device_->createDevice();
     
     LOG_INFO("Vulkan context initialized successfully");
