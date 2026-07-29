@@ -790,6 +790,32 @@ void Application::drawTrainingControls() {
         };
         ImGui::Combo("Mode", &training_mode_, trainingModes, IM_ARRAYSIZE(trainingModes));
         training_mode_ = std::clamp(training_mode_, 0, 1);
+        const char* pixelBackwardModes[] = {
+            "Auto",
+            "Direct",
+            "Workgroup Shared",
+            "Subgroup"
+        };
+        if (ImGui::Combo("Pixel Backward", &training_pixel_to_2dgs_mode_,
+                         pixelBackwardModes, IM_ARRAYSIZE(pixelBackwardModes))) {
+            training_pixel_to_2dgs_mode_ = std::clamp(training_pixel_to_2dgs_mode_, 0, 3);
+            training_.setPixelTo2DGSMode(
+                static_cast<TrainingPixelTo2DGSMode>(training_pixel_to_2dgs_mode_));
+        }
+        if (training_.isRendererInitialized()) {
+            const int activePixelBackwardMode = static_cast<int>(training_.activePixelTo2DGSMode());
+            ImGui::Text("Active Pixel Backward %s", pixelBackwardModes[activePixelBackwardMode]);
+        }
+        const char* forwardCompositeModes[] = {
+            "Direct",
+            "Workgroup Shared"
+        };
+        if (ImGui::Combo("Forward Composite", &training_forward_composite_mode_,
+                         forwardCompositeModes, IM_ARRAYSIZE(forwardCompositeModes))) {
+            training_forward_composite_mode_ = std::clamp(training_forward_composite_mode_, 0, 1);
+            training_.setForwardCompositeMode(
+                static_cast<TrainingForwardCompositeMode>(training_forward_composite_mode_));
+        }
         if (training_mode_ == 1) {
             training_total_iterations_ = 30000;
             ImGui::BeginDisabled();
@@ -1352,6 +1378,11 @@ void Application::applyTrainingConfigFromUi() {
     scheduleConfig.randomSeed = training_random_seed_;
     training_total_iterations_ = scheduleConfig.totalIterations > 0 ? scheduleConfig.totalIterations : 30000u;
     training_.setScheduleConfig(scheduleConfig);
+    training_.setPixelTo2DGSMode(
+        static_cast<TrainingPixelTo2DGSMode>(std::clamp(training_pixel_to_2dgs_mode_, 0, 3)));
+    training_.setForwardCompositeMode(
+        static_cast<TrainingForwardCompositeMode>(
+            std::clamp(training_forward_composite_mode_, 0, 1)));
 
     if (!training_.hasTrainableModel()) {
         TrainingInitializationConfig initConfig{};

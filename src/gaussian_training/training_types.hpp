@@ -57,6 +57,18 @@ enum class TrainingImageSelectionMode : uint32_t {
     Random = 1,
 };
 
+enum class TrainingPixelTo2DGSMode : uint32_t {
+    Auto = 0,
+    Direct = 1,
+    WorkgroupShared = 2,
+    Subgroup = 3,
+};
+
+enum class TrainingForwardCompositeMode : uint32_t {
+    Direct = 0,
+    WorkgroupShared = 1,
+};
+
 struct TrainingScheduleConfig {
     TrainingImageSelectionMode imageSelectionMode = TrainingImageSelectionMode::Random;
     uint32_t totalIterations = 30000;
@@ -279,13 +291,6 @@ struct alignas(16) PixelBlendState {
     uint32_t contributionCount = 0;
 };
 
-struct alignas(16) GaussianVisibilityState {
-    uint32_t contributionCount = 0;
-    float alphaSum = 0.0f;
-    float maxScreenRadius = 0.0f;
-    uint32_t padding0 = 0;
-};
-
 struct alignas(16) GaussianDensificationState {
     float screenGradSum = 0.0f;
     uint32_t screenGradCount = 0;
@@ -325,7 +330,6 @@ static_assert(sizeof(ProjectedGaussian) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(PixelGrad) == sizeof(glm::vec4));
 static_assert(sizeof(SsimBackwardState) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(PixelBlendState) == sizeof(glm::vec4));
-static_assert(sizeof(GaussianVisibilityState) == sizeof(glm::vec4));
 static_assert(sizeof(GaussianDensificationState) == sizeof(glm::vec4));
 static_assert(sizeof(ProjectedGaussianGrad) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(GaussianGrad) == sizeof(glm::vec4) * 19);

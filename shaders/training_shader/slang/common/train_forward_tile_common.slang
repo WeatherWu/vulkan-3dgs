@@ -56,3 +56,72 @@ bool trainGaussianDepthBefore(uint lhsGaussianIndex, uint rhsGaussianIndex, Stru
     }
     return projectedGaussians[lhsGaussianIndex].centerRadius.z < projectedGaussians[rhsGaussianIndex].centerRadius.z;
 }
+
+float trainConicQuadratic(ProjectedGaussian gaussian, float2 delta) {
+    float a = gaussian.conicOpacity.x;
+    float b = gaussian.conicOpacity.y;
+    float c = gaussian.conicOpacity.z;
+    return a * delta.x * delta.x + 2.0 * b * delta.x * delta.y + c * delta.y * delta.y;
+}
+
+float trainMinimumConicQuadraticOnRectangle(ProjectedGaussian gaussian,
+                                             float2 minimumDelta,
+                                             float2 maximumDelta) {
+    float a = gaussian.conicOpacity.x;
+    float b = gaussian.conicOpacity.y;
+    float c = gaussian.conicOpacity.z;
+    float minimumQuadratic = trainConicQuadratic(
+        gaussian, clamp(float2(0.0), minimumDelta, maximumDelta));
+
+    float yAtMinimumX = clamp(-b * minimumDelta.x / c, minimumDelta.y, maximumDelta.y);
+    float yAtMaximumX = clamp(-b * maximumDelta.x / c, minimumDelta.y, maximumDelta.y);
+    minimumQuadratic = min(
+        minimumQuadratic,
+        trainConicQuadratic(gaussian, float2(minimumDelta.x, yAtMinimumX)));
+    minimumQuadratic = min(
+        minimumQuadratic,
+        trainConicQuadratic(gaussian, float2(maximumDelta.x, yAtMaximumX)));
+
+    float xAtMinimumY = clamp(-b * minimumDelta.y / a, minimumDelta.x, maximumDelta.x);
+    float xAtMaximumY = clamp(-b * maximumDelta.y / a, minimumDelta.x, maximumDelta.x);
+    minimumQuadratic = min(
+        minimumQuadratic,
+        trainConicQuadratic(gaussian, float2(xAtMinimumY, minimumDelta.y)));
+    minimumQuadratic = min(
+        minimumQuadratic,
+        trainConicQuadratic(gaussian, float2(xAtMaximumY, maximumDelta.y)));
+    return minimumQuadratic;
+}
+
+bool trainProjectedGaussianMayContributeToTile(ProjectedGaussian gaussian, uint2 tile) {
+    float opacity = gaussian.conicOpacity.w;
+    if (!(opacity >= TRAIN_ALPHA_MIN)) {
+        return false;
+    }
+
+    float a = gaussian.conicOpacity.x;
+    float b = gaussian.conicOpacity.y;
+    float c = gaussian.conicOpacity.z;
+    float determinant = a * c - b * b;
+    if (!all(isfinite(gaussian.centerRadius.xy)) ||
+        !all(isfinite(gaussian.conicOpacity)) ||
+        !(a > 0.0) || !(c > 0.0) || !(determinant > 0.0)) {
+        return true;
+    }
+
+    uint2 minimumPixel = tile * TRAIN_TILE_SIZE;
+    uint2 maximumPixelExclusive = min(
+        minimumPixel + uint2(TRAIN_TILE_SIZE),
+        uint2(params.width, params.height));
+    if (any(maximumPixelExclusive <= minimumPixel)) {
+        return false;
+    }
+
+    float2 minimumDelta = float2(minimumPixel) - gaussian.centerRadius.xy;
+    float2 maximumDelta = float2(maximumPixelExclusive - uint2(1u)) - gaussian.centerRadius.xy;
+    float minimumQuadratic = trainMinimumConicQuadraticOnRectangle(
+        gaussian, minimumDelta, maximumDelta);
+    float supportQuadratic = 2.0 * log(opacity / TRAIN_ALPHA_MIN);
+    float tolerance = 1e-5 * max(1.0, abs(supportQuadratic));
+    return !isfinite(minimumQuadratic) || minimumQuadratic <= supportQuadratic + tolerance;
+}

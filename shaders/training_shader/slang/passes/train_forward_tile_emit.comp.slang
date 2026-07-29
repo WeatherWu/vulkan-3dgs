@@ -31,14 +31,17 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    TileBounds bounds = trainProjectedTileBounds(projectedGaussians[gaussianIndex]);
+    ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
+    TileBounds bounds = trainProjectedTileBounds(gaussian);
     if (!bounds.valid) {
         return;
     }
 
-    ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
     for (uint tileY = bounds.minTile.y; tileY < bounds.maxTileExclusive.y; ++tileY) {
         for (uint tileX = bounds.minTile.x; tileX < bounds.maxTileExclusive.x; ++tileX) {
+            if (!trainProjectedGaussianMayContributeToTile(gaussian, uint2(tileX, tileY))) {
+                continue;
+            }
             uint tileIndex = trainTileIndex(uint2(tileX, tileY));
             uint localOffset = 0;
             InterlockedAdd(tileRanges[tileIndex].z, 1u, localOffset);

@@ -7,11 +7,24 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
-#include <vector>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 #include <glm/glm.hpp>
 
 namespace vulkan3DGS {
+
+namespace {
+
+uint32_t roundedGaussianCapacity(uint32_t requestedCapacity) {
+    constexpr uint32_t capacityChunk = 16384u;
+    const uint64_t requested = std::max<uint64_t>(requestedCapacity, 1u);
+    const uint64_t rounded = ((requested + capacityChunk - 1u) / capacityChunk) * capacityChunk;
+    return static_cast<uint32_t>(std::min<uint64_t>(rounded,
+                                                    std::numeric_limits<uint32_t>::max()));
+}
+
+} // namespace
 
 void TrainingBuffers::initialize(vk::Device device,
                                  vk::PhysicalDevice physicalDevice,
@@ -37,7 +50,28 @@ void TrainingBuffers::initialize(vk::Device device,
             {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
         tileItemCountReadbackMapped_ = device_.mapMemory(
             tileItemCountReadback_.getMemory(), 0, sizeof(glm::uvec4));
+        densificationStatsReadback_.create(
+            device_,
+            physicalDevice_,
+            transferQueue_,
+            transferQueueFamilyIndex_,
+            nullptr,
+            sizeof(uint32_t) * 16u,
+            vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eHostVisible |
+                vk::MemoryPropertyFlagBits::eHostCoherent,
+            {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+        densificationStatsReadbackMapped_ = device_.mapMemory(
+            densificationStatsReadback_.getMemory(), 0, sizeof(uint32_t) * 16u);
     } catch (...) {
+        if (densificationStatsReadbackMapped_ && densificationStatsReadback_.getMemory()) {
+            device_.unmapMemory(densificationStatsReadback_.getMemory());
+        }
+        densificationStatsReadbackMapped_ = nullptr;
+        densificationStatsReadback_.cleanup();
+        if (tileItemCountReadbackMapped_ && tileItemCountReadback_.getMemory()) {
+            device_.unmapMemory(tileItemCountReadback_.getMemory());
+        }
         tileItemCountReadback_.cleanup();
         tileItemCountReadbackMapped_ = nullptr;
         throw;
@@ -46,6 +80,11 @@ void TrainingBuffers::initialize(vk::Device device,
 
 void TrainingBuffers::cleanup() {
     clearTargetColorDescriptor();
+    if (densificationStatsReadbackMapped_ && densificationStatsReadback_.getMemory() && device_) {
+        device_.unmapMemory(densificationStatsReadback_.getMemory());
+    }
+    densificationStatsReadbackMapped_ = nullptr;
+    densificationStatsReadback_.cleanup();
     if (tileItemCountReadbackMapped_ && tileItemCountReadback_.getMemory() && device_) {
         device_.unmapMemory(tileItemCountReadback_.getMemory());
     }
@@ -64,7 +103,6 @@ void TrainingBuffers::cleanup() {
     densifiedAdamStates_.cleanup();
     densifiedParams_.cleanup();
     densificationStates_.cleanup();
-    gaussianVisibility_.cleanup();
     pixelBlendStates_.cleanup();
     pixelGrads_.cleanup();
     ssimBackwardStates_.cleanup();
@@ -84,6 +122,7 @@ void TrainingBuffers::cleanup() {
     gaussianParams_.cleanup();
 
     gaussianCapacity_ = 0;
+    gaussianWorkspaceCapacity_ = 0;
     densificationCapacity_ = 0;
     tileItemCapacity_ = 0;
     extent_ = {};
@@ -127,7 +166,6 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     densifiedGaussianValidationPartials_.cleanup();
     validationFinalResult_.cleanup();
     pixelBlendStates_.cleanup();
-    gaussianVisibility_.cleanup();
     projectedGrads_.cleanup();
     densificationCounters_.cleanup();
     densifiedAdamStates_.cleanup();
@@ -177,7 +215,6 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
                         sizeof(TrainingGaussianValidationPartial) * gaussianValidationPartialCount);
     createStorageBuffer(validationFinalResult_, sizeof(TrainingValidationGpuResult));
     createStorageBuffer(pixelBlendStates_, sizeof(PixelBlendState) * pixelCount);
-    createStorageBuffer(gaussianVisibility_, sizeof(GaussianVisibilityState) * safeGaussianCount);
     createZeroedStorageBuffer(densificationStates_, sizeof(GaussianDensificationState) * safeGaussianCount);
     createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * safeGaussianCount);
     createStorageBuffer(loss_, sizeof(float) * pixelCount);
@@ -197,6 +234,7 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     createUniformBuffer(camera_, sizeof(TrainingForwardCamera));
 
     gaussianCapacity_ = safeGaussianCount;
+    gaussianWorkspaceCapacity_ = safeGaussianCount;
     densificationCapacity_ = 0;
     extent_ = {safeWidth, safeHeight};
 }
@@ -271,7 +309,7 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
         throw std::runtime_error("TrainingBuffers must be initialized before densification resize");
     }
 
-    const uint32_t safeCapacity = std::max(gaussianCapacity, 1u);
+    const uint32_t safeCapacity = roundedGaussianCapacity(gaussianCapacity);
     if (safeCapacity <= densificationCapacity_ &&
         densifiedParams_.getBuffer() &&
         densifiedAdamStates_.getBuffer() &&
@@ -283,7 +321,6 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
     densifiedParams_.cleanup();
     densifiedAdamStates_.cleanup();
     densifiedGaussianValidationPartials_.cleanup();
-    densificationCounters_.cleanup();
 
     createStorageBuffer(densifiedParams_, sizeof(GaussianTrainParam) * safeCapacity);
     createStorageBuffer(densifiedAdamStates_, sizeof(AdamState) * safeCapacity);
@@ -292,18 +329,21 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
         kTrainingValidationWorkgroupSize;
     createStorageBuffer(densifiedGaussianValidationPartials_,
                         sizeof(TrainingGaussianValidationPartial) * validationPartialCount);
-    const std::array<uint32_t, 16> zeroCounters{};
-    densificationCounters_.create(device_,
-                                  physicalDevice_,
-                                  transferQueue_,
-                                  transferQueueFamilyIndex_,
-                                  zeroCounters.data(),
-                                  zeroCounters.size() * sizeof(uint32_t),
-                                  vk::BufferUsageFlagBits::eStorageBuffer |
-                                      vk::BufferUsageFlagBits::eTransferSrc |
-                                  vk::BufferUsageFlagBits::eTransferDst,
-                                  vk::MemoryPropertyFlagBits::eDeviceLocal,
-                                  {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+    if (!densificationCounters_.getBuffer()) {
+        const std::array<uint32_t, 16> zeroCounters{};
+        densificationCounters_.create(device_,
+                                      physicalDevice_,
+                                      transferQueue_,
+                                      transferQueueFamilyIndex_,
+                                      zeroCounters.data(),
+                                      zeroCounters.size() * sizeof(uint32_t),
+                                      vk::BufferUsageFlagBits::eStorageBuffer |
+                                          vk::BufferUsageFlagBits::eIndirectBuffer |
+                                          vk::BufferUsageFlagBits::eTransferSrc |
+                                          vk::BufferUsageFlagBits::eTransferDst,
+                                      vk::MemoryPropertyFlagBits::eDeviceLocal,
+                                      {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+    }
     densificationCapacity_ = safeCapacity;
 }
 
@@ -311,34 +351,29 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     if (gaussianCount == 0 || gaussianCount > densificationCapacity_) {
         throw std::runtime_error("Invalid densified gaussian count");
     }
-    const uint32_t newCapacity = gaussianCount;
+    const uint32_t oldActiveCapacity = gaussianCapacity_;
+    const uint32_t newActiveCapacity = densificationCapacity_;
+    std::swap(gaussianParams_, densifiedParams_);
+    std::swap(adamStates_, densifiedAdamStates_);
+    std::swap(gaussianValidationPartials_, densifiedGaussianValidationPartials_);
+    gaussianCapacity_ = newActiveCapacity;
+    densificationCapacity_ = oldActiveCapacity;
 
-    gaussianParams_.cleanup();
-    adamStates_.cleanup();
-    gaussianGrads_.cleanup();
-    projected_.cleanup();
-    gaussianVisibility_.cleanup();
-    densificationStates_.cleanup();
-    projectedGrads_.cleanup();
-    previewInstances_.cleanup();
-    gaussianValidationPartials_.cleanup();
-    densifiedGaussianValidationPartials_.cleanup();
-    gaussianParams_ = std::move(densifiedParams_);
-    adamStates_ = std::move(densifiedAdamStates_);
-    densificationCounters_.cleanup();
-    createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) * newCapacity);
-    createStorageBuffer(projected_, sizeof(ProjectedGaussian) * newCapacity);
-    createStorageBuffer(gaussianVisibility_, sizeof(GaussianVisibilityState) * newCapacity);
-    createZeroedStorageBuffer(densificationStates_, sizeof(GaussianDensificationState) * newCapacity);
-    createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * newCapacity);
-    createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * newCapacity);
-    const uint32_t gaussianValidationPartialCount =
-        (newCapacity + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
-    createStorageBuffer(gaussianValidationPartials_,
-                        sizeof(TrainingGaussianValidationPartial) * gaussianValidationPartialCount);
-
-    gaussianCapacity_ = newCapacity;
-    densificationCapacity_ = 0;
+    if (gaussianCount > gaussianWorkspaceCapacity_) {
+        const uint32_t workspaceCapacity = roundedGaussianCapacity(gaussianCount);
+        gaussianGrads_.cleanup();
+        projected_.cleanup();
+        densificationStates_.cleanup();
+        projectedGrads_.cleanup();
+        previewInstances_.cleanup();
+        createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) * workspaceCapacity);
+        createStorageBuffer(projected_, sizeof(ProjectedGaussian) * workspaceCapacity);
+        createZeroedStorageBuffer(
+            densificationStates_, sizeof(GaussianDensificationState) * workspaceCapacity);
+        createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * workspaceCapacity);
+        createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * workspaceCapacity);
+        gaussianWorkspaceCapacity_ = workspaceCapacity;
+    }
 }
 
 void TrainingBuffers::uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount) {
@@ -367,21 +402,6 @@ std::vector<GaussianTrainParam> TrainingBuffers::downloadGaussianParams(uint32_t
                              static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianTrainParam));
     LOG_DEBUG("Completed training Gaussian parameter readback");
     return params;
-}
-
-std::vector<GaussianVisibilityState> TrainingBuffers::downloadGaussianVisibility(uint32_t gaussianCount) {
-    if (gaussianCount > gaussianCapacity_) {
-        throw std::runtime_error("Training gaussian visibility download exceeds buffer capacity");
-    }
-
-    std::vector<GaussianVisibilityState> visibility(gaussianCount);
-    if (gaussianCount == 0) {
-        return visibility;
-    }
-
-    gaussianVisibility_.download(visibility.data(),
-                                 static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianVisibilityState));
-    return visibility;
 }
 
 std::vector<float> TrainingBuffers::downloadLoss(uint32_t pixelCount) {
@@ -473,15 +493,55 @@ uint32_t TrainingBuffers::requiredTileItemCount() {
     return counters.x;
 }
 
+void TrainingBuffers::recordDensificationStatsReadback(vk::CommandBuffer commandBuffer) {
+    if (!commandBuffer || !densificationCounters_.getBuffer() ||
+        !densificationStatsReadback_.getBuffer()) {
+        throw std::runtime_error("Densification stats readback is not initialized");
+    }
+
+    vk::BufferCopy copy{};
+    copy.setSize(sizeof(uint32_t) * 16u);
+    commandBuffer.copyBuffer(
+        densificationCounters_.getBuffer(), densificationStatsReadback_.getBuffer(), copy);
+
+    vk::BufferMemoryBarrier hostReadBarrier{};
+    hostReadBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+                   .setDstAccessMask(vk::AccessFlagBits::eHostRead)
+                   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                   .setBuffer(densificationStatsReadback_.getBuffer())
+                   .setOffset(0)
+                   .setSize(sizeof(uint32_t) * 16u);
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                  vk::PipelineStageFlagBits::eHost,
+                                  vk::DependencyFlagBits{},
+                                  0,
+                                  nullptr,
+                                  1,
+                                  &hostReadBarrier,
+                                  0,
+                                  nullptr);
+}
+
 uint32_t TrainingBuffers::densifiedGaussianCount() {
+    if (!densificationStatsReadbackMapped_) {
+        throw std::runtime_error("Densification stats readback is not mapped");
+    }
     std::array<uint32_t, 16> counters{};
-    densificationCounters_.download(counters.data(), counters.size() * sizeof(uint32_t));
+    std::memcpy(counters.data(),
+                densificationStatsReadbackMapped_,
+                counters.size() * sizeof(uint32_t));
     return counters[1];
 }
 
 TrainingDensificationStats TrainingBuffers::densificationStats() {
+    if (!densificationStatsReadbackMapped_) {
+        throw std::runtime_error("Densification stats readback is not mapped");
+    }
     std::array<uint32_t, 16> counters{};
-    densificationCounters_.download(counters.data(), counters.size() * sizeof(uint32_t));
+    std::memcpy(counters.data(),
+                densificationStatsReadbackMapped_,
+                counters.size() * sizeof(uint32_t));
 
     TrainingDensificationStats stats{};
     stats.outputCount = counters[1];

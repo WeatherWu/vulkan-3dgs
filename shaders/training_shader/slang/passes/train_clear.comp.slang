@@ -15,9 +15,6 @@ RWStructuredBuffer<uint4> counters;
 [[vk::binding(14, 0)]]
 RWStructuredBuffer<PixelBlendState> pixelBlendStates;
 
-[[vk::binding(15, 0)]]
-RWStructuredBuffer<GaussianVisibilityState> gaussianVisibility;
-
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
@@ -33,12 +30,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         }
         gaussianGrads[index] = zeroGrad;
 
-        GaussianVisibilityState visibility;
-        visibility.contributionCount = 0;
-        visibility.alphaSum = 0.0;
-        clearVisibilityMaxScreenRadius(visibility);
-        visibility.padding0 = 0;
-        gaussianVisibility[index] = visibility;
     }
 
     if (index < params.pixelCount) {

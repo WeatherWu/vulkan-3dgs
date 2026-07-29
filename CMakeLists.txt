@@ -151,19 +151,24 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather_items.comp.slang" "train_forward_tile_gather_items.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_sort.comp.slang" "train_forward_tile_sort.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang" "train_forward.comp")
-compile_training_shader("${TRAINING_SHADER_UINT_RADIUS_DIR}/train_forward_uint_radius.comp.slang"
-                        "train_forward_uint_radius.comp"
-                        "${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_workgroup.comp.slang"
+                        "train_forward_workgroup.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_loss.comp.slang" "train_loss.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_clear.comp.slang" "train_backward_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_loss_to_pixel.comp.slang" "train_backward_loss_to_pixel.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs.comp.slang" "train_backward_pixel_to_2dgs.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs_workgroup.comp.slang"
+                        "train_backward_pixel_to_2dgs_workgroup.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs_subgroup.comp.slang"
+                        "train_backward_pixel_to_2dgs_subgroup.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
 compile_training_shader("${TRAINING_SHADER_VALIDATION_DIR}/train_validation_finalize.comp.slang"
                         "train_validation_finalize.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_clear.comp.slang" "train_densify_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_prune.comp.slang" "train_densify_prune.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_dispatch.comp.slang"
+                        "train_densify_dispatch.comp")
 compile_training_shader("${TRAINING_SHADER_UINT_RADIUS_DIR}/train_densify_prune_uint_radius.comp.slang"
                         "train_densify_prune_uint_radius.comp"
                         "${TRAINING_SHADER_PASSES_DIR}/train_densify_prune.comp.slang")

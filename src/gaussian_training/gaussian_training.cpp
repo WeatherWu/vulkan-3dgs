@@ -270,6 +270,9 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                          computeQueueFamilyIndex,
                          gaussianCount,
                          extent);
+    if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
+        gaussianForward->setCompositeMode(forwardCompositeMode_);
+    }
 
     backward_ = std::make_unique<GaussianBackwardRenderer>();
     backward_->initialize(device,
@@ -278,6 +281,9 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                           computeQueueFamilyIndex,
                           gaussianCount,
                           extent);
+    if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
+        gaussianBackward->setPixelTo2DGSMode(pixelTo2DGSMode_);
+    }
 
     densification_ = std::make_unique<GaussianDensificationRenderer>();
     densification_->initialize(device,
@@ -326,8 +332,8 @@ void GaussianTraining::trainStep() {
         return;
     }
 
-    if (!trainingCommandBuffer_) {
-        LOG_WARN("GaussianTraining::trainStep called without training command buffer");
+    if (!prepareCommandBuffer_ || !mainCommandBuffer_) {
+        LOG_WARN("GaussianTraining::trainStep called without training command buffers");
         return;
     }
 
@@ -373,29 +379,30 @@ void GaussianTraining::trainStep() {
                                       currentIteration < scheduleConfig_.totalIterations;
     pushConstants.optimizerEnabled = !runDensificationThisStep && beforeFinalIteration ? 1u : 0u;
 
-    trainingCommandPool_.reset();
+    prepareCommandBuffer_.reset();
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
-    trainingCommandBuffer_.begin(beginInfo);
+    prepareCommandBuffer_.begin(beginInfo);
     if (gpuTimestampProfilingAvailable_) {
-        trainingCommandBuffer_.resetQueryPool(profilingQueryPool_,
+        prepareCommandBuffer_.resetQueryPool(profilingQueryPool_,
                                               0,
                                               kTrainingGpuTimestampQueryCount);
     }
 
-    gaussianForward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
+    gaussianForward->setTrainingBuffers(buffers_, prepareCommandBuffer_, pushConstants);
     gaussianForward->prepareTileItems();
-    buffers_.recordTileItemCountReadback(trainingCommandBuffer_);
+    buffers_.recordTileItemCountReadback(prepareCommandBuffer_);
 
-    trainingCommandBuffer_.end();
+    prepareCommandBuffer_.end();
 
     vk::SubmitInfo prepareSubmitInfo{};
     prepareSubmitInfo.setCommandBufferCount(1)
-                     .setPCommandBuffers(&trainingCommandBuffer_);
+                     .setPCommandBuffers(&prepareCommandBuffer_);
     const auto prepareSubmitStart = Clock::now();
     LOG_DEBUG("Submitting training prepare pass for iteration {}", trainingIteration_ + 1u);
-    computeQueue_.submit(prepareSubmitInfo);
-    computeQueue_.waitIdle();
+    device_.resetFences(prepareFence_);
+    computeQueue_.submit(prepareSubmitInfo, prepareFence_);
+    (void)device_.waitForFences(prepareFence_, VK_TRUE, UINT64_MAX);
     LOG_DEBUG("Training prepare pass completed for iteration {}", trainingIteration_ + 1u);
     recordCpuProfilingSample(TrainingCpuProfileStage::PrepareSubmit,
                              std::chrono::duration<float, std::milli>(Clock::now() - prepareSubmitStart).count());
@@ -442,27 +449,28 @@ void GaussianTraining::trainStep() {
     }
 
     const auto mainRecordStart = Clock::now();
-    trainingCommandPool_.reset();
-    trainingCommandBuffer_.begin(beginInfo);
+    mainCommandBuffer_.reset();
+    mainCommandBuffer_.begin(beginInfo);
 
-    gaussianForward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
+    gaussianForward->setTrainingBuffers(buffers_, mainCommandBuffer_, pushConstants);
     LOG_DEBUG("Recording training main pass for iteration {}", trainingIteration_ + 1u);
     gaussianForward->renderPreparedTiles(requiredTileItems);
     LOG_DEBUG("Recorded training forward pass for iteration {}", trainingIteration_ + 1u);
-    gaussianBackward->setTrainingBuffers(buffers_, trainingCommandBuffer_, pushConstants);
+    gaussianBackward->setTrainingBuffers(buffers_, mainCommandBuffer_, pushConstants);
     gaussianBackward->backward();
 
     if (runDensificationThisStep) {
         densification_->setTrainingBuffers(buffers_,
-                                           trainingCommandBuffer_,
+                                           mainCommandBuffer_,
                                            createDensificationPushConstants(pruneByScreenSize));
         densification_->densifyAndPrune();
+        buffers_.recordDensificationStatsReadback(mainCommandBuffer_);
         if (pushConstants.validationEnabled != 0u) {
             TrainingPushConstants validationPushConstants = pushConstants;
             validationPushConstants.gaussianCount = buffers_.densificationCapacity();
             validationPushConstants.validationUsesDensifiedGaussians = 1u;
             gaussianBackward->setTrainingBuffers(buffers_,
-                                                 trainingCommandBuffer_,
+                                                 mainCommandBuffer_,
                                                  validationPushConstants);
         }
     }
@@ -473,14 +481,14 @@ void GaussianTraining::trainStep() {
         recordValidationReadbackCopy(*validationReadbackSlot);
     }
 
-    trainingCommandBuffer_.end();
+    mainCommandBuffer_.end();
     LOG_DEBUG("Finished recording training main command buffer for iteration {}", trainingIteration_ + 1u);
     recordCpuProfilingSample(TrainingCpuProfileStage::MainRecord,
                              std::chrono::duration<float, std::milli>(Clock::now() - mainRecordStart).count());
 
     vk::SubmitInfo submitInfo{};
     submitInfo.setCommandBufferCount(1)
-              .setPCommandBuffers(&trainingCommandBuffer_);
+              .setPCommandBuffers(&mainCommandBuffer_);
     vk::TimelineSemaphoreSubmitInfo uploadWaitInfo{};
     vk::PipelineStageFlags uploadWaitStage = vk::PipelineStageFlagBits::eComputeShader;
     vk::Semaphore uploadSemaphore = nullptr;
@@ -499,10 +507,12 @@ void GaussianTraining::trainStep() {
         device_.resetFences(validationReadbackSlot->fence);
         computeQueue_.submit(submitInfo, validationReadbackSlot->fence);
         validationReadbackSlot->pending = true;
+        (void)device_.waitForFences(validationReadbackSlot->fence, VK_TRUE, UINT64_MAX);
     } else {
-        computeQueue_.submit(submitInfo);
+        device_.resetFences(mainFence_);
+        computeQueue_.submit(submitInfo, mainFence_);
+        (void)device_.waitForFences(mainFence_, VK_TRUE, UINT64_MAX);
     }
-    computeQueue_.waitIdle();
     LOG_DEBUG("Training main pass completed for iteration {}", trainingIteration_ + 1u);
     pendingImageUploadValue_ = 0;
     recordCpuProfilingSample(TrainingCpuProfileStage::MainSubmit,
@@ -783,6 +793,32 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
             : 0u;
     pushConstants.validationIteration = nextIteration;
     return pushConstants;
+}
+
+void GaussianTraining::setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
+    pixelTo2DGSMode_ = mode;
+    if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
+        gaussianBackward->setPixelTo2DGSMode(mode);
+    }
+}
+
+void GaussianTraining::setForwardCompositeMode(TrainingForwardCompositeMode mode) {
+    forwardCompositeMode_ = mode;
+    if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
+        gaussianForward->setCompositeMode(mode);
+    }
+}
+
+bool GaussianTraining::subgroupPixelTo2DGSSupported() const {
+    const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    return gaussianBackward && gaussianBackward->subgroupPixelTo2DGSSupported();
+}
+
+TrainingPixelTo2DGSMode GaussianTraining::activePixelTo2DGSMode() const {
+    const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    return gaussianBackward
+        ? gaussianBackward->activePixelTo2DGSMode()
+        : TrainingPixelTo2DGSMode::Direct;
 }
 
 TrainingDensificationPushConstants GaussianTraining::createDensificationPushConstants(bool pruneByScreenSize) const {
@@ -1365,7 +1401,7 @@ void GaussianTraining::collectGpuProfilingStats() {
 void GaussianTraining::createTrainingCommandResources(vk::Device device,
                                                       vk::Queue computeQueue,
                                                       uint32_t computeQueueFamilyIndex) {
-    if (trainingCommandBuffer_) {
+    if (prepareCommandBuffer_ || mainCommandBuffer_) {
         return;
     }
 
@@ -1374,15 +1410,32 @@ void GaussianTraining::createTrainingCommandResources(vk::Device device,
     trainingCommandPool_.create(device,
                                 computeQueueFamilyIndex_,
                                 vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
-    trainingCommandBuffer_ = trainingCommandPool_.allocateCommandBuffer();
+    prepareCommandBuffer_ = trainingCommandPool_.allocateCommandBuffer();
+    mainCommandBuffer_ = trainingCommandPool_.allocateCommandBuffer();
+    prepareFence_ = device_.createFence(vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
+    mainFence_ = device_.createFence(vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
     createValidationReadbackResources();
 }
 
 void GaussianTraining::destroyTrainingCommandResources() {
     destroyValidationReadbackResources();
-    if (trainingCommandBuffer_) {
-        trainingCommandPool_.freeCommandBuffer(trainingCommandBuffer_);
-        trainingCommandBuffer_ = nullptr;
+    if (prepareFence_ && device_) {
+        (void)device_.waitForFences(prepareFence_, VK_TRUE, UINT64_MAX);
+        device_.destroyFence(prepareFence_);
+        prepareFence_ = nullptr;
+    }
+    if (mainFence_ && device_) {
+        (void)device_.waitForFences(mainFence_, VK_TRUE, UINT64_MAX);
+        device_.destroyFence(mainFence_);
+        mainFence_ = nullptr;
+    }
+    if (prepareCommandBuffer_) {
+        trainingCommandPool_.freeCommandBuffer(prepareCommandBuffer_);
+        prepareCommandBuffer_ = nullptr;
+    }
+    if (mainCommandBuffer_) {
+        trainingCommandPool_.freeCommandBuffer(mainCommandBuffer_);
+        mainCommandBuffer_ = nullptr;
     }
 
     trainingCommandPool_.cleanup();
@@ -1460,9 +1513,9 @@ GaussianTraining::ValidationReadbackSlot* GaussianTraining::acquireValidationRea
 void GaussianTraining::recordValidationReadbackCopy(ValidationReadbackSlot& slot) {
     vk::BufferCopy copyRegion{};
     copyRegion.setSize(sizeof(TrainingValidationGpuResult));
-    trainingCommandBuffer_.copyBuffer(buffers_.validationFinalResultBuffer(),
-                                      slot.buffer,
-                                      copyRegion);
+    mainCommandBuffer_.copyBuffer(buffers_.validationFinalResultBuffer(),
+                                  slot.buffer,
+                                  copyRegion);
 }
 
 void GaussianTraining::collectCompletedValidationReadbacks() {

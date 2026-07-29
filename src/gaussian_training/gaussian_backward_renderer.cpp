@@ -29,6 +29,22 @@ vk::DescriptorSetLayoutBinding uniformBinding(uint32_t binding) {
     return layoutBinding;
 }
 
+bool supportsPixelTo2DGSSubgroup(vk::PhysicalDevice physicalDevice, uint32_t& subgroupSize) {
+    vk::PhysicalDeviceSubgroupProperties subgroupProperties{};
+    vk::PhysicalDeviceProperties2 properties{};
+    properties.pNext = &subgroupProperties;
+    physicalDevice.getProperties2(&properties);
+
+    const bool supportsCompute = static_cast<bool>(
+        subgroupProperties.supportedStages & vk::ShaderStageFlagBits::eCompute);
+    const bool supportsBasic = static_cast<bool>(
+        subgroupProperties.supportedOperations & vk::SubgroupFeatureFlagBits::eBasic);
+    const bool supportsShuffle = static_cast<bool>(
+        subgroupProperties.supportedOperations & vk::SubgroupFeatureFlagBits::eShuffle);
+    subgroupSize = subgroupProperties.subgroupSize;
+    return subgroupSize > 0u && supportsCompute && supportsBasic && supportsShuffle;
+}
+
 } // namespace
 
 void GaussianBackwardRenderer::initialize(vk::Device device,
@@ -43,11 +59,17 @@ void GaussianBackwardRenderer::initialize(vk::Device device,
     computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     gaussianCount_ = gaussianCount;
     extent_ = extent;
+    subgroupPixelTo2DGSSupported_ = supportsPixelTo2DGSSubgroup(physicalDevice_, subgroupSize_);
     createBackwardResources();
     initialized_ = true;
 
     LOG_INFO("GaussianBackwardRenderer initialized ({} gaussians, {}x{})",
              gaussianCount_, extent_.width, extent_.height);
+    if (subgroupPixelTo2DGSSupported_) {
+        LOG_INFO("Pixel-to-2DGS subgroup path available (native subgroup size {})", subgroupSize_);
+    } else {
+        LOG_INFO("Pixel-to-2DGS subgroup path unavailable; Auto and Subgroup use Direct");
+    }
 }
 
 void GaussianBackwardRenderer::cleanup() {
@@ -62,7 +84,22 @@ void GaussianBackwardRenderer::cleanup() {
     commandBuffer_ = nullptr;
     profilingQueryPool_ = nullptr;
     pushConstants_ = {};
+    subgroupSize_ = 0;
+    subgroupPixelTo2DGSSupported_ = false;
     initialized_ = false;
+}
+
+TrainingPixelTo2DGSMode GaussianBackwardRenderer::activePixelTo2DGSMode() const {
+    if (pixelTo2DGSMode_ == TrainingPixelTo2DGSMode::Auto) {
+        return subgroupPixelTo2DGSSupported_
+            ? TrainingPixelTo2DGSMode::Subgroup
+            : TrainingPixelTo2DGSMode::Direct;
+    }
+    if (pixelTo2DGSMode_ == TrainingPixelTo2DGSMode::Subgroup &&
+        !subgroupPixelTo2DGSSupported_) {
+        return TrainingPixelTo2DGSMode::Direct;
+    }
+    return pixelTo2DGSMode_;
 }
 
 void GaussianBackwardRenderer::setTrainingBuffers(const TrainingBuffers& trainingBuffers,
@@ -216,6 +253,15 @@ void GaussianBackwardRenderer::createBackwardResources() {
     lossPipeline_.initialize(device_, "shaders/train_loss.comp.spv", lossConfig);
     lossToPixelPipeline_.initialize(device_, "shaders/train_backward_loss_to_pixel.comp.spv", lossToPixelConfig);
     pixelTo2DGSPipeline_.initialize(device_, "shaders/train_backward_pixel_to_2dgs.comp.spv", pixelTo2DGSConfig);
+    pixelTo2DGSWorkgroupPipeline_.initialize(device_,
+                                             "shaders/train_backward_pixel_to_2dgs_workgroup.comp.spv",
+                                             pixelTo2DGSConfig);
+    if (subgroupPixelTo2DGSSupported_) {
+        pixelTo2DGSSubgroupPipeline_.initialize(
+            device_,
+            "shaders/train_backward_pixel_to_2dgs_subgroup.comp.spv",
+            pixelTo2DGSConfig);
+    }
     twoDGSTo3DGSPipeline_.initialize(device_, "shaders/train_backward_2dgs_to_3dgs.comp.spv", twoDGSTo3DGSConfig);
     optimizerPipeline_.initialize(device_, "shaders/train_optimizer.comp.spv", optimizerConfig);
     validationFinalizePipeline_.initialize(device_,
@@ -224,26 +270,30 @@ void GaussianBackwardRenderer::createBackwardResources() {
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(40);
+                .setDescriptorCount(54);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(7);
+            .setMaxSets(9);
 
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
-    std::array<vk::DescriptorSetLayout, 7> layouts = {
+    std::vector<vk::DescriptorSetLayout> layouts = {
         backwardClearPipeline_.getDescriptorSetLayout(),
         lossPipeline_.getDescriptorSetLayout(),
         lossToPixelPipeline_.getDescriptorSetLayout(),
         pixelTo2DGSPipeline_.getDescriptorSetLayout(),
+        pixelTo2DGSWorkgroupPipeline_.getDescriptorSetLayout(),
         twoDGSTo3DGSPipeline_.getDescriptorSetLayout(),
         optimizerPipeline_.getDescriptorSetLayout(),
         validationFinalizePipeline_.getDescriptorSetLayout(),
     };
+    if (subgroupPixelTo2DGSSupported_) {
+        layouts.push_back(pixelTo2DGSSubgroupPipeline_.getDescriptorSetLayout());
+    }
 
     vk::DescriptorSetAllocateInfo allocInfo{};
     allocInfo.setDescriptorPool(descriptorPool_)
@@ -255,9 +305,13 @@ void GaussianBackwardRenderer::createBackwardResources() {
     lossDescriptorSet_ = descriptorSets[1];
     lossToPixelDescriptorSet_ = descriptorSets[2];
     pixelTo2DGSDescriptorSet_ = descriptorSets[3];
-    twoDGSTo3DGSDescriptorSet_ = descriptorSets[4];
-    optimizerDescriptorSet_ = descriptorSets[5];
-    validationFinalizeDescriptorSet_ = descriptorSets[6];
+    pixelTo2DGSWorkgroupDescriptorSet_ = descriptorSets[4];
+    twoDGSTo3DGSDescriptorSet_ = descriptorSets[5];
+    optimizerDescriptorSet_ = descriptorSets[6];
+    validationFinalizeDescriptorSet_ = descriptorSets[7];
+    if (subgroupPixelTo2DGSSupported_) {
+        pixelTo2DGSSubgroupDescriptorSet_ = descriptorSets[8];
+    }
 }
 
 void GaussianBackwardRenderer::destroyBackwardResources() {
@@ -268,6 +322,8 @@ void GaussianBackwardRenderer::destroyBackwardResources() {
         lossDescriptorSet_ = nullptr;
         lossToPixelDescriptorSet_ = nullptr;
         pixelTo2DGSDescriptorSet_ = nullptr;
+        pixelTo2DGSWorkgroupDescriptorSet_ = nullptr;
+        pixelTo2DGSSubgroupDescriptorSet_ = nullptr;
         twoDGSTo3DGSDescriptorSet_ = nullptr;
         optimizerDescriptorSet_ = nullptr;
         validationFinalizeDescriptorSet_ = nullptr;
@@ -276,6 +332,8 @@ void GaussianBackwardRenderer::destroyBackwardResources() {
     validationFinalizePipeline_.cleanup();
     optimizerPipeline_.cleanup();
     twoDGSTo3DGSPipeline_.cleanup();
+    pixelTo2DGSSubgroupPipeline_.cleanup();
+    pixelTo2DGSWorkgroupPipeline_.cleanup();
     pixelTo2DGSPipeline_.cleanup();
     lossToPixelPipeline_.cleanup();
     lossPipeline_.cleanup();
@@ -478,48 +536,59 @@ void GaussianBackwardRenderer::backpropPixelTo2DGS() {
     const auto projectedGradsInfo = trainingBuffers_->projectedGradsInfo();
     const auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
 
+    const TrainingPixelTo2DGSMode activeMode = activePixelTo2DGSMode();
+    ComputePipeline* pipeline = &pixelTo2DGSPipeline_;
+    vk::DescriptorSet descriptorSet = pixelTo2DGSDescriptorSet_;
+    if (activeMode == TrainingPixelTo2DGSMode::WorkgroupShared) {
+        pipeline = &pixelTo2DGSWorkgroupPipeline_;
+        descriptorSet = pixelTo2DGSWorkgroupDescriptorSet_;
+    } else if (activeMode == TrainingPixelTo2DGSMode::Subgroup) {
+        pipeline = &pixelTo2DGSSubgroupPipeline_;
+        descriptorSet = pixelTo2DGSSubgroupDescriptorSet_;
+    }
+
     std::array<vk::WriteDescriptorSet, 6> writes{};
-    writes[0].setDstSet(pixelTo2DGSDescriptorSet_)
+    writes[0].setDstSet(descriptorSet)
              .setDstBinding(3)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&projectedInfo);
-    writes[1].setDstSet(pixelTo2DGSDescriptorSet_)
+    writes[1].setDstSet(descriptorSet)
              .setDstBinding(4)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&tileItemsInfo);
-    writes[2].setDstSet(pixelTo2DGSDescriptorSet_)
+    writes[2].setDstSet(descriptorSet)
              .setDstBinding(5)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&tileRangesInfo);
-    writes[3].setDstSet(pixelTo2DGSDescriptorSet_)
+    writes[3].setDstSet(descriptorSet)
              .setDstBinding(12)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&pixelGradsInfo);
-    writes[4].setDstSet(pixelTo2DGSDescriptorSet_)
+    writes[4].setDstSet(descriptorSet)
              .setDstBinding(13)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&projectedGradsInfo);
-    writes[5].setDstSet(pixelTo2DGSDescriptorSet_)
+    writes[5].setDstSet(descriptorSet)
              .setDstBinding(14)
              .setDescriptorCount(1)
              .setDescriptorType(vk::DescriptorType::eStorageBuffer)
              .setPBufferInfo(&pixelBlendStatesInfo);
     device_.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, pixelTo2DGSPipeline_.getPipeline());
+    commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->getPipeline());
     commandBuffer_.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                                     pixelTo2DGSPipeline_.getPipelineLayout(),
+                                                     pipeline->getPipelineLayout(),
                                                      0,
                                                      1,
-                                                     &pixelTo2DGSDescriptorSet_,
+                                                     &descriptorSet,
                                                      0,
                                                      nullptr);
-    commandBuffer_.pushConstants(pixelTo2DGSPipeline_.getPipelineLayout(),
+    commandBuffer_.pushConstants(pipeline->getPipelineLayout(),
                                                 vk::ShaderStageFlagBits::eCompute,
                                                 0,
                                                 sizeof(TrainingPushConstants),

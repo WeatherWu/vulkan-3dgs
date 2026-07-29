@@ -15,17 +15,6 @@ RWStructuredBuffer<float4> renderedColor;
 [[vk::binding(14, 0)]]
 RWStructuredBuffer<PixelBlendState> pixelBlendStates;
 
-[[vk::binding(15, 0)]]
-RWStructuredBuffer<GaussianVisibilityState> gaussianVisibility;
-
-void accumulateGaussianVisibility(uint gaussianIndex, GaussianSample sample, ProjectedGaussian gaussian) {
-    uint ignoredCount = 0;
-    float ignoredFloat = 0.0;
-    InterlockedAdd(gaussianVisibility[gaussianIndex].contributionCount, 1u, ignoredCount);
-    InterlockedAdd(gaussianVisibility[gaussianIndex].alphaSum, sample.alpha, ignoredFloat);
-    atomicMaxVisibilityScreenRadius(gaussianVisibility[gaussianIndex], gaussian.centerRadius.w);
-}
-
 PixelComposite renderPixelFromTile(uint2 pixel) {
     PixelComposite composite = makeEmptyComposite();
     float2 samplePosition = pixelCenter(pixel);
@@ -50,7 +39,6 @@ PixelComposite renderPixelFromTile(uint2 pixel) {
         compositeGaussianFrontToBack(composite, sample);
         composite.processedCount = itemOffset + 1u;
         composite.contributionCount += 1u;
-        accumulateGaussianVisibility(gaussianIndex, sample, projectedGaussians[gaussianIndex]);
     }
 
     return composite;

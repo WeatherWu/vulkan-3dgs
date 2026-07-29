@@ -149,6 +149,18 @@ SSIM 使用 sigma 1.5 的 11x11 Gaussian window。`SsimBackwardState` 保存优�
 
 Pixel-to-2DGS 投影梯度只对九个可微分量执行原子累加：center XY、conic/opacity XYZW 和 RGB。深度、整数屏幕半径及颜色 padding 保持为零，不执行原子加。
 
+训练面板提供 `Auto`、`Direct`、`Workgroup Shared` 和 `Subgroup` 四种 Pixel-to-2DGS backward 路径。只有 Vulkan 报告 compute stage 同时支持 BASIC 与 SHUFFLE subgroup operation 时，`Auto` 才选择 `Subgroup`，否则回退到 `Direct`。Subgroup shader 使用运行时 wave 宽度，并且只同步同一 subgroup 内的像素。两种协作版本都保持每个像素的逆序遍历和梯度数学不变；`Workgroup Shared` 保留用于显式 profiling。
+
+Tile count 和 emit 共用同一个保守的 ellipse-pixel-rectangle 判定。只有当 valid pixel center 矩形内的最小 conic quadratic 能证明所有位置的 opacity 都低于 `1/255` 贡献阈值时，才会删除该 tile。原有 projected 3-sigma radius 保持不变，继续用于 densification 和 screen-size 逻辑。
+
+Forward compositing 提供 `Direct` 和 `Workgroup Shared` 两种模式。Shared 模式为默认值，以 256 个 Gaussian 为一批协作加载每个 tile 已排序的 projected Gaussian，同时保持每个像素的 front-to-back 顺序、alpha 阈值、transmittance 终止条件和 `processedCount` 不变。
+
+训练使用独立的 prepare/main command buffer 和逐提交 fence。CPU 仍需等待 prepare 的 tile count，以便在 emit、sort、composite 和 optimizer 执行前处理 buffer overflow，但不再调用可能包含同一 queue 上无关工作的 queue-wide `waitIdle()`。vendor radix sorter 虽支持 indirect count，但它按最大 capacity 录制 dispatch，不能为训练图其余 pass 提供 overflow 条件执行。
+
+Densification 将参数、Adam 和 validation partial buffer 作为 ping-pong storage 保留，不再在每次 adopt 后重建两侧。Per-Gaussian scratch buffer 按 16384 个 Gaussian 分块增长并跨 densification 事件复用。64 字节 densification counters 使用持久映射 readback，densification state 通过一次 GPU fill 清零，opacity reset 则根据真实输出数 indirect dispatch，不再按 workspace capacity 调度。
+
+原先逐贡献写入的 `GaussianVisibilityState` 原子操作和 buffer 已移除，因为没有训练 pass 消费其中的 contribution count、alpha sum 或 radius。Densification 继续使用 `GaussianDensificationState`。
+
 Adam-style optimizer 为 position、SH DC/rest、opacity、scale 和 rotation 提供独立学习率。Position learning rate 支持初始值、最终值、delay multiplier、最大步数调度，并乘以 reference 3DGS 使用的 scene extent spatial learning-rate scale。默认 opacity LR、Adam epsilon 和关闭 gradient clipping 的行为与 reference 3DGS 对齐。
 
 ## 训练 Buffer

@@ -165,7 +165,7 @@ void GaussianForwardRenderer::writeProfilingTimestamp(TrainingGpuProfileStage st
 
 void GaussianForwardRenderer::createForwardResources() {
     clearPipeline_.initialize(device_, "shaders/train_clear.comp.spv",
-                              pipelineConfig({storageBinding(1), storageBinding(6), storageBinding(8), storageBinding(9), storageBinding(14), storageBinding(15)}));
+                              pipelineConfig({storageBinding(1), storageBinding(6), storageBinding(8), storageBinding(9), storageBinding(14)}));
     projectPipeline_.initialize(device_, "shaders/train_forward_project.comp.spv",
                                  pipelineConfig({storageBinding(0), storageBinding(3), uniformBinding(11), storageBinding(16)}));
     tileClearPipeline_.initialize(device_, "shaders/train_forward_tile_clear.comp.spv",
@@ -182,16 +182,12 @@ void GaussianForwardRenderer::createForwardResources() {
                                         pipelineConfig({storageBinding(4), storageBinding(22), storageBinding(24)}));
     tileRangeBuildPipeline_.initialize(device_, "shaders/train_forward_tile_sort.comp.spv",
                                        pipelineConfig({storageBinding(4), storageBinding(5), storageBinding(21), storageBinding(22)}));
-    const bool useUintRadiusFallback = !supportsShaderBufferFloat32AtomicMinMax(physicalDevice_);
-    const char* forwardShader = useUintRadiusFallback
-        ? "shaders/train_forward_uint_radius.comp.spv"
-        : "shaders/train_forward.comp.spv";
-    if (useUintRadiusFallback) {
-        LOG_INFO("Using uint maxScreenRadius fallback training forward shader");
-    }
-
-    forwardPipeline_.initialize(device_, forwardShader,
-                                pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14), storageBinding(15)}));
+    forwardPipeline_.initialize(device_, "shaders/train_forward.comp.spv",
+                                pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14)}));
+    forwardWorkgroupPipeline_.initialize(
+        device_,
+        "shaders/train_forward_workgroup.comp.spv",
+        pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14)}));
 
     VrdxSorterCreateInfo sorterInfo{};
     sorterInfo.physicalDevice = physicalDevice_;
@@ -201,17 +197,17 @@ void GaussianForwardRenderer::createForwardResources() {
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(40);
+                .setDescriptorCount(45);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(10);
+            .setMaxSets(11);
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
-    std::array<vk::DescriptorSetLayout, 10> layouts = {
+    std::array<vk::DescriptorSetLayout, 11> layouts = {
         clearPipeline_.getDescriptorSetLayout(),
         projectPipeline_.getDescriptorSetLayout(),
         tileClearPipeline_.getDescriptorSetLayout(),
@@ -222,6 +218,7 @@ void GaussianForwardRenderer::createForwardResources() {
         tileGatherItemsPipeline_.getDescriptorSetLayout(),
         tileRangeBuildPipeline_.getDescriptorSetLayout(),
         forwardPipeline_.getDescriptorSetLayout(),
+        forwardWorkgroupPipeline_.getDescriptorSetLayout(),
     };
 
     vk::DescriptorSetAllocateInfo allocInfo{};
@@ -240,6 +237,7 @@ void GaussianForwardRenderer::createForwardResources() {
     tileGatherItemsDescriptorSet_ = sets[7];
     tileRangeBuildDescriptorSet_ = sets[8];
     forwardDescriptorSet_ = sets[9];
+    forwardWorkgroupDescriptorSet_ = sets[10];
 }
 
 void GaussianForwardRenderer::destroyForwardResources() {
@@ -256,6 +254,7 @@ void GaussianForwardRenderer::destroyForwardResources() {
         tileGatherItemsDescriptorSet_ = nullptr;
         tileRangeBuildDescriptorSet_ = nullptr;
         forwardDescriptorSet_ = nullptr;
+        forwardWorkgroupDescriptorSet_ = nullptr;
     }
 
     if (radixSorter_) {
@@ -263,6 +262,7 @@ void GaussianForwardRenderer::destroyForwardResources() {
         radixSorter_ = VK_NULL_HANDLE;
     }
 
+    forwardWorkgroupPipeline_.cleanup();
     forwardPipeline_.cleanup();
     tileRangeBuildPipeline_.cleanup();
     tileGatherItemsPipeline_.cleanup();
@@ -276,13 +276,12 @@ void GaussianForwardRenderer::destroyForwardResources() {
 }
 
 void GaussianForwardRenderer::clearForwardBuffers() {
-    updateDescriptorSet(clearDescriptorSet_, {1, 6, 8, 9, 14, 15});
+    updateDescriptorSet(clearDescriptorSet_, {1, 6, 8, 9, 14});
     bindAndDispatch(clearPipeline_, clearDescriptorSet_, std::max(ceilDiv(pushConstants_.pixelCount, 256u),
                                                                   ceilDiv(pushConstants_.gaussianCount, 256u)));
     shaderBufferBarrier({trainingBuffers_->gaussianGradsInfo(),
                          trainingBuffers_->renderedColorInfo(),
                          trainingBuffers_->pixelBlendStatesInfo(),
-                         trainingBuffers_->gaussianVisibilityInfo(),
                          trainingBuffers_->lossInfo(),
                          trainingBuffers_->countersInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
@@ -409,11 +408,16 @@ void GaussianForwardRenderer::ensureTileSortResources(uint32_t tileItemCount) {
 }
 
 void GaussianForwardRenderer::compositePixels() {
-    updateDescriptorSet(forwardDescriptorSet_, {3, 4, 5, 6, 14, 15});
-    bindAndDispatch(forwardPipeline_, forwardDescriptorSet_, ceilDiv(extent_.width, 16u), ceilDiv(extent_.height, 16u));
+    ComputePipeline& pipeline = compositeMode_ == TrainingForwardCompositeMode::WorkgroupShared
+        ? forwardWorkgroupPipeline_
+        : forwardPipeline_;
+    vk::DescriptorSet descriptorSet = compositeMode_ == TrainingForwardCompositeMode::WorkgroupShared
+        ? forwardWorkgroupDescriptorSet_
+        : forwardDescriptorSet_;
+    updateDescriptorSet(descriptorSet, {3, 4, 5, 6, 14});
+    bindAndDispatch(pipeline, descriptorSet, ceilDiv(extent_.width, 16u), ceilDiv(extent_.height, 16u));
     shaderBufferBarrier({trainingBuffers_->renderedColorInfo(),
-                         trainingBuffers_->pixelBlendStatesInfo(),
-                         trainingBuffers_->gaussianVisibilityInfo()},
+                         trainingBuffers_->pixelBlendStatesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
@@ -511,7 +515,6 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     auto countersInfo = trainingBuffers_->countersInfo();
     auto cameraInfo = trainingBuffers_->cameraInfo();
     auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
-    auto gaussianVisibilityInfo = trainingBuffers_->gaussianVisibilityInfo();
     auto densificationStatesInfo = trainingBuffers_->densificationStatesInfo();
 
     std::array<vk::DescriptorBufferInfo, 25> infos{};
@@ -525,7 +528,6 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     infos[9] = countersInfo;
     infos[11] = cameraInfo;
     infos[14] = pixelBlendStatesInfo;
-    infos[15] = gaussianVisibilityInfo;
     infos[16] = densificationStatesInfo;
     infos[20] = trainingBuffers_->tileKeyLowInfo();
     infos[21] = trainingBuffers_->tileKeyHighInfo();

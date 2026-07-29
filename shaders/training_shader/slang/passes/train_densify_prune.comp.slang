@@ -291,10 +291,4 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         appendCandidate(makeClone(gaussian), adamState, zeroDensificationState());
     }
 
-    GaussianDensificationState zeroState;
-    zeroState.screenGradSum = 0.0;
-    zeroState.screenGradCount = 0;
-    clearDensificationMaxScreenRadius(zeroState);
-    zeroState.padding0 = 0;
-    densificationStates[gaussianIndex] = zeroState;
 }

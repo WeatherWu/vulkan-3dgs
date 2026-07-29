@@ -35,6 +35,7 @@ private:
                          uint32_t groupCountX);
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
+    void clearDensificationStates();
     void writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end);
 
     vk::Device device_ = nullptr;
@@ -44,10 +45,12 @@ private:
 
     ComputePipeline clearPipeline_;
     ComputePipeline densifyPrunePipeline_;
+    ComputePipeline dispatchBuildPipeline_;
     ComputePipeline opacityResetPipeline_;
     vk::DescriptorPool descriptorPool_ = nullptr;
     vk::DescriptorSet clearDescriptorSet_ = nullptr;
     vk::DescriptorSet densifyPruneDescriptorSet_ = nullptr;
+    vk::DescriptorSet dispatchBuildDescriptorSet_ = nullptr;
     vk::DescriptorSet opacityResetDescriptorSet_ = nullptr;
 
     const TrainingBuffers* trainingBuffers_ = nullptr;

@@ -24,6 +24,9 @@ public:
                             vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void setProfilingQueryPool(vk::QueryPool queryPool);
+    void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) { pixelTo2DGSMode_ = mode; }
+    bool subgroupPixelTo2DGSSupported() const { return subgroupPixelTo2DGSSupported_; }
+    TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
     void backward() override;
     void gradientDescent() override;
 
@@ -55,6 +58,8 @@ private:
     ComputePipeline lossPipeline_;
     ComputePipeline lossToPixelPipeline_;
     ComputePipeline pixelTo2DGSPipeline_;
+    ComputePipeline pixelTo2DGSWorkgroupPipeline_;
+    ComputePipeline pixelTo2DGSSubgroupPipeline_;
     ComputePipeline twoDGSTo3DGSPipeline_;
     ComputePipeline optimizerPipeline_;
     ComputePipeline validationFinalizePipeline_;
@@ -63,6 +68,8 @@ private:
     vk::DescriptorSet lossDescriptorSet_ = nullptr;
     vk::DescriptorSet lossToPixelDescriptorSet_ = nullptr;
     vk::DescriptorSet pixelTo2DGSDescriptorSet_ = nullptr;
+    vk::DescriptorSet pixelTo2DGSWorkgroupDescriptorSet_ = nullptr;
+    vk::DescriptorSet pixelTo2DGSSubgroupDescriptorSet_ = nullptr;
     vk::DescriptorSet twoDGSTo3DGSDescriptorSet_ = nullptr;
     vk::DescriptorSet optimizerDescriptorSet_ = nullptr;
     vk::DescriptorSet validationFinalizeDescriptorSet_ = nullptr;
@@ -70,6 +77,9 @@ private:
     vk::CommandBuffer commandBuffer_ = nullptr;
     vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
+    TrainingPixelTo2DGSMode pixelTo2DGSMode_ = TrainingPixelTo2DGSMode::Auto;
+    uint32_t subgroupSize_ = 0;
+    bool subgroupPixelTo2DGSSupported_ = false;
     bool initialized_ = false;
 };
 

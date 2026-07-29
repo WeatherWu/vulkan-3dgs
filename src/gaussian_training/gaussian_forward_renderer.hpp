@@ -25,6 +25,7 @@ public:
                             vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void setProfilingQueryPool(vk::QueryPool queryPool);
+    void setCompositeMode(TrainingForwardCompositeMode mode) { compositeMode_ = mode; }
     void forward() override;
     void prepareTileItems();
     void renderPreparedTiles(uint32_t tileItemCount);
@@ -75,6 +76,7 @@ private:
     ComputePipeline tileGatherItemsPipeline_;
     ComputePipeline tileRangeBuildPipeline_;
     ComputePipeline forwardPipeline_;
+    ComputePipeline forwardWorkgroupPipeline_;
     VrdxSorter radixSorter_ = VK_NULL_HANDLE;
 
     vk::DescriptorPool descriptorPool_ = nullptr;
@@ -88,11 +90,13 @@ private:
     vk::DescriptorSet tileGatherItemsDescriptorSet_ = nullptr;
     vk::DescriptorSet tileRangeBuildDescriptorSet_ = nullptr;
     vk::DescriptorSet forwardDescriptorSet_ = nullptr;
+    vk::DescriptorSet forwardWorkgroupDescriptorSet_ = nullptr;
 
     TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
     vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
+    TrainingForwardCompositeMode compositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
     bool initialized_ = false;
 };
 

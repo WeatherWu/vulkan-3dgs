@@ -25,7 +25,6 @@ public:
     void adoptDensifiedGaussians(uint32_t gaussianCount);
     void uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount);
     std::vector<GaussianTrainParam> downloadGaussianParams(uint32_t gaussianCount);
-    std::vector<GaussianVisibilityState> downloadGaussianVisibility(uint32_t gaussianCount);
     std::vector<float> downloadLoss(uint32_t pixelCount);
     std::vector<glm::vec4> downloadRenderedColor(uint32_t pixelCount);
     void uploadTargetColor(const uint8_t* pixels, uint32_t width, uint32_t height);
@@ -33,6 +32,7 @@ public:
     void clearTargetColorDescriptor() { targetColorDescriptorOverride_.reset(); }
     void uploadCamera(const TrainingForwardCamera& camera);
     void recordTileItemCountReadback(vk::CommandBuffer commandBuffer);
+    void recordDensificationStatsReadback(vk::CommandBuffer commandBuffer);
     uint32_t requiredTileItemCount();
     uint32_t densifiedGaussianCount();
     TrainingDensificationStats densificationStats();
@@ -72,11 +72,12 @@ public:
     vk::DescriptorBufferInfo validationFinalResultInfo() const { return validationFinalResult_.getDescriptorInfo(); }
     vk::Buffer validationFinalResultBuffer() const { return validationFinalResult_.getBuffer(); }
     vk::DescriptorBufferInfo pixelBlendStatesInfo() const { return pixelBlendStates_.getDescriptorInfo(); }
-    vk::DescriptorBufferInfo gaussianVisibilityInfo() const { return gaussianVisibility_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densificationStatesInfo() const { return densificationStates_.getDescriptorInfo(); }
+    vk::Buffer densificationStatesBuffer() const { return densificationStates_.getBuffer(); }
     vk::DescriptorBufferInfo densifiedParamsInfo() const { return densifiedParams_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densifiedAdamStatesInfo() const { return densifiedAdamStates_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densificationCountersInfo() const { return densificationCounters_.getDescriptorInfo(); }
+    vk::Buffer densificationCountersBuffer() const { return densificationCounters_.getBuffer(); }
     vk::DescriptorBufferInfo projectedGradsInfo() const { return projectedGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo lossInfo() const { return loss_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo countersInfo() const { return counters_.getDescriptorInfo(); }
@@ -95,6 +96,7 @@ private:
     uint32_t computeQueueFamilyIndex_ = 0;
 
     uint32_t gaussianCapacity_ = 0;
+    uint32_t gaussianWorkspaceCapacity_ = 0;
     uint32_t densificationCapacity_ = 0;
     uint32_t tileItemCapacity_ = 0;
     TrainingExtent extent_{};
@@ -121,7 +123,6 @@ private:
     Buffer densifiedGaussianValidationPartials_;
     Buffer validationFinalResult_;
     Buffer pixelBlendStates_;
-    Buffer gaussianVisibility_;
     Buffer densificationStates_;
     Buffer densifiedParams_;
     Buffer densifiedAdamStates_;
@@ -131,6 +132,8 @@ private:
     Buffer counters_;
     Buffer tileItemCountReadback_;
     void* tileItemCountReadbackMapped_ = nullptr;
+    Buffer densificationStatsReadback_;
+    void* densificationStatsReadbackMapped_ = nullptr;
     Buffer previewInstances_;
     Buffer camera_;
 };

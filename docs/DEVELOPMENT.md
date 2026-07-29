@@ -149,6 +149,18 @@ SSIM uses an 11x11 Gaussian window with sigma 1.5. `SsimBackwardState` stores co
 
 Pixel-to-2DGS projection-gradient atomics cover only the nine differentiable values: center XY, conic/opacity XYZW, and RGB. Depth, integer screen radius, and color padding remain zero and are not atomically accumulated.
 
+The training panel exposes `Auto`, `Direct`, `Workgroup Shared`, and `Subgroup` Pixel-to-2DGS backward paths. `Auto` selects `Subgroup` only when Vulkan reports compute-stage BASIC and SHUFFLE subgroup operations, otherwise it falls back to `Direct`. The subgroup shader uses the runtime wave width and synchronizes only pixels in the same subgroup. Both cooperative variants preserve each pixel's reverse traversal and gradient math; `Workgroup Shared` remains available for explicit profiling.
+
+Tile count and emit use the same conservative ellipse-versus-pixel-rectangle test. A tile is omitted only when the minimum conic quadratic over its valid pixel-center rectangle proves that opacity is below the `1/255` contribution threshold everywhere. The original projected 3-sigma radius remains unchanged for densification and screen-size logic.
+
+Forward compositing provides `Direct` and `Workgroup Shared` modes. The shared mode is the default and cooperatively loads each tile's sorted projected Gaussians in batches of 256 while preserving every pixel's front-to-back order, alpha threshold, transmittance termination, and `processedCount`.
+
+Training uses separate prepare and main command buffers with per-submit fences. The CPU still waits for the prepare tile count because buffer overflow must be resolved before emit, sort, composite, and optimizer execute, but it no longer uses queue-wide `waitIdle()` calls that can include unrelated queue work. The vendored radix sorter supports an indirect count, but its maximum-capacity dispatch does not provide overflow-conditional execution for the rest of the training graph.
+
+Densification keeps parameter, Adam, and validation-partial buffers as ping-pong storage instead of recreating both sides after every adopt. Per-Gaussian scratch buffers grow in 16384-Gaussian chunks and are retained across densification events. The 64-byte densification counters use a persistent mapped readback, densification state is reset with one GPU fill, and opacity reset dispatches indirectly from the actual output count rather than the workspace capacity.
+
+The former per-contribution `GaussianVisibilityState` atomics and buffer were removed because no training pass consumed their contribution count, alpha sum, or radius. Densification continues to use `GaussianDensificationState`.
+
 The Adam-style optimizer has independent learning rates for position, SH DC/rest, opacity, scale, and rotation. Position learning rate uses initial/final values, delay multiplier, maximum-step scheduling, and the reference 3DGS scene-extent spatial learning-rate scale. The default opacity LR, Adam epsilon, and disabled gradient clipping mirror the reference 3DGS defaults.
 
 ## Training Buffers

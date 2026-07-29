@@ -59,6 +59,10 @@ public:
     void setDensificationConfig(const TrainingDensificationConfig& config) { densificationConfig_ = config; }
     void setOptimizerConfig(const TrainingOptimizerConfig& config) { optimizerConfig_ = config; }
     void setScheduleConfig(const TrainingScheduleConfig& config);
+    void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode);
+    void setForwardCompositeMode(TrainingForwardCompositeMode mode);
+    bool subgroupPixelTo2DGSSupported() const;
+    TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
     void setValidationInterval(uint32_t interval) { validationInterval_ = interval; }
 
     bool isInitialized() const { return initialized_; }
@@ -144,7 +148,10 @@ private:
     vk::Queue computeQueue_ = nullptr;
     uint32_t computeQueueFamilyIndex_ = 0;
     CommandPool trainingCommandPool_;
-    vk::CommandBuffer trainingCommandBuffer_ = nullptr;
+    vk::CommandBuffer prepareCommandBuffer_ = nullptr;
+    vk::CommandBuffer mainCommandBuffer_ = nullptr;
+    vk::Fence prepareFence_ = nullptr;
+    vk::Fence mainFence_ = nullptr;
     std::array<ValidationReadbackSlot, 3> validationReadbackSlots_{};
     size_t nextValidationReadbackSlot_ = 0;
     vk::Device profilingDevice_ = nullptr;
@@ -174,6 +181,8 @@ private:
     TrainingDensificationStats lastDensificationStats_{};
     uint32_t lastDensificationStatsIteration_ = 0;
     TrainingProfilingStats profilingStats_{};
+    TrainingPixelTo2DGSMode pixelTo2DGSMode_ = TrainingPixelTo2DGSMode::Auto;
+    TrainingForwardCompositeMode forwardCompositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
     float sceneExtent_ = 1.0f;
 
 };

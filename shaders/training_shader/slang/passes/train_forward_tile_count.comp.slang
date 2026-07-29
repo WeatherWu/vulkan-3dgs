@@ -14,13 +14,17 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
-    TileBounds bounds = trainProjectedTileBounds(projectedGaussians[gaussianIndex]);
+    ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
+    TileBounds bounds = trainProjectedTileBounds(gaussian);
     if (!bounds.valid) {
         return;
     }
 
     for (uint tileY = bounds.minTile.y; tileY < bounds.maxTileExclusive.y; ++tileY) {
         for (uint tileX = bounds.minTile.x; tileX < bounds.maxTileExclusive.x; ++tileX) {
+            if (!trainProjectedGaussianMayContributeToTile(gaussian, uint2(tileX, tileY))) {
+                continue;
+            }
             uint ignored = 0;
             InterlockedAdd(tileRanges[trainTileIndex(uint2(tileX, tileY))].y, 1u, ignored);
         }

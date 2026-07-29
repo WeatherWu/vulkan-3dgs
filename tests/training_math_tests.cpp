@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <random>
 
 namespace {
 
@@ -43,6 +44,154 @@ bool testProjectionAndTileBounds() {
 
     const auto bounds = tileBounds(16.0, 1, 4);
     return bounds[0] == 0 && bounds[1] == 2;
+}
+
+struct ConicGaussian2D {
+    double centerX = 0.0;
+    double centerY = 0.0;
+    double a = 1.0;
+    double b = 0.0;
+    double c = 1.0;
+    double opacity = 1.0;
+};
+
+double conicQuadratic(const ConicGaussian2D& gaussian, double dx, double dy) {
+    return gaussian.a * dx * dx + 2.0 * gaussian.b * dx * dy + gaussian.c * dy * dy;
+}
+
+double minimumConicQuadraticOnRectangle(const ConicGaussian2D& gaussian,
+                                        double minimumX,
+                                        double minimumY,
+                                        double maximumX,
+                                        double maximumY) {
+    auto evaluate = [&](double x, double y) {
+        return conicQuadratic(gaussian, x, y);
+    };
+
+    double minimum = evaluate(std::clamp(0.0, minimumX, maximumX),
+                              std::clamp(0.0, minimumY, maximumY));
+    const double yAtMinimumX = std::clamp(-gaussian.b * minimumX / gaussian.c,
+                                         minimumY, maximumY);
+    const double yAtMaximumX = std::clamp(-gaussian.b * maximumX / gaussian.c,
+                                         minimumY, maximumY);
+    minimum = std::min(minimum, evaluate(minimumX, yAtMinimumX));
+    minimum = std::min(minimum, evaluate(maximumX, yAtMaximumX));
+
+    const double xAtMinimumY = std::clamp(-gaussian.b * minimumY / gaussian.a,
+                                         minimumX, maximumX);
+    const double xAtMaximumY = std::clamp(-gaussian.b * maximumY / gaussian.a,
+                                         minimumX, maximumX);
+    minimum = std::min(minimum, evaluate(xAtMinimumY, minimumY));
+    minimum = std::min(minimum, evaluate(xAtMaximumY, maximumY));
+    return minimum;
+}
+
+bool gaussianMayContributeToTile(const ConicGaussian2D& gaussian,
+                                 uint32_t tileX,
+                                 uint32_t tileY,
+                                 uint32_t width,
+                                 uint32_t height) {
+    constexpr uint32_t tileSize = 16;
+    constexpr double alphaMinimum = 1.0 / 255.0;
+    if (!(gaussian.opacity >= alphaMinimum)) {
+        return false;
+    }
+
+    const double determinant = gaussian.a * gaussian.c - gaussian.b * gaussian.b;
+    if (!(gaussian.a > 0.0) || !(gaussian.c > 0.0) || !(determinant > 0.0)) {
+        return true;
+    }
+
+    const uint32_t minimumPixelX = tileX * tileSize;
+    const uint32_t minimumPixelY = tileY * tileSize;
+    const uint32_t maximumPixelX = std::min(minimumPixelX + tileSize, width);
+    const uint32_t maximumPixelY = std::min(minimumPixelY + tileSize, height);
+    if (maximumPixelX <= minimumPixelX || maximumPixelY <= minimumPixelY) {
+        return false;
+    }
+
+    const double minimumQuadratic = minimumConicQuadraticOnRectangle(
+        gaussian,
+        static_cast<double>(minimumPixelX) - gaussian.centerX,
+        static_cast<double>(minimumPixelY) - gaussian.centerY,
+        static_cast<double>(maximumPixelX - 1u) - gaussian.centerX,
+        static_cast<double>(maximumPixelY - 1u) - gaussian.centerY);
+    const double supportQuadratic = 2.0 * std::log(gaussian.opacity / alphaMinimum);
+    const double tolerance = 1e-5 * std::max(1.0, std::abs(supportQuadratic));
+    return minimumQuadratic <= supportQuadratic + tolerance;
+}
+
+bool testConservativeEllipseTileCulling() {
+    constexpr uint32_t width = 63;
+    constexpr uint32_t height = 47;
+    constexpr double alphaMinimum = 1.0 / 255.0;
+    std::mt19937 random(7u);
+    std::uniform_real_distribution<double> centerDistribution(-32.0, 96.0);
+    std::uniform_real_distribution<double> coefficientDistribution(0.01, 2.0);
+    std::uniform_real_distribution<double> angleDistribution(0.0, 6.283185307179586);
+    std::uniform_real_distribution<double> opacityDistribution(0.001, 1.0);
+    uint32_t culledTileCount = 0;
+
+    for (uint32_t sample = 0; sample < 500u; ++sample) {
+        const double firstEigenvalue = coefficientDistribution(random);
+        const double secondEigenvalue = coefficientDistribution(random);
+        const double angle = angleDistribution(random);
+        const double cosine = std::cos(angle);
+        const double sine = std::sin(angle);
+        ConicGaussian2D gaussian{};
+        gaussian.centerX = centerDistribution(random);
+        gaussian.centerY = centerDistribution(random);
+        gaussian.a = firstEigenvalue * cosine * cosine + secondEigenvalue * sine * sine;
+        gaussian.b = (firstEigenvalue - secondEigenvalue) * cosine * sine;
+        gaussian.c = firstEigenvalue * sine * sine + secondEigenvalue * cosine * cosine;
+        gaussian.opacity = opacityDistribution(random);
+
+        for (uint32_t tileY = 0; tileY < (height + 15u) / 16u; ++tileY) {
+            for (uint32_t tileX = 0; tileX < (width + 15u) / 16u; ++tileX) {
+                if (gaussianMayContributeToTile(gaussian, tileX, tileY, width, height)) {
+                    continue;
+                }
+                ++culledTileCount;
+
+                const uint32_t minimumX = tileX * 16u;
+                const uint32_t minimumY = tileY * 16u;
+                const uint32_t maximumX = std::min(minimumX + 16u, width);
+                const uint32_t maximumY = std::min(minimumY + 16u, height);
+                for (uint32_t y = minimumY; y < maximumY; ++y) {
+                    for (uint32_t x = minimumX; x < maximumX; ++x) {
+                        const double quadratic = conicQuadratic(
+                            gaussian,
+                            static_cast<double>(x) - gaussian.centerX,
+                            static_cast<double>(y) - gaussian.centerY);
+                        const double alpha = gaussian.opacity * std::exp(-0.5 * quadratic);
+                        if (alpha >= alphaMinimum) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return culledTileCount > 0u;
+}
+
+bool testPackedConicOffDiagonalGradient() {
+    const double a = 0.7;
+    const double b = -0.23;
+    const double c = 1.1;
+    const double dx = 2.4;
+    const double dy = -1.7;
+    const double upstream = 0.83;
+    const double epsilon = 1e-6;
+    auto loss = [&](double conicB) {
+        const double power = -0.5 *
+            (a * dx * dx + 2.0 * conicB * dx * dy + c * dy * dy);
+        return upstream * power;
+    };
+
+    const double finiteDifference = (loss(b + epsilon) - loss(b - epsilon)) / (2.0 * epsilon);
+    const double packedAnalytical = upstream * (-0.5 * dx * dy);
+    return std::abs(finiteDifference - 2.0 * packedAnalytical) < 1e-8;
 }
 
 double positionLearningRate(double iteration,
@@ -172,6 +321,14 @@ int main() {
     }
     if (!testProjectionAndTileBounds()) {
         std::cerr << "projection/tile bounds test failed\n";
+        return 1;
+    }
+    if (!testConservativeEllipseTileCulling()) {
+        std::cerr << "conservative ellipse/tile culling test failed\n";
+        return 1;
+    }
+    if (!testPackedConicOffDiagonalGradient()) {
+        std::cerr << "packed conic off-diagonal gradient test failed\n";
         return 1;
     }
     if (!testLearningRateAndAdamSteps()) {

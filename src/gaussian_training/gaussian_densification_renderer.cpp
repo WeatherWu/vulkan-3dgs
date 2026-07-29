@@ -117,13 +117,34 @@ void GaussianDensificationRenderer::densifyAndPrune() {
                          trainingBuffers_->densificationCountersInfo(),
                          trainingBuffers_->densificationStatesInfo()},
                         vk::AccessFlagBits::eShaderRead |
-                            vk::AccessFlagBits::eShaderWrite);
+                            vk::AccessFlagBits::eShaderWrite |
+                            vk::AccessFlagBits::eTransferWrite);
+
+    updateDescriptorSet(dispatchBuildDescriptorSet_, {19});
+    bindAndDispatch(dispatchBuildPipeline_, dispatchBuildDescriptorSet_, 1);
+    shaderBufferBarrier({trainingBuffers_->densificationCountersInfo()},
+                        vk::AccessFlagBits::eIndirectCommandRead |
+                            vk::AccessFlagBits::eShaderRead |
+                            vk::AccessFlagBits::eTransferRead);
 
     if (pushConstants_.resetOpacity != 0u) {
         updateDescriptorSet(opacityResetDescriptorSet_, {17, 18, 19});
-        bindAndDispatch(opacityResetPipeline_,
-                        opacityResetDescriptorSet_,
-                        ceilDiv(pushConstants_.maxGaussianCount, 256u));
+        commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute,
+                                    opacityResetPipeline_.getPipeline());
+        commandBuffer_.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                                          opacityResetPipeline_.getPipelineLayout(),
+                                          0,
+                                          1,
+                                          &opacityResetDescriptorSet_,
+                                          0,
+                                          nullptr);
+        commandBuffer_.pushConstants(opacityResetPipeline_.getPipelineLayout(),
+                                     vk::ShaderStageFlagBits::eCompute,
+                                     0,
+                                     sizeof(TrainingDensificationPushConstants),
+                                     &pushConstants_);
+        commandBuffer_.dispatchIndirect(trainingBuffers_->densificationCountersBuffer(),
+                                        sizeof(uint32_t) * 12u);
     }
     shaderBufferBarrier({trainingBuffers_->densifiedParamsInfo(),
                          trainingBuffers_->densifiedAdamStatesInfo(),
@@ -131,6 +152,7 @@ void GaussianDensificationRenderer::densifyAndPrune() {
                         vk::AccessFlagBits::eShaderRead |
                             vk::AccessFlagBits::eShaderWrite |
                              vk::AccessFlagBits::eTransferRead);
+    clearDensificationStates();
     writeProfilingTimestamp(TrainingGpuProfileStage::Densification, true);
 }
 
@@ -165,20 +187,23 @@ void GaussianDensificationRenderer::createResources() {
                                      pipelineConfig({storageBinding(17),
                                                      storageBinding(18),
                                                      storageBinding(19)}));
+    dispatchBuildPipeline_.initialize(device_, "shaders/train_densify_dispatch.comp.spv",
+                                      pipelineConfig({storageBinding(19)}));
 
     std::array<vk::DescriptorPoolSize, 1> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(10);
+                .setDescriptorCount(11);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(3);
+            .setMaxSets(4);
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
-    std::array<vk::DescriptorSetLayout, 3> layouts = {
+    std::array<vk::DescriptorSetLayout, 4> layouts = {
         clearPipeline_.getDescriptorSetLayout(),
         densifyPrunePipeline_.getDescriptorSetLayout(),
+        dispatchBuildPipeline_.getDescriptorSetLayout(),
         opacityResetPipeline_.getDescriptorSetLayout(),
     };
 
@@ -190,7 +215,8 @@ void GaussianDensificationRenderer::createResources() {
     std::vector<vk::DescriptorSet> sets = device_.allocateDescriptorSets(allocInfo);
     clearDescriptorSet_ = sets[0];
     densifyPruneDescriptorSet_ = sets[1];
-    opacityResetDescriptorSet_ = sets[2];
+    dispatchBuildDescriptorSet_ = sets[2];
+    opacityResetDescriptorSet_ = sets[3];
 }
 
 void GaussianDensificationRenderer::destroyResources() {
@@ -199,10 +225,12 @@ void GaussianDensificationRenderer::destroyResources() {
         descriptorPool_ = nullptr;
         clearDescriptorSet_ = nullptr;
         densifyPruneDescriptorSet_ = nullptr;
+        dispatchBuildDescriptorSet_ = nullptr;
         opacityResetDescriptorSet_ = nullptr;
     }
 
     opacityResetPipeline_.cleanup();
+    dispatchBuildPipeline_.cleanup();
     densifyPrunePipeline_.cleanup();
     clearPipeline_.cleanup();
 }
@@ -291,6 +319,9 @@ void GaussianDensificationRenderer::shaderBufferBarrier(std::initializer_list<vk
     if (dstAccessMask & (vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite)) {
         dstStages |= vk::PipelineStageFlagBits::eTransfer;
     }
+    if (dstAccessMask & vk::AccessFlagBits::eIndirectCommandRead) {
+        dstStages |= vk::PipelineStageFlagBits::eDrawIndirect;
+    }
 
     commandBuffer_.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
                                    dstStages,
@@ -299,6 +330,34 @@ void GaussianDensificationRenderer::shaderBufferBarrier(std::initializer_list<vk
                                    nullptr,
                                    static_cast<uint32_t>(barriers.size()),
                                    barriers.data(),
+                                   0,
+                                   nullptr);
+}
+
+void GaussianDensificationRenderer::clearDensificationStates() {
+    const vk::DescriptorBufferInfo statesInfo = trainingBuffers_->densificationStatesInfo();
+    if (!statesInfo.buffer || statesInfo.range == 0) {
+        return;
+    }
+
+    commandBuffer_.fillBuffer(statesInfo.buffer, statesInfo.offset, statesInfo.range, 0u);
+
+    vk::BufferMemoryBarrier ready{};
+    ready.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+         .setDstAccessMask(vk::AccessFlagBits::eShaderRead |
+                           vk::AccessFlagBits::eShaderWrite)
+         .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+         .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+         .setBuffer(statesInfo.buffer)
+         .setOffset(statesInfo.offset)
+         .setSize(statesInfo.range);
+    commandBuffer_.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                   vk::PipelineStageFlagBits::eComputeShader,
+                                   vk::DependencyFlagBits{},
+                                   0,
+                                   nullptr,
+                                   1,
+                                   &ready,
                                    0,
                                    nullptr);
 }
