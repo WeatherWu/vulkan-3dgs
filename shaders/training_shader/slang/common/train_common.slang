@@ -8,10 +8,10 @@ struct TrainingPushConstants {
     uint maxSHDegree;
     uint tileItemCount;
     float positionLearningRate;
-    float positionLearningRateFinal;
-    float positionLearningRateDelayMult;
-    float positionLearningRateDelaySteps;
-    float positionLearningRateMaxSteps;
+    float optimizerOneMinusBeta1;
+    float optimizerOneMinusBeta2;
+    float optimizerInvFirstMomentCorrection;
+    float optimizerInvSecondMomentCorrection;
     float featureLearningRate;
     float featureRestLearningRate;
     float opacityLearningRate;

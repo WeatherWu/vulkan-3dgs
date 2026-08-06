@@ -23,10 +23,10 @@ struct TrainingPushConstants {
     uint32_t maxSHDegree = 3;
     uint32_t tileItemCount = 0;
     float positionLearningRate = 0.00016f;
-    float positionLearningRateFinal = 0.0000016f;
-    float positionLearningRateDelayMult = 0.01f;
-    float positionLearningRateDelaySteps = 0.0f;
-    float positionLearningRateMaxSteps = 30000.0f;
+    float optimizerOneMinusBeta1 = 0.1f;
+    float optimizerOneMinusBeta2 = 0.001f;
+    float optimizerInvFirstMomentCorrection = 1.0f;
+    float optimizerInvSecondMomentCorrection = 1.0f;
     float featureLearningRate = 0.0025f;
     float featureRestLearningRate = 0.000125f;
     float opacityLearningRate = 0.025f;
@@ -42,6 +42,13 @@ struct TrainingPushConstants {
     uint32_t validationIteration = 0;
     uint32_t optimizerEnabled = 1;
     uint32_t validationUsesDensifiedGaussians = 0;
+};
+
+struct TrainingPrefixPushConstants {
+    uint32_t elementCount = 0;
+    uint32_t inputOffset = 0;
+    uint32_t outputOffset = 0;
+    uint32_t parentOffset = 0;
 };
 
 struct TrainingInitializationConfig {
@@ -191,15 +198,19 @@ enum class TrainingCpuProfileStage : uint32_t {
 };
 
 enum class TrainingGpuProfileStage : uint32_t {
-    PrepareTileItems = 0,
+    GaussianProjection = 0,
+    TileCoverageCount,
+    TilePrefix,
     TileEmit,
     TileSortAndRanges,
     Composite,
     Loss,
+    BackwardClear,
     LossToPixel,
     PixelTo2DGS,
     TwoDGSTo3DGS,
     Optimizer,
+    Validation,
     Densification,
     Count,
 };
@@ -337,6 +348,7 @@ static_assert(sizeof(TrainingForwardCamera) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(AdamState) == sizeof(GaussianGrad) * 2);
 static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 4);
 static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 7);
+static_assert(sizeof(TrainingPrefixPushConstants) == sizeof(glm::vec4));
 static_assert(sizeof(TrainingPixelValidationPartial) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(TrainingGaussianValidationPartial) == sizeof(glm::vec4) * 2);
 static_assert(sizeof(TrainingValidationGpuResult) == sizeof(glm::vec4) * 5);

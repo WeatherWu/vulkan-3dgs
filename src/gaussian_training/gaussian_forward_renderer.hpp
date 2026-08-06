@@ -35,16 +35,15 @@ public:
 private:
     void createForwardResources();
     void destroyForwardResources();
-    void clearForwardBuffers();
     void projectGaussians();
     void clearTileRanges();
     void countTileCoverage();
-    void prefixTileRanges();
+    void prefixGaussianTileRanges();
     void emitTileItems();
     void sortTileItems(uint32_t tileItemCount);
     void gatherHighTileKeys(uint32_t tileItemCount);
     void gatherSortedTileItems(uint32_t tileItemCount);
-    void rebuildTileRanges();
+    void rebuildTileRanges(uint32_t tileItemCount);
     void ensureTileSortResources(uint32_t tileItemCount);
     void compositePixels();
     void bindAndDispatch(ComputePipeline& pipeline,
@@ -52,6 +51,10 @@ private:
                          uint32_t groupCountX,
                          uint32_t groupCountY = 1,
                          uint32_t groupCountZ = 1);
+    void bindAndDispatchPrefix(ComputePipeline& pipeline,
+                               vk::DescriptorSet descriptorSet,
+                               const TrainingPrefixPushConstants& prefixConstants,
+                               uint32_t groupCountX);
     void shaderMemoryBarrier();
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
@@ -66,28 +69,36 @@ private:
     uint32_t gaussianCount_ = 0;
     TrainingExtent extent_{};
 
-    ComputePipeline clearPipeline_;
     ComputePipeline projectPipeline_;
     ComputePipeline tileClearPipeline_;
     ComputePipeline tileCountPipeline_;
-    ComputePipeline tilePrefixPipeline_;
+    ComputePipeline gaussianPrefixRangesPipeline_;
+    ComputePipeline gaussianPrefixScratchPipeline_;
+    ComputePipeline gaussianPrefixTopPipeline_;
+    ComputePipeline gaussianPrefixAddScratchPipeline_;
+    ComputePipeline gaussianPrefixAddRangesPipeline_;
     ComputePipeline tileEmitPipeline_;
     ComputePipeline tileGatherHighPipeline_;
     ComputePipeline tileGatherItemsPipeline_;
+    ComputePipeline tileRangeBoundariesPipeline_;
     ComputePipeline tileRangeBuildPipeline_;
     ComputePipeline forwardPipeline_;
     ComputePipeline forwardWorkgroupPipeline_;
     VrdxSorter radixSorter_ = VK_NULL_HANDLE;
 
     vk::DescriptorPool descriptorPool_ = nullptr;
-    vk::DescriptorSet clearDescriptorSet_ = nullptr;
     vk::DescriptorSet projectDescriptorSet_ = nullptr;
     vk::DescriptorSet tileClearDescriptorSet_ = nullptr;
     vk::DescriptorSet tileCountDescriptorSet_ = nullptr;
-    vk::DescriptorSet tilePrefixDescriptorSet_ = nullptr;
+    vk::DescriptorSet gaussianPrefixRangesDescriptorSet_ = nullptr;
+    vk::DescriptorSet gaussianPrefixScratchDescriptorSet_ = nullptr;
+    vk::DescriptorSet gaussianPrefixTopDescriptorSet_ = nullptr;
+    vk::DescriptorSet gaussianPrefixAddScratchDescriptorSet_ = nullptr;
+    vk::DescriptorSet gaussianPrefixAddRangesDescriptorSet_ = nullptr;
     vk::DescriptorSet tileEmitDescriptorSet_ = nullptr;
     vk::DescriptorSet tileGatherHighDescriptorSet_ = nullptr;
     vk::DescriptorSet tileGatherItemsDescriptorSet_ = nullptr;
+    vk::DescriptorSet tileRangeBoundariesDescriptorSet_ = nullptr;
     vk::DescriptorSet tileRangeBuildDescriptorSet_ = nullptr;
     vk::DescriptorSet forwardDescriptorSet_ = nullptr;
     vk::DescriptorSet forwardWorkgroupDescriptorSet_ = nullptr;

@@ -33,61 +33,78 @@ groupshared float validationContributorSum[256];
 groupshared uint validationMaxProcessedCandidates[256];
 
 static const int SSIM_RADIUS = 5;
+static const int SSIM_SHARED_WIDTH = 26;
+static const int SSIM_SHARED_PIXEL_COUNT = SSIM_SHARED_WIDTH * SSIM_SHARED_WIDTH;
 static const float SSIM_C1 = 0.0001;
 static const float SSIM_C2 = 0.0009;
-static const float SSIM_SIGMA = 1.5;
+static const float SSIM_INV_WEIGHT_SUM = 0.0707622378;
+static const float SSIM_GAUSSIAN_WEIGHTS[6] = {
+    1.0,
+    0.8007374029,
+    0.4111122905,
+    0.1353352832,
+    0.0285655008,
+    0.0038659201
+};
+
+groupshared float4 sharedRenderedColor[SSIM_SHARED_PIXEL_COUNT];
+groupshared uint sharedTargetColor[SSIM_SHARED_PIXEL_COUNT];
 
 float ssimWindowWeight(int2 offset) {
-    float2 value = float2(offset);
-    return exp(-dot(value, value) / (2.0 * SSIM_SIGMA * SSIM_SIGMA));
+    return SSIM_GAUSSIAN_WEIGHTS[abs(offset.x)] * SSIM_GAUSSIAN_WEIGHTS[abs(offset.y)];
 }
 
-bool pixelInBounds(int2 pixel) {
-    return pixel.x >= 0 && pixel.y >= 0 &&
-           pixel.x < int(params.width) && pixel.y < int(params.height);
+uint ssimSharedIndex(int2 pixel) {
+    return uint(pixel.y * SSIM_SHARED_WIDTH + pixel.x);
 }
 
-uint pixelIndex(int2 pixel) {
-    return uint(pixel.y * int(params.width) + pixel.x);
+void loadSsimNeighborhood(uint2 groupOrigin, uint localIndex) {
+    for (uint sharedIndex = localIndex;
+         sharedIndex < SSIM_SHARED_PIXEL_COUNT;
+         sharedIndex += 256u) {
+        int2 sharedPixel = int2(sharedIndex % SSIM_SHARED_WIDTH,
+                                sharedIndex / SSIM_SHARED_WIDTH);
+        int2 imagePixel = int2(groupOrigin) + sharedPixel - int2(SSIM_RADIUS);
+        if (imagePixel.x >= 0 && imagePixel.y >= 0 &&
+            imagePixel.x < int(params.width) && imagePixel.y < int(params.height)) {
+            uint imageIndex = uint(imagePixel.y * int(params.width) + imagePixel.x);
+            sharedRenderedColor[sharedIndex] = renderedColor[imageIndex];
+            sharedTargetColor[sharedIndex] = targetColor[imageIndex];
+        } else {
+            sharedRenderedColor[sharedIndex] = float4(0.0);
+            sharedTargetColor[sharedIndex] = 0u;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
 }
 
-float ssimColor(uint centerIndex, out SsimBackwardState backwardState) {
-    int width = int(params.width);
-    int2 center = int2(int(centerIndex % params.width), int(centerIndex / params.width));
-
+float ssimColor(uint2 localPixel, out SsimBackwardState backwardState) {
     float3 renderedMean = float3(0.0);
     float3 targetMean = float3(0.0);
     float3 renderedSqMean = float3(0.0);
     float3 targetSqMean = float3(0.0);
     float3 renderedTargetMean = float3(0.0);
-    float weightSum = 0.0;
 
     for (int dy = -SSIM_RADIUS; dy <= SSIM_RADIUS; ++dy) {
         for (int dx = -SSIM_RADIUS; dx <= SSIM_RADIUS; ++dx) {
             float weight = ssimWindowWeight(int2(dx, dy));
-            int2 samplePixel = center + int2(dx, dy);
-            float3 rendered = float3(0.0);
-            float3 target = float3(0.0);
-            if (pixelInBounds(samplePixel)) {
-                uint sampleIndex = pixelIndex(samplePixel);
-                rendered = renderedColor[sampleIndex].xyz;
-                target = unpackTargetColor(targetColor[sampleIndex]).xyz;
-            }
+            int2 samplePixel = int2(localPixel) + int2(dx + SSIM_RADIUS, dy + SSIM_RADIUS);
+            float3 rendered = sharedRenderedColor[ssimSharedIndex(samplePixel)].xyz;
+            float3 target = unpackTargetColor(sharedTargetColor[ssimSharedIndex(samplePixel)]).xyz;
 
             renderedMean += rendered * weight;
             targetMean += target * weight;
             renderedSqMean += rendered * rendered * weight;
             targetSqMean += target * target * weight;
             renderedTargetMean += rendered * target * weight;
-            weightSum += weight;
         }
     }
 
-    renderedMean /= weightSum;
-    targetMean /= weightSum;
-    renderedSqMean /= weightSum;
-    targetSqMean /= weightSum;
-    renderedTargetMean /= weightSum;
+    renderedMean *= SSIM_INV_WEIGHT_SUM;
+    targetMean *= SSIM_INV_WEIGHT_SUM;
+    renderedSqMean *= SSIM_INV_WEIGHT_SUM;
+    targetSqMean *= SSIM_INV_WEIGHT_SUM;
+    renderedTargetMean *= SSIM_INV_WEIGHT_SUM;
 
     float3 renderedVariance = renderedSqMean - renderedMean * renderedMean;
     float3 targetVariance = targetSqMean - targetMean * targetMean;
@@ -115,12 +132,17 @@ float ssimColor(uint centerIndex, out SsimBackwardState backwardState) {
 }
 
 [shader("compute")]
-[numthreads(256, 1, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID,
           uint3 groupThreadID : SV_GroupThreadID,
           uint3 groupID : SV_GroupID) {
-    uint index = dispatchThreadID.x;
-    bool active = index < params.pixelCount;
+    uint2 localPixel = groupThreadID.xy;
+    uint2 pixel = dispatchThreadID.xy;
+    uint localIndex = groupThreadID.y * 16u + groupThreadID.x;
+    bool active = pixel.x < params.width && pixel.y < params.height;
+    uint index = active ? pixel.y * params.width + pixel.x : 0u;
+    uint2 groupOrigin = groupID.xy * 16u;
+    loadSsimNeighborhood(groupOrigin, localIndex);
     float pixelLoss = 0.0;
     float4 rendered = float4(0.0);
     uint processedCandidateCount = 0u;
@@ -130,7 +152,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
         SsimBackwardState backwardState;
         rendered = renderedColor[index];
         float l1 = l1Color(rendered.xyz, unpackTargetColor(targetColor[index]).xyz);
-        float dssim = 1.0 - ssimColor(index, backwardState);
+        float dssim = 1.0 - ssimColor(localPixel, backwardState);
         ssimBackwardStates[index] = backwardState;
         float dssimWeight = clamp(params.lossDssimWeight, 0.0, 1.0);
         pixelLoss = ((1.0 - dssimWeight) * l1 + dssimWeight * dssim) /
@@ -147,41 +169,41 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
 
     bool finiteLoss = active && isfinite(pixelLoss);
     bool finiteRendered = active && all(isfinite(rendered));
-    uint localIndex = groupThreadID.x;
-    validationLossSum[localIndex] = finiteLoss ? pixelLoss : 0.0;
-    validationMaxLoss[localIndex] = finiteLoss ? pixelLoss : 0.0;
-    validationAlphaSum[localIndex] = finiteRendered ? rendered.w : 0.0;
-    validationLuminanceSum[localIndex] = finiteRendered
+    uint reductionIndex = groupThreadID.y * 16u + groupThreadID.x;
+    validationLossSum[reductionIndex] = finiteLoss ? pixelLoss : 0.0;
+    validationMaxLoss[reductionIndex] = finiteLoss ? pixelLoss : 0.0;
+    validationAlphaSum[reductionIndex] = finiteRendered ? rendered.w : 0.0;
+    validationLuminanceSum[reductionIndex] = finiteRendered
         ? (rendered.x + rendered.y + rendered.z) / 3.0
         : 0.0;
-    validationInvalidLossCount[localIndex] = active && !finiteLoss ? 1u : 0u;
-    validationInvalidRenderedCount[localIndex] = active && !finiteRendered ? 1u : 0u;
-    validationValidRenderedCount[localIndex] = finiteRendered ? 1u : 0u;
-    validationProcessedCandidateSum[localIndex] = float(processedCandidateCount);
-    validationContributorSum[localIndex] = float(contributorCount);
-    validationMaxProcessedCandidates[localIndex] = processedCandidateCount;
+    validationInvalidLossCount[reductionIndex] = active && !finiteLoss ? 1u : 0u;
+    validationInvalidRenderedCount[reductionIndex] = active && !finiteRendered ? 1u : 0u;
+    validationValidRenderedCount[reductionIndex] = finiteRendered ? 1u : 0u;
+    validationProcessedCandidateSum[reductionIndex] = float(processedCandidateCount);
+    validationContributorSum[reductionIndex] = float(contributorCount);
+    validationMaxProcessedCandidates[reductionIndex] = processedCandidateCount;
     GroupMemoryBarrierWithGroupSync();
 
     for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-        if (localIndex < stride) {
-            validationLossSum[localIndex] += validationLossSum[localIndex + stride];
-            validationMaxLoss[localIndex] = max(validationMaxLoss[localIndex],
-                                                validationMaxLoss[localIndex + stride]);
-            validationAlphaSum[localIndex] += validationAlphaSum[localIndex + stride];
-            validationLuminanceSum[localIndex] += validationLuminanceSum[localIndex + stride];
-            validationInvalidLossCount[localIndex] += validationInvalidLossCount[localIndex + stride];
-            validationInvalidRenderedCount[localIndex] += validationInvalidRenderedCount[localIndex + stride];
-            validationValidRenderedCount[localIndex] += validationValidRenderedCount[localIndex + stride];
-            validationProcessedCandidateSum[localIndex] += validationProcessedCandidateSum[localIndex + stride];
-            validationContributorSum[localIndex] += validationContributorSum[localIndex + stride];
-            validationMaxProcessedCandidates[localIndex] = max(
-                validationMaxProcessedCandidates[localIndex],
-                validationMaxProcessedCandidates[localIndex + stride]);
+        if (reductionIndex < stride) {
+            validationLossSum[reductionIndex] += validationLossSum[reductionIndex + stride];
+            validationMaxLoss[reductionIndex] = max(validationMaxLoss[reductionIndex],
+                                                    validationMaxLoss[reductionIndex + stride]);
+            validationAlphaSum[reductionIndex] += validationAlphaSum[reductionIndex + stride];
+            validationLuminanceSum[reductionIndex] += validationLuminanceSum[reductionIndex + stride];
+            validationInvalidLossCount[reductionIndex] += validationInvalidLossCount[reductionIndex + stride];
+            validationInvalidRenderedCount[reductionIndex] += validationInvalidRenderedCount[reductionIndex + stride];
+            validationValidRenderedCount[reductionIndex] += validationValidRenderedCount[reductionIndex + stride];
+            validationProcessedCandidateSum[reductionIndex] += validationProcessedCandidateSum[reductionIndex + stride];
+            validationContributorSum[reductionIndex] += validationContributorSum[reductionIndex + stride];
+            validationMaxProcessedCandidates[reductionIndex] = max(
+                validationMaxProcessedCandidates[reductionIndex],
+                validationMaxProcessedCandidates[reductionIndex + stride]);
         }
         GroupMemoryBarrierWithGroupSync();
     }
 
-    if (localIndex == 0u) {
+    if (reductionIndex == 0u) {
         TrainingPixelValidationPartial partial;
         partial.lossSum = validationLossSum[0];
         partial.maxLoss = validationMaxLoss[0];
@@ -195,6 +217,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
         partial.contributorSum = validationContributorSum[0];
         partial.maxProcessedCandidates = validationMaxProcessedCandidates[0];
         partial.padding1 = 0u;
-        pixelValidationPartials[groupID.x] = partial;
+        uint validationGroupCountX = (params.width + 15u) / 16u;
+        pixelValidationPartials[groupID.x + groupID.y * validationGroupCountX] = partial;
     }
 }

@@ -64,6 +64,7 @@ public:
     bool subgroupPixelTo2DGSSupported() const;
     TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
     void setValidationInterval(uint32_t interval) { validationInterval_ = interval; }
+    uint32_t validationInterval() const { return validationInterval_; }
 
     bool isInitialized() const { return initialized_; }
     bool isRendererInitialized() const { return rendererInitialized_; }
@@ -176,7 +177,7 @@ private:
     std::vector<size_t> randomFrameStack_;
     uint32_t trainingIteration_ = 0;
     uint32_t optimizerStep_ = 0;
-    uint32_t validationInterval_ = 10;
+    uint32_t validationInterval_ = 100;
     TrainingValidationStats validationStats_{};
     TrainingDensificationStats lastDensificationStats_{};
     uint32_t lastDensificationStatsIteration_ = 0;

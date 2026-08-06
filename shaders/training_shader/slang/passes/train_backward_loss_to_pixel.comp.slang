@@ -14,32 +14,67 @@ RWStructuredBuffer<PixelGrad> pixelGrads;
 StructuredBuffer<SsimBackwardState> ssimBackwardStates;
 
 static const int BACKWARD_SSIM_RADIUS = 5;
-static const float BACKWARD_SSIM_SIGMA = 1.5;
+static const int BACKWARD_SSIM_SHARED_WIDTH = 26;
+static const int BACKWARD_SSIM_SHARED_PIXEL_COUNT =
+    BACKWARD_SSIM_SHARED_WIDTH * BACKWARD_SSIM_SHARED_WIDTH;
 static const float BACKWARD_SSIM_INV_WEIGHT_SUM = 0.0707622378;
+static const float BACKWARD_SSIM_GAUSSIAN_WEIGHTS[6] = {
+    1.0,
+    0.8007374029,
+    0.4111122905,
+    0.1353352832,
+    0.0285655008,
+    0.0038659201
+};
+
+groupshared SsimBackwardState sharedSsimBackwardStates[BACKWARD_SSIM_SHARED_PIXEL_COUNT];
 
 float backwardSsimWindowWeight(int2 offset) {
-    float2 value = float2(offset);
-    return exp(-dot(value, value) / (2.0 * BACKWARD_SSIM_SIGMA * BACKWARD_SSIM_SIGMA));
+    return BACKWARD_SSIM_GAUSSIAN_WEIGHTS[abs(offset.x)] *
+           BACKWARD_SSIM_GAUSSIAN_WEIGHTS[abs(offset.y)];
 }
 
-uint backwardPixelIndex(int2 pixel) {
-    return uint(pixel.y * int(params.width) + pixel.x);
+uint backwardSsimSharedIndex(int2 pixel) {
+    return uint(pixel.y * BACKWARD_SSIM_SHARED_WIDTH + pixel.x);
 }
 
-float3 dssimDerivative(uint sampleIndex) {
-    int2 samplePixel = int2(int(sampleIndex % params.width), int(sampleIndex / params.width));
-    float3 rendered = renderedColor[sampleIndex].xyz;
-    float3 target = unpackTargetColor(targetColor[sampleIndex]).xyz;
+void loadBackwardSsimNeighborhood(uint2 groupOrigin, uint localIndex) {
+    for (uint sharedIndex = localIndex;
+         sharedIndex < BACKWARD_SSIM_SHARED_PIXEL_COUNT;
+         sharedIndex += 256u) {
+        int2 sharedPixel = int2(sharedIndex % BACKWARD_SSIM_SHARED_WIDTH,
+                                sharedIndex / BACKWARD_SSIM_SHARED_WIDTH);
+        int2 imagePixel = int2(groupOrigin) + sharedPixel - int2(BACKWARD_SSIM_RADIUS);
+        SsimBackwardState state;
+        state.base = float4(0.0);
+        state.targetCoefficient = float4(0.0);
+        state.renderedCoefficient = float4(0.0);
+        if (imagePixel.x >= 0 && imagePixel.y >= 0 &&
+            imagePixel.x < int(params.width) && imagePixel.y < int(params.height)) {
+            uint imageIndex = uint(imagePixel.y * int(params.width) + imagePixel.x);
+            state = ssimBackwardStates[imageIndex];
+        }
+        sharedSsimBackwardStates[sharedIndex] = state;
+    }
+    GroupMemoryBarrierWithGroupSync();
+}
+
+float3 dssimDerivative(uint2 pixel, uint2 localPixel, float3 rendered, float3 target) {
+    int2 samplePixel = int2(pixel);
+    int2 groupOrigin = samplePixel - int2(localPixel);
     int2 minCenter = max(samplePixel - int2(BACKWARD_SSIM_RADIUS), int2(0));
-    int2 maxCenter = min(samplePixel + int2(BACKWARD_SSIM_RADIUS), int2(int(params.width) - 1, int(params.height) - 1));
+    int2 maxCenter = min(samplePixel + int2(BACKWARD_SSIM_RADIUS),
+                          int2(int(params.width) - 1, int(params.height) - 1));
     float3 derivative = float3(0.0);
 
     for (int centerY = minCenter.y; centerY <= maxCenter.y; ++centerY) {
         for (int centerX = minCenter.x; centerX <= maxCenter.x; ++centerX) {
             int2 center = int2(centerX, centerY);
-            int2 offset = samplePixel - center;
+            int2 centerOffset = center - groupOrigin;
+            int2 offset = int2(localPixel) - centerOffset;
+            int2 sharedCenter = centerOffset + int2(BACKWARD_SSIM_RADIUS);
             float sampleWeight = backwardSsimWindowWeight(offset) * BACKWARD_SSIM_INV_WEIGHT_SUM;
-            SsimBackwardState state = ssimBackwardStates[backwardPixelIndex(center)];
+            SsimBackwardState state = sharedSsimBackwardStates[backwardSsimSharedIndex(sharedCenter)];
             derivative += sampleWeight *
                 (state.base.xyz +
                  state.targetCoefficient.xyz * target +
@@ -51,10 +86,16 @@ float3 dssimDerivative(uint sampleIndex) {
 }
 
 [shader("compute")]
-[numthreads(256, 1, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
-    uint index = dispatchThreadID.x;
-    if (index >= params.pixelCount) {
+    uint2 pixel = dispatchThreadID.xy;
+    uint2 localPixel = uint2(pixel.x % 16u, pixel.y % 16u);
+    uint localIndex = localPixel.y * 16u + localPixel.x;
+    uint2 groupOrigin = pixel - localPixel;
+    bool active = pixel.x < params.width && pixel.y < params.height;
+    uint index = active ? pixel.y * params.width + pixel.x : 0u;
+    loadBackwardSsimNeighborhood(groupOrigin, localIndex);
+    if (!active) {
         return;
     }
 
@@ -70,7 +111,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float invPixelCount = 1.0 / max(float(params.pixelCount), 1.0);
 
     PixelGrad grad;
-    grad.color = float4(((1.0 - dssimWeight) * l1Grad + dssimWeight * dssimDerivative(index)) *
+    grad.color = float4(((1.0 - dssimWeight) * l1Grad +
+                         dssimWeight * dssimDerivative(pixel, localPixel, rendered, target)) *
                         invPixelCount,
                         0.0);
     pixelGrads[index] = grad;

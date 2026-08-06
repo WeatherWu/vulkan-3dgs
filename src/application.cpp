@@ -791,7 +791,7 @@ void Application::drawTrainingControls() {
         ImGui::Combo("Mode", &training_mode_, trainingModes, IM_ARRAYSIZE(trainingModes));
         training_mode_ = std::clamp(training_mode_, 0, 1);
         const char* pixelBackwardModes[] = {
-            "Auto",
+            "Auto (Adaptive)",
             "Direct",
             "Workgroup Shared",
             "Subgroup"
@@ -827,6 +827,11 @@ void Application::drawTrainingControls() {
         }
         ImGui::InputScalar("Steps/Frame", ImGuiDataType_U32, &training_steps_per_frame_);
         training_steps_per_frame_ = std::max(training_steps_per_frame_, 1u);
+        if (ImGui::InputScalar("Validation Interval",
+                               ImGuiDataType_U32,
+                               &training_validation_interval_)) {
+            training_.setValidationInterval(training_validation_interval_);
+        }
         if (!canEditTrainingSetup) {
             ImGui::BeginDisabled();
         }
@@ -1010,17 +1015,23 @@ void Application::drawTrainingControls() {
             "Total step",
         };
         static constexpr const char* gpuStageNames[] = {
-            "Prepare tiles",
+            "Gaussian projection",
+            "Tile coverage count",
+            "Tile prefix",
             "Tile emit",
             "Tile sort/ranges",
             "Composite",
             "Loss",
+            "Backward clear",
             "Loss to pixel",
             "Pixel to 2DGS",
             "2DGS to 3DGS",
             "Optimizer",
+            "Validation",
             "Densify/prune",
         };
+        static_assert(sizeof(cpuStageNames) / sizeof(cpuStageNames[0]) == kTrainingCpuProfileStageCount);
+        static_assert(sizeof(gpuStageNames) / sizeof(gpuStageNames[0]) == kTrainingGpuProfileStageCount);
         const auto& profiling = training_.profilingStats();
         ImGui::Text("CPU last / average (ms)");
         for (size_t i = 0; i < kTrainingCpuProfileStageCount; ++i) {
@@ -1383,6 +1394,7 @@ void Application::applyTrainingConfigFromUi() {
     training_.setForwardCompositeMode(
         static_cast<TrainingForwardCompositeMode>(
             std::clamp(training_forward_composite_mode_, 0, 1)));
+    training_.setValidationInterval(training_validation_interval_);
 
     if (!training_.hasTrainableModel()) {
         TrainingInitializationConfig initConfig{};

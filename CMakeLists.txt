@@ -140,16 +140,26 @@ function(compile_training_shader SHADER_SRC OUTPUT_BASENAME)
     set(ALL_SHADER_FILES ${ALL_SHADER_FILES} ${BUILD_SPV} PARENT_SCOPE)
 endfunction()
 
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_clear.comp.slang" "train_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_project.comp.slang" "train_project.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_project.comp.slang" "train_forward_project.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_clear.comp.slang" "train_forward_tile_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_count.comp.slang" "train_forward_tile_count.comp")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_prefix.comp.slang" "train_forward_tile_prefix.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_ranges.comp.slang"
+                        "train_forward_gaussian_prefix_ranges.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_scratch.comp.slang"
+                        "train_forward_gaussian_prefix_scratch.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_top.comp.slang"
+                        "train_forward_gaussian_prefix_top.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_add_scratch.comp.slang"
+                        "train_forward_gaussian_prefix_add_scratch.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_add_ranges.comp.slang"
+                        "train_forward_gaussian_prefix_add_ranges.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_emit.comp.slang" "train_forward_tile_emit.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather_high.comp.slang" "train_forward_tile_gather_high.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather_items.comp.slang" "train_forward_tile_gather_items.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_sort.comp.slang" "train_forward_tile_sort.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_range_boundaries.comp.slang"
+                        "train_forward_tile_range_boundaries.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang" "train_forward.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_workgroup.comp.slang"
                         "train_forward_workgroup.comp")
@@ -161,8 +171,12 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2
                         "train_backward_pixel_to_2dgs_workgroup.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs_subgroup.comp.slang"
                         "train_backward_pixel_to_2dgs_subgroup.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs_adaptive.comp.slang"
+                        "train_backward_pixel_to_2dgs_adaptive.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
+compile_training_shader("${TRAINING_SHADER_VALIDATION_DIR}/train_gaussian_validation.comp.slang"
+                        "train_gaussian_validation.comp")
 compile_training_shader("${TRAINING_SHADER_VALIDATION_DIR}/train_validation_finalize.comp.slang"
                         "train_validation_finalize.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_densify_clear.comp.slang" "train_densify_clear.comp")

@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">Gaussian ellipse and rectangle intersection</title>
+  <desc id="desc">Two geometric cases show how the minimum quadratic value over a rectangle determines whether it intersects the threshold ellipse.</desc>
+
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#667085"/>
+    </marker>
+    <clipPath id="left-plot">
+      <rect x="42" y="82" width="526" height="402" rx="4"/>
+    </clipPath>
+    <clipPath id="right-plot">
+      <rect x="632" y="82" width="526" height="402" rx="4"/>
+    </clipPath>
+    <style>
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.5; }
+      .plot { fill: #f8fafc; stroke: #e4e7ec; stroke-width: 1; }
+      .axis { stroke: #98a2b3; stroke-width: 1.2; }
+      .grid { stroke: #e4e7ec; stroke-width: 1; stroke-dasharray: 3 5; }
+      .threshold { fill: #dbeafe; fill-opacity: 0.72; stroke: #2563eb; stroke-width: 2.5; }
+      .contact-keep { fill: none; stroke: #15803d; stroke-width: 2.5; stroke-dasharray: 8 6; }
+      .contact-reject { fill: none; stroke: #dc2626; stroke-width: 2.5; stroke-dasharray: 8 6; }
+      .rect-keep { fill: #dcfce7; fill-opacity: 0.72; stroke: #15803d; stroke-width: 2.5; }
+      .rect-reject { fill: #fee2e2; fill-opacity: 0.72; stroke: #dc2626; stroke-width: 2.5; }
+      .candidate { fill: #ffffff; stroke: #667085; stroke-width: 1.8; }
+      .selected-keep { fill: #15803d; stroke: #ffffff; stroke-width: 2.2; }
+      .selected-reject { fill: #dc2626; stroke: #ffffff; stroke-width: 2.2; }
+      .center { fill: #344054; }
+      .title { font: 600 24px "Segoe UI", Arial, sans-serif; fill: #101828; }
+      .label { font: 600 18px "Segoe UI", Arial, sans-serif; fill: #344054; }
+      .small { font: 15px "Segoe UI", Arial, sans-serif; fill: #475467; }
+      .math { font: 18px "Cambria Math", "Times New Roman", serif; fill: #344054; }
+      .math-strong { font: 600 20px "Cambria Math", "Times New Roman", serif; fill: #101828; }
+      .keep-text { fill: #166534; }
+      .reject-text { fill: #b42318; }
+      .badge-keep { fill: #dcfce7; stroke: #86efac; }
+      .badge-reject { fill: #fee2e2; stroke: #fca5a5; }
+      .flow-box { fill: #f8fafc; stroke: #d0d5dd; stroke-width: 1.3; }
+      .flow-arrow { stroke: #667085; stroke-width: 1.7; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="700" fill="#ffffff"/>
+
+  <rect class="panel" x="28" y="24" width="552" height="532" rx="8"/>
+  <rect class="panel" x="620" y="24" width="552" height="532" rx="8"/>
+
+  <text class="title" x="52" y="60">A</text>
+  <text class="math-strong" x="88" y="60">q<tspan baseline-shift="sub" font-size="14">min</tspan> ≤ s</text>
+  <rect class="badge-keep" x="414" y="39" width="138" height="34" rx="6"/>
+  <text class="math-strong keep-text" x="483" y="62" text-anchor="middle">𝓔 ∩ ℛ ≠ ∅</text>
+
+  <text class="title" x="644" y="60">B</text>
+  <text class="math-strong" x="680" y="60">q<tspan baseline-shift="sub" font-size="14">min</tspan> &gt; s</text>
+  <rect class="badge-reject" x="1006" y="39" width="138" height="34" rx="6"/>
+  <text class="math-strong reject-text" x="1075" y="62" text-anchor="middle">𝓔 ∩ ℛ = ∅</text>
+
+  <rect class="plot" x="42" y="82" width="526" height="402" rx="4"/>
+  <rect class="plot" x="632" y="82" width="526" height="402" rx="4"/>
+
+  <g clip-path="url(#left-plot)">
+    <line class="grid" x1="42" y1="168" x2="568" y2="168"/>
+    <line class="grid" x1="42" y1="332" x2="568" y2="332"/>
+    <line class="grid" x1="118" y1="82" x2="118" y2="484"/>
+    <line class="grid" x1="364" y1="82" x2="364" y2="484"/>
+    <line class="axis" x1="42" y1="250" x2="568" y2="250"/>
+    <line class="axis" x1="200" y1="82" x2="200" y2="484"/>
+
+    <g transform="translate(200 250) scale(8.2 -8.2)">
+      <ellipse class="threshold" cx="0" cy="0" rx="14.02" ry="9.35" transform="rotate(-26.565)" vector-effect="non-scaling-stroke"/>
+      <ellipse class="contact-keep" cx="0" cy="0" rx="9.49" ry="6.33" transform="rotate(-26.565)" vector-effect="non-scaling-stroke"/>
+      <rect class="rect-keep" x="8" y="-20" width="15" height="15" vector-effect="non-scaling-stroke"/>
+
+      <circle class="candidate" cx="23" cy="-5.75" r="0.56" vector-effect="non-scaling-stroke"/>
+      <circle class="candidate" cx="8" cy="-20" r="0.56" vector-effect="non-scaling-stroke"/>
+      <circle class="selected-keep" cx="8" cy="-5" r="0.68" vector-effect="non-scaling-stroke"/>
+      <circle class="center" cx="0" cy="0" r="0.55"/>
+    </g>
+  </g>
+
+  <text class="math" x="208" y="239">μ</text>
+  <text class="math" x="116" y="151">𝓔: q = s</text>
+  <line x1="181" y1="156" x2="220" y2="174" stroke="#2563eb" stroke-width="1.5"/>
+  <text class="math keep-text" x="75" y="286">q = q<tspan baseline-shift="sub" font-size="12">min</tspan></text>
+  <line x1="153" y1="280" x2="174" y2="273" stroke="#15803d" stroke-width="1.5"/>
+  <text class="math keep-text" x="274" y="282">p*</text>
+  <line x1="274" y1="285" x2="266" y2="291" stroke="#15803d" stroke-width="1.5"/>
+  <text class="math keep-text" x="342" y="440">ℛ</text>
+  <text class="small" x="52" y="510">○ 𝒫</text>
+  <text class="small" x="112" y="510">● p*</text>
+  <text class="math keep-text" x="282" y="511">q(p*) ≤ s</text>
+
+  <g clip-path="url(#right-plot)">
+    <line class="grid" x1="632" y1="168" x2="1158" y2="168"/>
+    <line class="grid" x1="632" y1="332" x2="1158" y2="332"/>
+    <line class="grid" x1="708" y1="82" x2="708" y2="484"/>
+    <line class="grid" x1="954" y1="82" x2="954" y2="484"/>
+    <line class="axis" x1="632" y1="250" x2="1158" y2="250"/>
+    <line class="axis" x1="790" y1="82" x2="790" y2="484"/>
+
+    <g transform="translate(790 250) scale(8.2 -8.2)">
+      <ellipse class="contact-reject" cx="0" cy="0" rx="25.46" ry="16.97" transform="rotate(-26.565)" vector-effect="non-scaling-stroke"/>
+      <ellipse class="threshold" cx="0" cy="0" rx="14.02" ry="9.35" transform="rotate(-26.565)" vector-effect="non-scaling-stroke"/>
+      <rect class="rect-reject" x="24" y="-20" width="15" height="15" vector-effect="non-scaling-stroke"/>
+
+      <circle class="candidate" cx="24" cy="-5" r="0.56" vector-effect="non-scaling-stroke"/>
+      <circle class="candidate" cx="39" cy="-9.75" r="0.56" vector-effect="non-scaling-stroke"/>
+      <circle class="candidate" cx="24" cy="-20" r="0.56" vector-effect="non-scaling-stroke"/>
+      <circle class="selected-reject" cx="24" cy="-6" r="0.68" vector-effect="non-scaling-stroke"/>
+      <circle class="center" cx="0" cy="0" r="0.55"/>
+    </g>
+  </g>
+
+  <text class="math" x="798" y="239">μ</text>
+  <text class="math" x="703" y="151">𝓔: q = s</text>
+  <line x1="770" y1="156" x2="810" y2="174" stroke="#2563eb" stroke-width="1.5"/>
+  <text class="math reject-text" x="664" y="116">q = q<tspan baseline-shift="sub" font-size="12">min</tspan></text>
+  <line x1="746" y1="114" x2="766" y2="119" stroke="#dc2626" stroke-width="1.5"/>
+  <text class="math reject-text" x="998" y="307">p*</text>
+  <line x1="998" y1="310" x2="987" y2="299" stroke="#dc2626" stroke-width="1.5"/>
+  <text class="math reject-text" x="1085" y="440">ℛ</text>
+  <text class="small" x="642" y="510">○ 𝒫</text>
+  <text class="small" x="702" y="510">● p*</text>
+  <text class="math reject-text" x="872" y="511">q(p*) &gt; s</text>
+
+  <rect class="flow-box" x="52" y="596" width="310" height="70" rx="7"/>
+  <text class="math" x="207" y="624" text-anchor="middle">𝒫 = { Π<tspan baseline-shift="sub" font-size="12">ℛ</tspan>(0), p<tspan baseline-shift="sub" font-size="12">L</tspan>, p<tspan baseline-shift="sub" font-size="12">R</tspan>,</text>
+  <text class="math" x="207" y="650" text-anchor="middle">p<tspan baseline-shift="sub" font-size="12">B</tspan>, p<tspan baseline-shift="sub" font-size="12">T</tspan> }</text>
+
+  <path class="flow-arrow" d="M 362 631 L 431 631"/>
+
+  <rect class="flow-box" x="438" y="596" width="322" height="70" rx="7"/>
+  <text class="math-strong" x="599" y="638" text-anchor="middle">p* = arg min<tspan baseline-shift="sub" font-size="13">p ∈ 𝒫</tspan> q(p)</text>
+
+  <path class="flow-arrow" d="M 760 631 L 829 631"/>
+
+  <rect class="flow-box" x="836" y="596" width="312" height="70" rx="7"/>
+  <text class="math-strong" x="992" y="625" text-anchor="middle">q<tspan baseline-shift="sub" font-size="13">min</tspan> = q(p*)</text>
+  <text class="math" x="992" y="651" text-anchor="middle">q<tspan baseline-shift="sub" font-size="12">min</tspan> ≤ s ?</text>
+</svg>

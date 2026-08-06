@@ -142,6 +142,30 @@ std::vector<float> estimateSparsePointScaleDistances(const std::vector<TrainingS
     return scales;
 }
 
+float positionLearningRateAtStep(const TrainingOptimizerConfig& config,
+                                 float step,
+                                 float spatialScale) {
+    const float lrInit = std::max(config.positionLearningRate * spatialScale, 0.0f);
+    const float lrFinal = std::max(config.positionLearningRateFinal * spatialScale, 0.0f);
+    if (lrInit == 0.0f && lrFinal == 0.0f) {
+        return 0.0f;
+    }
+
+    const float maxSteps = std::max(config.positionLearningRateMaxSteps, 1.0f);
+    const float t = std::clamp(step / maxSteps, 0.0f, 1.0f);
+    float learningRate = std::exp(std::lerp(std::log(std::max(lrInit, 1e-12f)),
+                                             std::log(std::max(lrFinal, 1e-12f)),
+                                             t));
+    if (config.positionLearningRateDelaySteps > 0.0f) {
+        const float delayMult = std::clamp(config.positionLearningRateDelayMult, 0.0f, 1.0f);
+        const float delayT = std::clamp(step / config.positionLearningRateDelaySteps, 0.0f, 1.0f);
+        const float delayRate = delayMult +
+            (1.0f - delayMult) * std::sin(0.5f * 3.14159265358979323846f * delayT);
+        learningRate *= delayRate;
+    }
+    return learningRate;
+}
+
 uint32_t findMemoryType(vk::PhysicalDevice physicalDevice,
                         uint32_t typeFilter,
                         vk::MemoryPropertyFlags properties) {
@@ -769,18 +793,22 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.maxSHDegree = std::min(optimizerConfig_.maxSHDegree, 3u);
     pushConstants.activeSHDegree = std::min((trainingIteration_ + 1u) / shInterval, pushConstants.maxSHDegree);
     const float spatialLearningRateScale = std::max(sceneExtent_, 1e-6f);
-    pushConstants.positionLearningRate = optimizerConfig_.positionLearningRate * spatialLearningRateScale;
-    pushConstants.positionLearningRateFinal = optimizerConfig_.positionLearningRateFinal * spatialLearningRateScale;
-    pushConstants.positionLearningRateDelayMult = optimizerConfig_.positionLearningRateDelayMult;
-    pushConstants.positionLearningRateDelaySteps = optimizerConfig_.positionLearningRateDelaySteps;
-    pushConstants.positionLearningRateMaxSteps = optimizerConfig_.positionLearningRateMaxSteps;
+    pushConstants.positionLearningRate = positionLearningRateAtStep(
+        optimizerConfig_, static_cast<float>(trainingIteration_ + 1u), spatialLearningRateScale);
     pushConstants.featureLearningRate = optimizerConfig_.featureLearningRate;
     pushConstants.featureRestLearningRate = optimizerConfig_.featureRestLearningRate;
     pushConstants.opacityLearningRate = optimizerConfig_.opacityLearningRate;
     pushConstants.scaleLearningRate = optimizerConfig_.scaleLearningRate;
     pushConstants.rotationLearningRate = optimizerConfig_.rotationLearningRate;
-    pushConstants.optimizerBeta1 = optimizerConfig_.beta1;
-    pushConstants.optimizerBeta2 = optimizerConfig_.beta2;
+    pushConstants.optimizerBeta1 = std::clamp(optimizerConfig_.beta1, 0.0f, 0.999999f);
+    pushConstants.optimizerBeta2 = std::clamp(optimizerConfig_.beta2, 0.0f, 0.999999f);
+    pushConstants.optimizerOneMinusBeta1 = 1.0f - pushConstants.optimizerBeta1;
+    pushConstants.optimizerOneMinusBeta2 = 1.0f - pushConstants.optimizerBeta2;
+    const float optimizerStep = static_cast<float>(std::max(optimizerStep_ + 1u, 1u));
+    pushConstants.optimizerInvFirstMomentCorrection = 1.0f / std::max(
+        1.0f - std::pow(pushConstants.optimizerBeta1, optimizerStep), 1e-8f);
+    pushConstants.optimizerInvSecondMomentCorrection = 1.0f / std::max(
+        1.0f - std::pow(pushConstants.optimizerBeta2, optimizerStep), 1e-8f);
     pushConstants.optimizerEpsilon = optimizerConfig_.epsilon;
     pushConstants.optimizerGradClip = optimizerConfig_.gradClip;
     pushConstants.lossDssimWeight = std::clamp(optimizerConfig_.lossDssimWeight, 0.0f, 1.0f);
@@ -1372,15 +1400,19 @@ void GaussianTraining::collectGpuProfilingStats() {
     }
 
     static constexpr std::array<const char*, kTrainingGpuProfileStageCount> stageNames = {
-        "Prepare tile items",
+        "Gaussian projection",
+        "Tile coverage count",
+        "Tile prefix",
         "Tile emit",
         "Tile sort and ranges",
         "Composite",
         "Loss",
+        "Backward clear",
         "Loss to pixel",
         "Pixel to 2DGS",
         "2DGS to 3DGS",
         "Optimizer",
+        "Validation",
         "Densification",
     };
     for (uint32_t stageIndex = 0; stageIndex < kTrainingGpuProfileStageCount; ++stageIndex) {

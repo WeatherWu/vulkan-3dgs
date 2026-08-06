@@ -13,7 +13,6 @@ public:
     void initialize(vk::Device device);
     void cleanup();
 
-    ComputePipeline& clear() { return clear_; }
     ComputePipeline& project() { return project_; }
     ComputePipeline& forward() { return forward_; }
     ComputePipeline& loss() { return loss_; }
@@ -22,7 +21,6 @@ public:
 private:
     static ComputePipelineConfig createCommonConfig();
 
-    ComputePipeline clear_;
     ComputePipeline project_;
     ComputePipeline forward_;
     ComputePipeline loss_;

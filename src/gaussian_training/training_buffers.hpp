@@ -60,6 +60,10 @@ public:
     vk::Buffer tileSortScratchBuffer() const { return tileSortScratch_.getBuffer(); }
     vk::Buffer tileSortStorageBuffer() const { return tileSortStorage_.getBuffer(); }
     vk::DescriptorBufferInfo tileRangesInfo() const { return tileRanges_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo gaussianTileRangesInfo() const { return gaussianTileRanges_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo gaussianTilePrefixScratchInfo() const {
+        return gaussianTilePrefixScratch_.getDescriptorInfo();
+    }
     vk::DescriptorBufferInfo renderedColorInfo() const { return renderedColor_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo targetColorInfo() const {
         return targetColorDescriptorOverride_.value_or(targetColor_.getDescriptorInfo());
@@ -113,6 +117,8 @@ private:
     Buffer tileItemsSorted_;
     Buffer tileSortStorage_;
     Buffer tileRanges_;
+    Buffer gaussianTileRanges_;
+    Buffer gaussianTilePrefixScratch_;
     Buffer renderedColor_;
     Buffer targetColor_;
     std::optional<vk::DescriptorBufferInfo> targetColorDescriptorOverride_;

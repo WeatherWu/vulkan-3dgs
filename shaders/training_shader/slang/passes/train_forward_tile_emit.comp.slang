@@ -6,9 +6,6 @@ StructuredBuffer<ProjectedGaussian> projectedGaussians;
 [[vk::binding(4, 0)]]
 RWStructuredBuffer<uint> tileItems;
 
-[[vk::binding(5, 0)]]
-RWStructuredBuffer<uint4> tileRanges;
-
 [[vk::binding(20, 0)]]
 RWStructuredBuffer<uint> tileKeyLow;
 
@@ -17,6 +14,9 @@ RWStructuredBuffer<uint> tileKeyHigh;
 
 [[vk::binding(22, 0)]]
 RWStructuredBuffer<uint> tileSortIndices;
+
+[[vk::binding(32, 0)]]
+StructuredBuffer<uint2> gaussianTileRanges;
 
 uint floatDepthSortKey(float depth) {
     uint bits = asuint(depth);
@@ -37,23 +37,26 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         return;
     }
 
+    uint2 gaussianRange = gaussianTileRanges[gaussianIndex];
+    if (gaussianRange.y == 0u) {
+        return;
+    }
+    uint outputIndex = gaussianRange.x;
+    uint outputEnd = min(gaussianRange.x + gaussianRange.y, params.tileItemCount);
+    uint depthKey = floatDepthSortKey(gaussian.centerRadius.z);
     for (uint tileY = bounds.minTile.y; tileY < bounds.maxTileExclusive.y; ++tileY) {
         for (uint tileX = bounds.minTile.x; tileX < bounds.maxTileExclusive.x; ++tileX) {
             if (!trainProjectedGaussianMayContributeToTile(gaussian, uint2(tileX, tileY))) {
                 continue;
             }
-            uint tileIndex = trainTileIndex(uint2(tileX, tileY));
-            uint localOffset = 0;
-            InterlockedAdd(tileRanges[tileIndex].z, 1u, localOffset);
-
-            uint4 range = tileRanges[tileIndex];
-            if (localOffset < range.y) {
-                uint outputIndex = range.x + localOffset;
+            if (outputIndex < outputEnd) {
+                uint tileIndex = trainTileIndex(uint2(tileX, tileY));
                 tileItems[outputIndex] = gaussianIndex;
-                tileKeyLow[outputIndex] = floatDepthSortKey(gaussian.centerRadius.z);
+                tileKeyLow[outputIndex] = depthKey;
                 tileKeyHigh[outputIndex] = tileIndex;
                 tileSortIndices[outputIndex] = outputIndex;
             }
+            ++outputIndex;
         }
     }
 }

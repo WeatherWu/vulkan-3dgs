@@ -18,7 +18,6 @@ vk::DescriptorSetLayoutBinding storageBinding(uint32_t binding) {
 void TrainingPipelines::initialize(vk::Device device) {
     const ComputePipelineConfig config = createCommonConfig();
 
-    clear_.initialize(device, "shaders/train_clear.comp.spv", config);
     project_.initialize(device, "shaders/train_project.comp.spv", config);
     forward_.initialize(device, "shaders/train_forward.comp.spv", config);
     loss_.initialize(device, "shaders/train_loss.comp.spv", config);
@@ -30,7 +29,6 @@ void TrainingPipelines::cleanup() {
     loss_.cleanup();
     forward_.cleanup();
     project_.cleanup();
-    clear_.cleanup();
 }
 
 ComputePipelineConfig TrainingPipelines::createCommonConfig() {

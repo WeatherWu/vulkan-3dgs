@@ -24,6 +24,20 @@ uint32_t roundedGaussianCapacity(uint32_t requestedCapacity) {
                                                     std::numeric_limits<uint32_t>::max()));
 }
 
+uint32_t gaussianPrefixScratchElementCount(uint32_t gaussianCapacity) {
+    uint64_t total = 0u;
+    uint64_t levelCount = (std::max<uint64_t>(gaussianCapacity, 1u) + 255u) / 256u;
+    while (true) {
+        total += levelCount;
+        if (levelCount <= 256u) {
+            break;
+        }
+        levelCount = (levelCount + 255u) / 256u;
+    }
+    return static_cast<uint32_t>(std::min<uint64_t>(total,
+                                                    std::numeric_limits<uint32_t>::max()));
+}
+
 } // namespace
 
 void TrainingBuffers::initialize(vk::Device device,
@@ -108,6 +122,8 @@ void TrainingBuffers::cleanup() {
     ssimBackwardStates_.cleanup();
     targetColor_.cleanup();
     renderedColor_.cleanup();
+    gaussianTilePrefixScratch_.cleanup();
+    gaussianTileRanges_.cleanup();
     tileRanges_.cleanup();
     tileSortStorage_.cleanup();
     tileItemsSorted_.cleanup();
@@ -157,6 +173,8 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     tileItemsSorted_.cleanup();
     tileSortStorage_.cleanup();
     tileRanges_.cleanup();
+    gaussianTileRanges_.cleanup();
+    gaussianTilePrefixScratch_.cleanup();
     renderedColor_.cleanup();
     targetColor_.cleanup();
     pixelGrads_.cleanup();
@@ -201,12 +219,16 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     createStorageBuffer(tileSortScratch_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileItemsSorted_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileRanges_, sizeof(glm::uvec4) * tileCount);
+    createStorageBuffer(gaussianTileRanges_, sizeof(glm::uvec2) * safeGaussianCount);
+    createStorageBuffer(gaussianTilePrefixScratch_,
+                        sizeof(uint32_t) * gaussianPrefixScratchElementCount(safeGaussianCount));
     createStorageBuffer(renderedColor_, sizeof(glm::vec4) * pixelCount);
     createStorageBuffer(targetColor_, sizeof(uint32_t) * pixelCount);
     createStorageBuffer(pixelGrads_, sizeof(PixelGrad) * pixelCount);
     createStorageBuffer(ssimBackwardStates_, sizeof(SsimBackwardState) * pixelCount);
-    const uint64_t pixelValidationPartialCount =
-        (pixelCount + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
+    const uint64_t validationGroupCountX = (safeWidth + 15u) / 16u;
+    const uint64_t validationGroupCountY = (safeHeight + 15u) / 16u;
+    const uint64_t pixelValidationPartialCount = validationGroupCountX * validationGroupCountY;
     const uint32_t gaussianValidationPartialCount =
         (safeGaussianCount + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
     createStorageBuffer(pixelValidationPartials_,
@@ -360,14 +382,25 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     densificationCapacity_ = oldActiveCapacity;
 
     if (gaussianCount > gaussianWorkspaceCapacity_) {
-        const uint32_t workspaceCapacity = roundedGaussianCapacity(gaussianCount);
+        const uint64_t geometricCapacity = std::max<uint64_t>(
+            gaussianCount,
+            static_cast<uint64_t>(gaussianWorkspaceCapacity_) * 3ull / 2ull);
+        const uint32_t workspaceCapacity = roundedGaussianCapacity(
+            static_cast<uint32_t>(std::min<uint64_t>(geometricCapacity,
+                                                     std::numeric_limits<uint32_t>::max())));
         gaussianGrads_.cleanup();
         projected_.cleanup();
+        gaussianTileRanges_.cleanup();
+        gaussianTilePrefixScratch_.cleanup();
         densificationStates_.cleanup();
         projectedGrads_.cleanup();
         previewInstances_.cleanup();
         createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) * workspaceCapacity);
         createStorageBuffer(projected_, sizeof(ProjectedGaussian) * workspaceCapacity);
+        createStorageBuffer(gaussianTileRanges_, sizeof(glm::uvec2) * workspaceCapacity);
+        createStorageBuffer(
+            gaussianTilePrefixScratch_,
+            sizeof(uint32_t) * gaussianPrefixScratchElementCount(workspaceCapacity));
         createZeroedStorageBuffer(
             densificationStates_, sizeof(GaussianDensificationState) * workspaceCapacity);
         createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * workspaceCapacity);

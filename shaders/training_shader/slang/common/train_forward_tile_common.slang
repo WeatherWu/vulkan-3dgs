@@ -125,3 +125,23 @@ bool trainProjectedGaussianMayContributeToTile(ProjectedGaussian gaussian, uint2
     float tolerance = 1e-5 * max(1.0, abs(supportQuadratic));
     return !isfinite(minimumQuadratic) || minimumQuadratic <= supportQuadratic + tolerance;
 }
+
+uint trainProjectedGaussianTileCount(ProjectedGaussian gaussian) {
+    if (!(gaussian.conicOpacity.w >= TRAIN_ALPHA_MIN)) {
+        return 0u;
+    }
+    TileBounds bounds = trainProjectedTileBounds(gaussian);
+    if (!bounds.valid) {
+        return 0u;
+    }
+
+    uint count = 0u;
+    for (uint tileY = bounds.minTile.y; tileY < bounds.maxTileExclusive.y; ++tileY) {
+        for (uint tileX = bounds.minTile.x; tileX < bounds.maxTileExclusive.x; ++tileX) {
+            if (trainProjectedGaussianMayContributeToTile(gaussian, uint2(tileX, tileY))) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}

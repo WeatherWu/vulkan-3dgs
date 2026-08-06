@@ -3,9 +3,6 @@
 [[vk::binding(1, 0)]]
 RWStructuredBuffer<GaussianGrad> gaussianGrads;
 
-[[vk::binding(12, 0)]]
-RWStructuredBuffer<PixelGrad> pixelGrads;
-
 [[vk::binding(13, 0)]]
 RWStructuredBuffer<ProjectedGaussianGrad> projectedGrads;
 
@@ -24,11 +21,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         }
         gaussianGrads[index] = gaussianGrad;
         projectedGrads[index] = makeZeroProjectedGaussianGrad();
-    }
-
-    if (index < params.pixelCount) {
-        PixelGrad pixelGrad;
-        pixelGrad.color = float4(0.0);
-        pixelGrads[index] = pixelGrad;
     }
 }

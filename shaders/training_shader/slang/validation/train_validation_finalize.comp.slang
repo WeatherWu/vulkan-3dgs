@@ -32,7 +32,7 @@ groupshared uint validationFirstNonFiniteGaussianIndex[256];
 [numthreads(256, 1, 1)]
 void main(uint3 groupThreadID : SV_GroupThreadID) {
     uint localIndex = groupThreadID.x;
-    uint pixelPartialCount = (params.pixelCount + 255u) / 256u;
+    uint pixelPartialCount = ((params.width + 15u) / 16u) * ((params.height + 15u) / 16u);
     uint gaussianPartialCount = (params.gaussianCount + 255u) / 256u;
 
     float lossSum = 0.0;

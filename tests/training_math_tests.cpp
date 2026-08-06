@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <iostream>
 #include <random>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -119,6 +121,91 @@ bool gaussianMayContributeToTile(const ConicGaussian2D& gaussian,
     const double supportQuadratic = 2.0 * std::log(gaussian.opacity / alphaMinimum);
     const double tolerance = 1e-5 * std::max(1.0, std::abs(supportQuadratic));
     return minimumQuadratic <= supportQuadratic + tolerance;
+}
+
+std::vector<uint32_t> hierarchicalExclusivePrefix(const std::vector<uint32_t>& values) {
+    constexpr size_t blockSize = 256u;
+    std::vector<uint32_t> result(values.size(), 0u);
+    std::vector<uint32_t> blockSums((values.size() + blockSize - 1u) / blockSize, 0u);
+    for (size_t block = 0u; block < blockSums.size(); ++block) {
+        uint32_t running = 0u;
+        const size_t begin = block * blockSize;
+        const size_t end = std::min(begin + blockSize, values.size());
+        for (size_t index = begin; index < end; ++index) {
+            result[index] = running;
+            running += values[index];
+        }
+        blockSums[block] = running;
+    }
+    if (blockSums.size() > 1u) {
+        const std::vector<uint32_t> blockOffsets = hierarchicalExclusivePrefix(blockSums);
+        for (size_t index = 0u; index < result.size(); ++index) {
+            result[index] += blockOffsets[index / blockSize];
+        }
+    }
+    return result;
+}
+
+bool testHierarchicalExclusivePrefix() {
+    for (size_t count : {0u, 1u, 255u, 256u, 257u, 65536u, 65537u, 100000u}) {
+        std::vector<uint32_t> values(count);
+        for (size_t index = 0u; index < count; ++index) {
+            values[index] = static_cast<uint32_t>((index * 17u + 3u) % 11u);
+        }
+        const std::vector<uint32_t> prefix = hierarchicalExclusivePrefix(values);
+        uint32_t running = 0u;
+        for (size_t index = 0u; index < count; ++index) {
+            if (prefix[index] != running) {
+                return false;
+            }
+            running += values[index];
+        }
+    }
+    return true;
+}
+
+std::vector<std::pair<uint32_t, uint32_t>> rebuildTileRanges(
+    const std::vector<uint32_t>& sortedTileKeys,
+    uint32_t tileCount) {
+    std::vector<std::pair<uint32_t, uint32_t>> ranges(tileCount, {0u, 0u});
+    for (uint32_t index = 0u; index <= sortedTileKeys.size(); ++index) {
+        const uint32_t currentTile = index == sortedTileKeys.size()
+            ? tileCount
+            : sortedTileKeys[index];
+        const uint32_t previousTile = index == 0u
+            ? tileCount
+            : sortedTileKeys[index - 1u];
+        if (index < sortedTileKeys.size() && currentTile < tileCount &&
+            (index == 0u || currentTile != previousTile)) {
+            ranges[currentTile].first = index;
+        }
+        if (index > 0u && previousTile < tileCount &&
+            (index == sortedTileKeys.size() || currentTile != previousTile)) {
+            ranges[previousTile].second = index - ranges[previousTile].first;
+        }
+    }
+    return ranges;
+}
+
+bool testSortedTileRangeRebuild() {
+    const std::vector<std::pair<uint32_t, uint32_t>> empty = rebuildTileRanges({}, 4u);
+    if (empty != std::vector<std::pair<uint32_t, uint32_t>>(4u, {0u, 0u})) {
+        return false;
+    }
+
+    const auto single = rebuildTileRanges({2u}, 4u);
+    if (single[0] != std::pair<uint32_t, uint32_t>{0u, 0u} ||
+        single[1] != std::pair<uint32_t, uint32_t>{0u, 0u} ||
+        single[2] != std::pair<uint32_t, uint32_t>{0u, 1u} ||
+        single[3] != std::pair<uint32_t, uint32_t>{0u, 0u}) {
+        return false;
+    }
+
+    const auto multiple = rebuildTileRanges({0u, 0u, 2u, 2u, 2u, 3u}, 4u);
+    return multiple[0] == std::pair<uint32_t, uint32_t>{0u, 2u} &&
+           multiple[1] == std::pair<uint32_t, uint32_t>{0u, 0u} &&
+           multiple[2] == std::pair<uint32_t, uint32_t>{2u, 3u} &&
+           multiple[3] == std::pair<uint32_t, uint32_t>{5u, 1u};
 }
 
 bool testConservativeEllipseTileCulling() {
@@ -325,6 +412,14 @@ int main() {
     }
     if (!testConservativeEllipseTileCulling()) {
         std::cerr << "conservative ellipse/tile culling test failed\n";
+        return 1;
+    }
+    if (!testHierarchicalExclusivePrefix()) {
+        std::cerr << "hierarchical exclusive-prefix test failed\n";
+        return 1;
+    }
+    if (!testSortedTileRangeRebuild()) {
+        std::cerr << "sorted tile-range rebuild test failed\n";
         return 1;
     }
     if (!testPackedConicOffDiagonalGradient()) {

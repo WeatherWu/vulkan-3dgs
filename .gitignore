@@ -13,3 +13,5 @@
 
 *.ply
 *.obj
+
+/docs/training-flow.dot

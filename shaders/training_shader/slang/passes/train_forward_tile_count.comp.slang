@@ -3,8 +3,8 @@
 [[vk::binding(3, 0)]]
 StructuredBuffer<ProjectedGaussian> projectedGaussians;
 
-[[vk::binding(5, 0)]]
-RWStructuredBuffer<uint4> tileRanges;
+[[vk::binding(32, 0)]]
+RWStructuredBuffer<uint2> gaussianTileRanges;
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -15,18 +15,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
-    TileBounds bounds = trainProjectedTileBounds(gaussian);
-    if (!bounds.valid) {
-        return;
-    }
-
-    for (uint tileY = bounds.minTile.y; tileY < bounds.maxTileExclusive.y; ++tileY) {
-        for (uint tileX = bounds.minTile.x; tileX < bounds.maxTileExclusive.x; ++tileX) {
-            if (!trainProjectedGaussianMayContributeToTile(gaussian, uint2(tileX, tileY))) {
-                continue;
-            }
-            uint ignored = 0;
-            InterlockedAdd(tileRanges[trainTileIndex(uint2(tileX, tileY))].y, 1u, ignored);
-        }
-    }
+    gaussianTileRanges[gaussianIndex] = uint2(0u, trainProjectedGaussianTileCount(gaussian));
 }

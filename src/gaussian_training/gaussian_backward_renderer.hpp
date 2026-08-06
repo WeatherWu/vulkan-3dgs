@@ -43,6 +43,7 @@ private:
     void backpropPixelTo2DGS();
     void backprop2DGSTo3DGS();
     void optimizeParameters();
+    void validateGaussians();
     void finalizeValidation();
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
@@ -60,8 +61,10 @@ private:
     ComputePipeline pixelTo2DGSPipeline_;
     ComputePipeline pixelTo2DGSWorkgroupPipeline_;
     ComputePipeline pixelTo2DGSSubgroupPipeline_;
+    ComputePipeline pixelTo2DGSAdaptivePipeline_;
     ComputePipeline twoDGSTo3DGSPipeline_;
     ComputePipeline optimizerPipeline_;
+    ComputePipeline gaussianValidationPipeline_;
     ComputePipeline validationFinalizePipeline_;
     vk::DescriptorPool descriptorPool_ = nullptr;
     vk::DescriptorSet backwardClearDescriptorSet_ = nullptr;
@@ -70,8 +73,10 @@ private:
     vk::DescriptorSet pixelTo2DGSDescriptorSet_ = nullptr;
     vk::DescriptorSet pixelTo2DGSWorkgroupDescriptorSet_ = nullptr;
     vk::DescriptorSet pixelTo2DGSSubgroupDescriptorSet_ = nullptr;
+    vk::DescriptorSet pixelTo2DGSAdaptiveDescriptorSet_ = nullptr;
     vk::DescriptorSet twoDGSTo3DGSDescriptorSet_ = nullptr;
     vk::DescriptorSet optimizerDescriptorSet_ = nullptr;
+    vk::DescriptorSet gaussianValidationDescriptorSet_ = nullptr;
     vk::DescriptorSet validationFinalizeDescriptorSet_ = nullptr;
     const TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
@@ -80,6 +85,7 @@ private:
     TrainingPixelTo2DGSMode pixelTo2DGSMode_ = TrainingPixelTo2DGSMode::Auto;
     uint32_t subgroupSize_ = 0;
     bool subgroupPixelTo2DGSSupported_ = false;
+    bool computeBackwardClear_ = false;
     bool initialized_ = false;
 };
 
