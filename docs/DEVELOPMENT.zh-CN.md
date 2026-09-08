@@ -128,9 +128,9 @@ UI 会显示主存、active/history 磁盘缓存、显存 resident/slot/total、
 
 下图把两个 CPU 边界放在顶部的同一个外框内：左侧是 `CPU input`，右侧是 `CPU output`。中间是一次 U 形训练迭代，左列前向传播向下执行，底部计算 Loss/SSIM，右列反向传播向上返回 CPU output；Forward 和 Backward 两个分区名称分别放在对应 pass 列的最底部。pass 框内部只保留算法阶段名称；buffer 的读取、写入、需要保留到反向阶段的前向状态以及 CPU/GPU 传输都直接写在蓝色虚线数据箭头上，不再放在 pass 内部的数据行或独立数据框中。
 
-![Gaussian training logic and data flow](assets/training-flow.svg)
+![Gaussian training logic and data flow](assets/training-flow.png)
 
-图由 Graphviz 根据本地且被忽略的 `docs/training-flow.dot` 生成。修改 DOT 后可执行 `dot -Tsvg docs/training-flow.dot -o docs/assets/training-flow.svg` 更新 GitHub 直接显示的 SVG。
+该图由 Graphviz 根据本地且被忽略的 `docs/training-flow.dot` 生成。SVG 作为可缩放源图保留，文档使用 PNG 以兼容更多 Markdown 预览器。修改 DOT 后需要同时更新 `docs/assets` 下的 SVG 和 PNG。
 
 粗黑实线是连续的训练逻辑通路：顶部左侧 CPU input 的箭头指入单次迭代，前向 pass 从上到下执行，在底部计算唯一一次 `Loss + SSIM`，随后直接进入 `Loss-to-pixel`，再从下到上依次执行 Pixel-to-2DGS、2DGS-to-3DGS 和 optimizer/densification，最后向上指入顶部右侧的 CPU output。蓝色虚线是数据通路：箭头方向从数据产生者或保留状态指向消费者，箭头文字列出该依赖实际携带的 buffer 或持久状态。同列虚线放在相邻 pass 框之间，表示局部数据交接；横向虚线表示反向传播复用的前向中间量。
 
@@ -367,11 +367,13 @@ $$
 
 若 $q_{\min}>s$，矩形与椭圆严格分离；若 $q_{\min}\le s$，二者相交。
 
+shader 使用与上述推导等价的简化计算。如果矩形包含 Gaussian 中心，则 $q_{\min}=0$，可以立即接受该 tile；否则约束最小值必定位于矩形边界，只需计算四条边上的驻点。与 Gaussian 相关但与 tile 无关的比值 $-B/A$ 和 $-B/C$ 会在进入 tile 循环前计算一次，不再为每个 tile 的每条边重复做除法。
+
 #### 3.3.3 图像示例
 
 下面的图把 $q(\boldsymbol\delta)=\text{C}$ 看作从高斯中心向外扩张的一族同心椭圆。对给定矩形，候选集合 $\mathcal P$ 包含原点到矩形的投影，以及四条边上的一维驻点。选择其中二次型最小的点 $\mathbf p^*$，就等价于找到从中心扩张时第一个接触矩形的等值椭圆。
 
-![高斯阈值椭圆与矩形的相交判定](assets/gaussian-ellipse-rectangle-example.svg)
+![高斯阈值椭圆与矩形的相交判定](assets/gaussian-ellipse-rectangle-example.png)
 
 左图中，第一次接触矩形的绿色虚线位于蓝色阈值椭圆 $q=s$ 内部，因此 $q_{\min}\le s$，矩形与有效支撑区域相交。右图中，第一次接触矩形的红色虚线位于阈值椭圆外部，因此 $q_{\min}>s$，二者严格分离。图中的空心点是边界候选，实心点是最终选出的 $\mathbf p^*$。
 
@@ -387,11 +389,37 @@ $$
 
 矩形约束最小值只负责判断 $\mathcal E$ 是否与局部矩形相交；有限搜索域则决定哪些局部矩形会被检查。前者是精确的凸优化判定，后者属于对无限支撑函数的截断假设。
 
+实现首先保留原有的标量 3-sigma tile bounds。对于有限且正定的 conic，还会计算阈值椭圆更紧的轴对齐范围。令
+
+$$
+\bar{s}=\max(0,s+\varepsilon),
+\qquad
+D=AC-B^2,
+$$
+
+其中 $\varepsilon$ 与最终相交比较使用的数值容差相同。区域 $q\le\bar{s}$ 在两个坐标轴上的最大偏移为
+
+$$
+r_x=\sqrt{\frac{\bar{s}C}{D}},
+\qquad
+r_y=\sqrt{\frac{\bar{s}A}{D}}.
+$$
+
+设 tile 大小为 $T$、某一轴上的中心坐标为 $\mu$、轴向范围为 $r$，覆盖所有像素中心矩形的保守 tile 区间为
+
+$$
+t_{\min}=\left\lceil\frac{\mu-r-(T-1)}{T}\right\rceil,
+\qquad
+t_{\max}^{\mathrm{exclusive}}=\left\lfloor\frac{\mu+r}{T}\right\rfloor+1.
+$$
+
+X/Y 区间会限制到图像 tile grid 内，再与原有 3-sigma bounds 求交。因此该优化只减少需要执行精确二次型判定的 tile，不会扩大或替换原来的有限搜索域。对于非有限或非正定 conic，不使用紧边界，仍在原有范围内保守保留。
+
 #### Tile pair 构建说明
 
-`train_forward_tile_count.comp.slang` 不再对 per-tile count 做 atomic。每个 invocation 处理一个 Gaussian，并把精确保留的 tile 数写入 `gaussianTileRanges[i].y`，`.x` 暂时为零。随后 `train_forward_gaussian_prefix_*` 以 256 个元素为一组做分层 exclusive scan：第一层写每个 Gaussian 的组内 offset 和每组 block sum；当 block sum 数仍大于 256 时，继续在 scratch 中递归生成更高层；顶层由一个 workgroup 完成 scan，并把总 pair 数写入 binding 9；最后 offset-add pass 从上到下把父层 offset 加回子层，再写入 `gaussianTileRanges[i].x`。scratch 容量按所有层元素总和分配，因此跨越 256 和 65536 Gaussian 边界时仍使用同一套路径。
+`train_forward_tile_count.comp.slang` 会先为一个 Gaussian 构造 shader 局部的 culling 数据：中心与 conic、有效性、预计算的边界驻点比值、阈值与容差之和，以及 3-sigma bounds 与阈值椭圆 bounds 的交集。该结构不分配额外 storage buffer。随后把精确保留的 tile 数写入 `gaussianTileRanges[i].y`，`.x` 暂时为零，并且不对 per-tile count 做 atomic。`train_forward_gaussian_prefix_*` 以 256 个元素为一组做分层 exclusive scan：第一层写每个 Gaussian 的组内 offset 和每组 block sum；当 block sum 数仍大于 256 时，继续在 scratch 中递归生成更高层；顶层由一个 workgroup 完成 scan，并把总 pair 数写入 binding 9；最后 offset-add pass 从上到下把父层 offset 加回子层，再写入 `gaussianTileRanges[i].x`。scratch 容量按所有层元素总和分配，因此跨越 256 和 65536 Gaussian 边界时仍使用同一套路径。
 
-main emit 时，每个 Gaussian invocation 独占 `[range.x, range.x + range.y)`，把自己的 pair 连续写入，不需要 atomic cursor。count 和 emit 共用相同的当前候选遍历方式与精确 ellipse helper，所以 prefixed count 与实际写入数一致。两次稳定 radix sort 后，`train_forward_tile_range_boundaries.comp.slang` 比较相邻 sorted high key，写出每个 tile 的 start/end；`train_forward_tile_sort.comp.slang` 再转换成 `[start,count]` 并把空 tile 保持为零。边界 pass 额外处理末尾 sentinel，因此 tile item 数为 0 或 1 时也有明确行为。
+main emit 时，每个 Gaussian invocation 独占 `[range.x, range.x + range.y)`，把自己的 pair 连续写入，不需要 atomic cursor。count 和 emit 会分别从同一个 projected Gaussian 重建相同的 shader 局部 culling 数据，并调用同一套 bounds 与精确 ellipse helper，所以 prefixed count 与实际写入数一致。两次稳定 radix sort 后，`train_forward_tile_range_boundaries.comp.slang` 比较相邻 sorted high key，写出每个 tile 的 start/end；`train_forward_tile_sort.comp.slang` 再转换成 `[start,count]` 并把空 tile 保持为零。边界 pass 额外处理末尾 sentinel，因此 tile item 数为 0 或 1 时也有明确行为。
 
 ### 训练 shader pass 对照表
 
@@ -401,7 +429,7 @@ main emit 时，每个 Gaussian invocation 独占 `[range.x, range.x + range.y)`
 | --- | --- | --- | --- |
 | `train_forward_project.comp.slang` | prepare | parameters、camera | 写 `ProjectedGaussian`，同时更新 screen radius 统计 |
 | `train_forward_tile_clear.comp.slang` | prepare | tile ranges | 清零后续 range 重建使用的 per-tile start/end |
-| `train_forward_tile_count.comp.slang` | prepare | projected、Gaussian ranges | 遍历粗包围矩形、执行精确 tile test、写 per-Gaussian count |
+| `train_forward_tile_count.comp.slang` | prepare | projected、Gaussian ranges | 预计算 culling 不变量，求 3-sigma 与阈值椭圆 bounds 的交集，执行精确 tile test，并写 per-Gaussian count |
 | `train_forward_gaussian_prefix_ranges.comp.slang` | prepare | Gaussian counts、scratch | 每 256 Gaussian 做 exclusive scan，并写第一层 block sum |
 | `train_forward_gaussian_prefix_scratch.comp.slang` | prepare | prefix scratch | 递归扫描一层 block sum，并生成父层 |
 | `train_forward_gaussian_prefix_top.comp.slang` | prepare | 顶层 prefix、counter | 扫描顶层并写 tile-item 总数 |
@@ -425,7 +453,7 @@ main emit 时，每个 Gaussian invocation 独占 `[range.x, range.x + range.y)`
 | `train_opacity_reset.comp.slang` | densify | densified params/Adam/counter | 按真实 output count reset opacity |
 | `train_optimizer.comp.slang` | main tail | parameters、gradient、Adam | 只执行 Adam 更新 |
 | `validation/train_gaussian_validation.comp.slang` | main tail | parameters、可选 densification counter | 分类非有限 Gaussian 字段，每 256 个 Gaussian 写一个 partial |
-| `validation/train_validation_finalize.comp.slang` | main tail | pixel/Gaussian partial | 合并为 80-byte final validation result |
+| `validation/train_validation_finalize.comp.slang` | main tail | pixel/Gaussian partial | 合并为 112-byte final validation result |
 
 `train_backward_pixel_to_2dgs.comp.slang`、`_workgroup`、`_subgroup` 和 `_adaptive` 是同一数学过程的不同内存协作实现；`train_densify_prune_uint_radius.comp.slang` 是没有 float min/max atomic 时的 radius 表示 fallback，不是另一套稠密化规则。CMake 还会编译 `train_project.comp.slang`、`train_pack_render_buffer.comp.slang` 和 `train_densify_finalize_prune.comp.slang`，它们属于旧的通用/预览或兼容 pipeline；当前 `GaussianTraining::trainStep()` 由专用 renderer 录制的 pass 以上表为准。
 
@@ -509,7 +537,14 @@ dL/dopacity = dL/dalpha * coverage
 
 每个 pixel 对同一个 Gaussian 的梯度通过 float32 atomic add 累加到 `ProjectedGaussianGrad`。原子操作只写九个可微分字段：center XY、conic/opacity XYZW、RGB；depth、整数 radius 和 color.w 不参与优化，也不应被误认为训练丢失了梯度。
 
-实现提供 `Direct`、`Workgroup Shared`、`Subgroup` 三种固定内核和 `Auto (Adaptive)`。设备不支持 compute subgroup BASIC 与 SHUFFLE 时，Auto 和手动 Subgroup 都回退 Direct；支持时，Auto 先求当前 subgroup 的真实最大 `processedCount`。若它不大于原生 subgroup 宽度，各有效 lane 直接运行自己的逆序循环；只有更长的候选 prefix 才进入 subgroup broadcast/reduction，从而让浅 tile 避免 wave 归约开销，长 tile 继续共享 Gaussian 读取和原子累加。subgroup 内同一轮所有 lane 都处理同一个 broadcast Gaussian，各 lane 保持自己的 pixel transmittance/suffix 状态。它先归约整数 `contributionCount`；总数为零时跳过九个浮点梯度分量的归约，否则再用 wave shuffle 归约梯度，并由 lane 0 对该 Gaussian 执行一次原子累加。该归约改变浮点求和顺序，但不改变每 pixel 的逆序、阈值和梯度公式。
+实现提供 `Direct`、`Workgroup Shared`、`Subgroup` 三种固定内核和 `Auto (Adaptive)`。设备不支持 compute subgroup BASIC 与 SHUFFLE 时，Auto 和手动 Subgroup 都回退 Direct；支持时，Auto 先求当前 subgroup 的真实最大 `processedCount`。若它不大于原生 subgroup 宽度，各有效 lane 直接运行自己的逆序循环；更长的候选 prefix 还要检查 subgroup 利用率：
+
+```text
+有效 lane 的 processedCount 总和 /
+    (有效 pixel lane 数 * 有效 lane 的最大 processedCount)
+```
+
+UI 中的 `Auto Min Subgroup Utilization` 默认是 `0.5`。长 prefix 的利用率低于该阈值时也使用 Direct，因为 subgroup broadcast 的大部分同步轮次没有实际候选可处理。图像右侧和底部不完整 tile 中超出图像范围的 lane 不计入分母。其余情况下才进入 subgroup broadcast/reduction：同一轮所有 lane 处理同一个 broadcast Gaussian，同时保持各自的 pixel transmittance/suffix 状态。它先归约整数 `contributionCount`；总数为零时跳过九个浮点梯度分量的归约，否则再用 wave shuffle 归约梯度，并由 lane 0 对该 Gaussian 执行一次原子累加。该归约改变浮点求和顺序，但不改变每 pixel 的逆序、阈值和梯度公式。
 
 反向累加前，`GaussianBackwardRenderer` 默认对当前有效 `GaussianGrad` 和 `ProjectedGaussianGrad` 前缀各录制一次 `vkCmdFillBuffer`，随后用 buffer barrier 将 transfer write 对 compute shader read/write 可见。`train_backward_clear.comp.slang` 仍作为 compute fallback 保留；设置 `VULKAN_3DGS_COMPUTE_BACKWARD_CLEAR=1` 可强制使用它。GPU profiling 的 `Backward clear` timestamp 会包围实际启用的路径。
 
@@ -599,7 +634,7 @@ position、SH DC、SH rest、opacity、scale、rotation 有独立学习率。CPU
 | 23/24 | sort scratch、sorted tile items | radix gather |
 | 25/26/27 | candidate params/Adam/state | densification finalize |
 | 28 | `SsimBackwardState` | loss、loss-to-pixel |
-| 29/30/31 | pixel partial、Gaussian partial、80-byte final result | validation |
+| 29/30/31 | 80 B pixel partial、32 B Gaussian partial、112 B final result | validation |
 | 32/33 | per-Gaussian `{start,count}`、hierarchical prefix scratch | tile count/prefix/emit |
 
 `TrainingBuffers` 的 descriptor getter 返回 `vk::DescriptorBufferInfo` 值。传给 `vk::WriteDescriptorSet::pBufferInfo` 前必须保存在生命周期稳定的局部变量中，不能取得临时返回值的地址。
@@ -634,10 +669,10 @@ CPU 到 GPU 的热路径只有：camera uniform、push constants、当前 target
 GPU 到 CPU 的常规路径分为三类：
 
 1. **容量控制**：prepare 只回读 16 字节 tile counter，决定 tile item buffer 是否扩容；
-2. **统计和诊断**：稠密化只回读 64 字节 counters，validation 最终结果固定 80 字节；
+2. **统计和诊断**：稠密化只回读 64 字节 counters，validation 最终结果固定 112 字节；
 3. **显式导出**：PLY 导出时才下载完整 `GaussianTrainParam` 数组。完整 loss/rendered download API 是工具接口，不属于常规训练循环。
 
-validation 的 reduction 过程是：loss pass 每 256 pixels 写一个 `TrainingPixelValidationPartial`，独立 Gaussian validation pass 每 256 Gaussians 写一个 `TrainingGaussianValidationPartial`，finalize pass 用一个 workgroup 合并为 `TrainingValidationGpuResult`。它统计 loss、alpha、luminance、invalid loss/pixel、平均候选数、平均 contributor、最大 processed candidate 和各类 non-finite Gaussian。C++ 把 80 字节复制到私有三槽 host-coherent staging ring，通过 fence poll 取回，最终填充 `TrainingValidationStats`。
+validation 的 reduction 过程是：loss pass 每 256 pixels 写一个 80 字节 `TrainingPixelValidationPartial`，独立 Gaussian validation pass 每 256 Gaussians 写一个 32 字节 `TrainingGaussianValidationPartial`，finalize pass 用一个 workgroup 合并为 112 字节 `TrainingValidationGpuResult`。它统计 loss、alpha、luminance、invalid loss/pixel、平均候选数、平均 contributor、最大 processed candidate、八档 processed-count 直方图和各类 non-finite Gaussian。C++ 把 112 字节复制到私有三槽 host-coherent staging ring，通过 fence poll 取回，最终填充 `TrainingValidationStats`。
 
 ## 训练 Validation
 
@@ -652,12 +687,12 @@ nextIteration <= 5u ||
 
 周期验证避免下载完整 GPU buffer：
 
-1. `train_loss.comp.slang` 在 binding 29 为每个 256-thread workgroup 写入 loss、render 检查、反向候选数和实际贡献数的 `TrainingPixelValidationPartial`。
+1. `train_loss.comp.slang` 在 binding 29 为每个 256-thread workgroup 写入 loss/render 检查、反向候选数、实际贡献数、最大 processed prefix 和八档 processed-count 直方图的 80 字节 `TrainingPixelValidationPartial`。分桶为 `0`、`1-32`、`33-64`、`65-128`、`129-256`、`257-512`、`513-1024`、`>1024`。
 2. `train_gaussian_validation.comp.slang` 在 binding 30 为每个 256-Gaussian workgroup 写入非有限分类的 `TrainingGaussianValidationPartial`。稠密化迭代中，它读取 GPU output count 并检查 densified output buffer。
-3. `train_validation_finalize.comp.slang` 在 binding 31 将 partial 合并为固定 80 字节 `TrainingValidationGpuResult`。
+3. `train_validation_finalize.comp.slang` 在 binding 31 将 partial 合并为固定 112 字节 `TrainingValidationGpuResult`。
 4. `GaussianTraining` 将结果复制到私有的三槽 host-coherent staging ring，并轮询 slot fence。
 
-`TrainingValidationStats` 和前端输出保持不变。完整 loss/rendered 下载 API 仍然保留，但不再用于常规 validation。Gaussian 参数下载仍用于 PLY 导出。
+普通的 `Backward candidates` 行表示最近一次 validation frame；`Validation history n=...` 表示从训练/模型重置以来所有 validation 样本的算术平均，直方图显示各样本中每档 pixel 占比的平均值。固定负载 benchmark 开始时以及 warmup 结束时都会清空这组 history。完整 loss/rendered 下载 API 仍然保留，但不再用于常规 validation。Gaussian 参数下载仍用于 PLY 导出。
 
 ## Profiling
 
@@ -665,7 +700,9 @@ CPU 阶段包括 frame upload、image request、target upload、prepare submit�
 
 Tile item count 只在 `GaussianTraining` 中读取一次。prepare command 将 16 字节 counter 复制到 `TrainingBuffers` 持有的持久映射 host-coherent buffer；prepare fence 完成后，CPU 直接读取映射内存，并将同一个 count 显式传给 emit/sort/render 流程。
 
-GPU timestamp 阶段包括 Gaussian projection、tile coverage count、Gaussian tile prefix、tile emission、sort/ranges、composite、loss、backward clear、loss-to-pixel、pixel-to-2DGS、2DGS-to-3DGS、optimizer、validation 和 densification。UI 标签仍显示 `Tile prefix`，实际测量的是分层 per-Gaussian prefix passes。`Optimizer` 现在只包含 Adam dispatch；`Validation` 包含 Gaussian 有限性归约和最终归约。像素 partial 的条件归约仍位于 `Loss` 内，因此 validation 迭代也会让 `Loss` 样本变慢。该拆分只在 validation 迭代增加一个独立 Gaussian-validation dispatch，不改变检查内容或 optimizer 数学。
+GPU timestamp 阶段包括 Gaussian projection、tile coverage count、Gaussian tile prefix、tile emission、sort/ranges、composite、loss、backward clear、loss-to-pixel、pixel-to-2DGS、2DGS-to-3DGS、optimizer、validation 和 densification。UI 标签仍显示 `Tile prefix`，实际测量的是分层 per-Gaussian prefix passes。`Pixel to 2DGS` 从所选 pixel-backward dispatch 前开始，在 projected-gradient compute barrier 后结束；它不包含 tile coverage count、prefix、emit、radix sort、range 构建、forward composite 或 loss-to-pixel。`Optimizer` 现在只包含 Adam dispatch；`Validation` 包含 Gaussian 有限性归约和最终归约。像素 partial 的条件归约仍位于 `Loss` 内，因此 validation 迭代也会让 `Loss` 样本变慢。该拆分只在 validation 迭代增加一个独立 Gaussian-validation dispatch，不改变检查内容或 optimizer 数学。
+
+`Start Fixed Benchmark` 用当前模型提供可重复的 kernel 对比。它固定 `Benchmark Frame`，保持 `trainingIteration`、Gaussian 参数和 Adam state 不变，禁用 optimizer dispatch 和 densification，但仍重复正常的 projection/tile/forward/loss/backward 图。benchmark 开始时会清空 profiling 与 validation history；完成 `Benchmark Warmup` 后再次清空，因此界面 average 只包含 `Benchmark Measured` 步。只有最后一个 benchmark step 启用 validation，从固定 frame 采集一次候选直方图，同时避免每个 measured step 都承担 validation 开销。达到 measured 次数后 UI 自动停止。
 
 Timestamp 回读使用 availability result，不再通过 `VK_QUERY_RESULT_WAIT_BIT` 阻塞。
 

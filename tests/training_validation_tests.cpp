@@ -28,6 +28,26 @@ bool finiteRendered(const PixelSample& sample) {
     });
 }
 
+uint32_t processedCandidateBucket(uint32_t count) {
+    if (count == 0u) return 0u;
+    if (count <= 32u) return 1u;
+    if (count <= 64u) return 2u;
+    if (count <= 128u) return 3u;
+    if (count <= 256u) return 4u;
+    if (count <= 512u) return 5u;
+    if (count <= 1024u) return 6u;
+    return 7u;
+}
+
+void addProcessedCandidateBucket(TrainingValidationGpuResult& result, uint32_t count) {
+    const uint32_t bucket = processedCandidateBucket(count);
+    if (bucket < 4u) {
+        ++result.processedCandidateBucketsLow[bucket];
+    } else {
+        ++result.processedCandidateBucketsHigh[bucket - 4u];
+    }
+}
+
 TrainingValidationGpuResult directReduction(const std::vector<PixelSample>& pixels,
                                             const std::vector<bool>& finiteGaussians) {
     TrainingValidationGpuResult result{};
@@ -51,6 +71,7 @@ TrainingValidationGpuResult directReduction(const std::vector<PixelSample>& pixe
         result.contributorSum += static_cast<float>(pixel.contributors);
         result.maxProcessedCandidates = std::max(result.maxProcessedCandidates,
                                                  pixel.processedCandidates);
+        addProcessedCandidateBucket(result, pixel.processedCandidates);
     }
     for (size_t index = 0; index < finiteGaussians.size(); ++index) {
         if (!finiteGaussians[index]) {
@@ -93,6 +114,12 @@ TrainingValidationGpuResult groupedReduction(const std::vector<PixelSample>& pix
             partial.contributorSum += static_cast<float>(pixel.contributors);
             partial.maxProcessedCandidates = std::max(partial.maxProcessedCandidates,
                                                       pixel.processedCandidates);
+            const uint32_t bucket = processedCandidateBucket(pixel.processedCandidates);
+            if (bucket < 4u) {
+                ++partial.processedCandidateBucketsLow[bucket];
+            } else {
+                ++partial.processedCandidateBucketsHigh[bucket - 4u];
+            }
         }
     }
 
@@ -127,6 +154,8 @@ TrainingValidationGpuResult groupedReduction(const std::vector<PixelSample>& pix
         result.contributorSum += partial.contributorSum;
         result.maxProcessedCandidates = std::max(result.maxProcessedCandidates,
                                                  partial.maxProcessedCandidates);
+        result.processedCandidateBucketsLow += partial.processedCandidateBucketsLow;
+        result.processedCandidateBucketsHigh += partial.processedCandidateBucketsHigh;
     }
     for (const auto& partial : gaussianPartials) {
         result.nonFiniteGaussianCount += partial.nonFiniteGaussianCount;
@@ -195,6 +224,8 @@ int main() {
         !approximatelyEqualProfileCount(direct.processedCandidateSum, grouped.processedCandidateSum) ||
         !approximatelyEqualProfileCount(direct.contributorSum, grouped.contributorSum) ||
         direct.maxProcessedCandidates != grouped.maxProcessedCandidates ||
+        direct.processedCandidateBucketsLow != grouped.processedCandidateBucketsLow ||
+        direct.processedCandidateBucketsHigh != grouped.processedCandidateBucketsHigh ||
         direct.firstNonFiniteGaussianIndex != grouped.firstNonFiniteGaussianIndex ||
         grouped.invalidLossCount != 2u ||
         grouped.invalidRenderedPixelCount != 2u ||
@@ -206,6 +237,18 @@ int main() {
                   << ", contributors " << direct.contributorSum << " / " << grouped.contributorSum
                   << ", max " << direct.maxProcessedCandidates << " / " << grouped.maxProcessedCandidates
                   << '\n';
+        return 1;
+    }
+    const uint32_t histogramTotal = grouped.processedCandidateBucketsLow.x +
+                                    grouped.processedCandidateBucketsLow.y +
+                                    grouped.processedCandidateBucketsLow.z +
+                                    grouped.processedCandidateBucketsLow.w +
+                                    grouped.processedCandidateBucketsHigh.x +
+                                    grouped.processedCandidateBucketsHigh.y +
+                                    grouped.processedCandidateBucketsHigh.z +
+                                    grouped.processedCandidateBucketsHigh.w;
+    if (histogramTotal != pixelCount) {
+        std::cerr << "validation processed-candidate histogram count mismatch\n";
         return 1;
     }
     return 0;

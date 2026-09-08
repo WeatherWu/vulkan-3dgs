@@ -248,6 +248,10 @@ void GaussianTraining::cleanup() {
     lastDensificationStats_ = {};
     lastDensificationStatsIteration_ = 0;
     profilingStats_ = {};
+    validationStats_ = {};
+    candidateProfileStats_ = {};
+    fixedBenchmarkStats_ = {};
+    fixedBenchmarkCompletedSteps_ = 0;
     device_ = nullptr;
     physicalDevice_ = nullptr;
     transferQueue_ = nullptr;
@@ -365,7 +369,8 @@ void GaussianTraining::trainStep() {
         throw std::runtime_error("GaussianTraining::trainStep called without initialized training gaussians");
     }
 
-    if (isTrainingComplete()) {
+    const bool fixedBenchmarkThisStep = fixedBenchmarkStats_.active;
+    if (!fixedBenchmarkThisStep && isTrainingComplete()) {
         return;
     }
 
@@ -374,18 +379,20 @@ void GaussianTraining::trainStep() {
     resetProfilingLastSamples();
     profilingStats_.gpuTimestampsAvailable = gpuTimestampProfilingAvailable_;
 
-    const bool runDensificationThisStep = shouldRunDensification();
+    const bool runDensificationThisStep = !fixedBenchmarkThisStep && shouldRunDensification();
     if (runDensificationThisStep) {
         deviceCacheGrowthResumeIteration_ = trainingIteration_ + 33u;
         refreshDeviceImageCacheBudget(true);
-    } else if ((trainingIteration_ % 16u) == 0u) {
+    } else if (!fixedBenchmarkThisStep && (trainingIteration_ % 16u) == 0u) {
         refreshDeviceImageCacheBudget(false);
     }
 
     if (hasDataset()) {
         const auto frameUploadStart = Clock::now();
-        selectTrainingFrameForIteration();
-        prefetchUpcomingTrainingFrames();
+        if (!fixedBenchmarkThisStep) {
+            selectTrainingFrameForIteration();
+            prefetchUpcomingTrainingFrames();
+        }
         uploadCurrentTrainingFrame();
         recordCpuProfilingSample(TrainingCpuProfileStage::FrameUpload,
                                  std::chrono::duration<float, std::milli>(Clock::now() - frameUploadStart).count());
@@ -401,7 +408,16 @@ void GaussianTraining::trainStep() {
     const uint32_t currentIteration = trainingIteration_ + 1u;
     const bool beforeFinalIteration = scheduleConfig_.totalIterations == 0u ||
                                       currentIteration < scheduleConfig_.totalIterations;
-    pushConstants.optimizerEnabled = !runDensificationThisStep && beforeFinalIteration ? 1u : 0u;
+    pushConstants.optimizerEnabled = !fixedBenchmarkThisStep &&
+                                     !runDensificationThisStep &&
+                                     beforeFinalIteration ? 1u : 0u;
+    if (fixedBenchmarkThisStep) {
+        const uint32_t totalBenchmarkSteps = fixedBenchmarkStats_.warmupSteps +
+                                             fixedBenchmarkStats_.measuredSteps;
+        const bool finalBenchmarkStep = fixedBenchmarkCompletedSteps_ + 1u >= totalBenchmarkSteps;
+        pushConstants.validationEnabled = finalBenchmarkStep ? 1u : 0u;
+        pushConstants.validationIteration = currentIteration;
+    }
 
     prepareCommandBuffer_.reset();
     vk::CommandBufferBeginInfo beginInfo{};
@@ -547,8 +563,7 @@ void GaussianTraining::trainStep() {
     }
 
     const uint32_t nextIteration = currentIteration;
-    if (nextIteration <= 5u ||
-        (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u)) {
+    if (pushConstants.validationEnabled != 0u) {
         const auto validationStart = Clock::now();
         LOG_DEBUG("Starting training validation readback for iteration {}", nextIteration);
         collectCompletedValidationReadbacks();
@@ -590,6 +605,33 @@ void GaussianTraining::trainStep() {
 
     recordCpuProfilingSample(TrainingCpuProfileStage::Total,
                              std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count());
+
+    if (fixedBenchmarkThisStep) {
+        ++fixedBenchmarkCompletedSteps_;
+        fixedBenchmarkStats_.completedWarmupSteps = std::min(
+            fixedBenchmarkCompletedSteps_, fixedBenchmarkStats_.warmupSteps);
+        fixedBenchmarkStats_.completedMeasuredSteps = fixedBenchmarkCompletedSteps_ >
+                                                      fixedBenchmarkStats_.warmupSteps
+            ? std::min(fixedBenchmarkCompletedSteps_ - fixedBenchmarkStats_.warmupSteps,
+                       fixedBenchmarkStats_.measuredSteps)
+            : 0u;
+        if (fixedBenchmarkStats_.warmupSteps > 0u &&
+            fixedBenchmarkCompletedSteps_ == fixedBenchmarkStats_.warmupSteps) {
+            resetProfilingStats();
+            resetCandidateProfileStats();
+        }
+        const uint32_t totalBenchmarkSteps = fixedBenchmarkStats_.warmupSteps +
+                                             fixedBenchmarkStats_.measuredSteps;
+        if (fixedBenchmarkCompletedSteps_ >= totalBenchmarkSteps) {
+            fixedBenchmarkStats_.active = false;
+            fixedBenchmarkStats_.complete = true;
+            LOG_INFO("Fixed workload benchmark completed: frame {}, warmup {}, measured {}",
+                     fixedBenchmarkStats_.frameIndex,
+                     fixedBenchmarkStats_.warmupSteps,
+                     fixedBenchmarkStats_.measuredSteps);
+        }
+        return;
+    }
 
     ++trainingIteration_;
     if (hasDataset() &&
@@ -659,6 +701,9 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     initializeDeviceImageCache();
     lastDensificationStats_ = {};
     lastDensificationStatsIteration_ = 0;
+    validationStats_ = {};
+    resetCandidateProfileStats();
+    resetProfilingStats();
     sceneExtent_ = estimateSceneExtent();
 
     if (usedRandomInitialization_) {
@@ -770,6 +815,41 @@ void GaussianTraining::setTrainingFrameIndex(size_t frameIndex) {
     currentDatasetFrameIndex_ = frameIndex;
 }
 
+void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkConfig& config) {
+    if (!initialized_ || !rendererInitialized_) {
+        throw std::runtime_error("Initialize training before starting a fixed workload benchmark");
+    }
+    if (!hasTrainableModel()) {
+        throw std::runtime_error("A trainable Gaussian model is required for a fixed workload benchmark");
+    }
+    if (dataset_.empty()) {
+        throw std::runtime_error("A loaded dataset is required for a fixed workload benchmark");
+    }
+    if (config.frameIndex >= dataset_.size()) {
+        throw std::runtime_error("Fixed workload benchmark frame index is out of range");
+    }
+
+    collectCompletedValidationReadbacks();
+    currentDatasetFrameIndex_ = config.frameIndex;
+    fixedBenchmarkStats_ = {};
+    fixedBenchmarkStats_.active = true;
+    fixedBenchmarkStats_.frameIndex = config.frameIndex;
+    fixedBenchmarkStats_.warmupSteps = config.warmupSteps;
+    fixedBenchmarkStats_.measuredSteps = std::max(config.measuredSteps, 1u);
+    fixedBenchmarkCompletedSteps_ = 0u;
+    resetProfilingStats();
+    resetCandidateProfileStats();
+    LOG_INFO("Started fixed workload benchmark: frame {}, warmup {}, measured {}",
+             fixedBenchmarkStats_.frameIndex,
+             fixedBenchmarkStats_.warmupSteps,
+             fixedBenchmarkStats_.measuredSteps);
+}
+
+void GaussianTraining::stopFixedWorkloadBenchmark() {
+    fixedBenchmarkStats_.active = false;
+    fixedBenchmarkStats_.complete = false;
+}
+
 void GaussianTraining::setScheduleConfig(const TrainingScheduleConfig& config) {
     scheduleConfig_ = config;
     frameRng_.seed(scheduleConfig_.randomSeed);
@@ -820,6 +900,8 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
             ? 1u
             : 0u;
     pushConstants.validationIteration = nextIteration;
+    pushConstants.pixelTo2DGSMinSubgroupUtilization =
+        std::clamp(pixelTo2DGSMinSubgroupUtilization_, 0.0f, 1.0f);
     return pushConstants;
 }
 
@@ -1116,8 +1198,34 @@ void GaussianTraining::validateTrainingStep(const TrainingValidationGpuResult& r
     stats.meanProcessedCandidatesPerPixel = result.processedCandidateSum / validationPixelCount;
     stats.meanContributorsPerPixel = result.contributorSum / validationPixelCount;
     stats.maxProcessedCandidatesPerPixel = result.maxProcessedCandidates;
+    for (size_t bucket = 0; bucket < 4u; ++bucket) {
+        const uint32_t bucketIndex = static_cast<uint32_t>(bucket);
+        stats.processedCandidateHistogram[bucketIndex] =
+            result.processedCandidateBucketsLow[bucketIndex];
+        stats.processedCandidateHistogram[bucketIndex + 4u] =
+            result.processedCandidateBucketsHigh[bucketIndex];
+    }
     stats.renderedNonEmpty = stats.meanRenderedAlpha > 1e-5f ||
                              std::abs(stats.meanRenderedLuminance) > 1e-5f;
+
+    ++candidateProfileStats_.sampleCount;
+    const float candidateSampleCount = static_cast<float>(candidateProfileStats_.sampleCount);
+    candidateProfileStats_.meanProcessedCandidatesPerPixel +=
+        (stats.meanProcessedCandidatesPerPixel -
+         candidateProfileStats_.meanProcessedCandidatesPerPixel) / candidateSampleCount;
+    candidateProfileStats_.meanContributorsPerPixel +=
+        (stats.meanContributorsPerPixel -
+         candidateProfileStats_.meanContributorsPerPixel) / candidateSampleCount;
+    candidateProfileStats_.maxProcessedCandidatesPerPixel = std::max(
+        candidateProfileStats_.maxProcessedCandidatesPerPixel,
+        stats.maxProcessedCandidatesPerPixel);
+    for (size_t bucket = 0; bucket < stats.processedCandidateHistogram.size(); ++bucket) {
+        const float pixelFraction = static_cast<float>(stats.processedCandidateHistogram[bucket]) /
+                                    validationPixelCount;
+        candidateProfileStats_.meanPixelFractionByProcessedBucket[bucket] +=
+            (pixelFraction - candidateProfileStats_.meanPixelFractionByProcessedBucket[bucket]) /
+            candidateSampleCount;
+    }
 
     stats.valid = stats.invalidLossCount == 0 &&
                   stats.invalidRenderedPixelCount == 0 &&
@@ -1356,6 +1464,16 @@ void GaussianTraining::recordCpuProfilingSample(TrainingCpuProfileStage stage, f
     timing.lastMs = milliseconds;
     ++timing.sampleCount;
     timing.averageMs += (milliseconds - timing.averageMs) / static_cast<float>(timing.sampleCount);
+}
+
+void GaussianTraining::resetProfilingStats() {
+    const bool gpuTimestampsAvailable = profilingStats_.gpuTimestampsAvailable;
+    profilingStats_ = {};
+    profilingStats_.gpuTimestampsAvailable = gpuTimestampsAvailable;
+}
+
+void GaussianTraining::resetCandidateProfileStats() {
+    candidateProfileStats_ = {};
 }
 
 void GaussianTraining::recordGpuProfilingSample(TrainingGpuProfileStage stage, float milliseconds) {

@@ -15,5 +15,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
-    gaussianTileRanges[gaussianIndex] = uint2(0u, trainProjectedGaussianTileCount(gaussian));
+    GaussianTileCullingData culling = trainPrepareGaussianTileCulling(gaussian);
+    gaussianTileRanges[gaussianIndex] = uint2(
+        0u, trainProjectedGaussianTileCount(culling));
 }

@@ -19,6 +19,8 @@ groupshared uint validationValidRenderedCount[256];
 groupshared float validationProcessedCandidateSum[256];
 groupshared float validationContributorSum[256];
 groupshared uint validationMaxProcessedCandidates[256];
+groupshared uint4 validationProcessedCandidateBucketsLow[256];
+groupshared uint4 validationProcessedCandidateBucketsHigh[256];
 groupshared uint validationNonFiniteGaussianCount[256];
 groupshared uint validationNonFinitePositionCount[256];
 groupshared uint validationNonFiniteOpacityCount[256];
@@ -45,6 +47,8 @@ void main(uint3 groupThreadID : SV_GroupThreadID) {
     float processedCandidateSum = 0.0;
     float contributorSum = 0.0;
     uint maxProcessedCandidates = 0u;
+    uint4 processedCandidateBucketsLow = uint4(0u);
+    uint4 processedCandidateBucketsHigh = uint4(0u);
     uint nonFiniteGaussianCount = 0u;
     uint nonFinitePositionCount = 0u;
     uint nonFiniteOpacityCount = 0u;
@@ -66,6 +70,8 @@ void main(uint3 groupThreadID : SV_GroupThreadID) {
         processedCandidateSum += partial.processedCandidateSum;
         contributorSum += partial.contributorSum;
         maxProcessedCandidates = max(maxProcessedCandidates, partial.maxProcessedCandidates);
+        processedCandidateBucketsLow += partial.processedCandidateBucketsLow;
+        processedCandidateBucketsHigh += partial.processedCandidateBucketsHigh;
     }
     for (uint index = localIndex; index < gaussianPartialCount; index += 256u) {
         TrainingGaussianValidationPartial partial = gaussianValidationPartials[index];
@@ -90,6 +96,8 @@ void main(uint3 groupThreadID : SV_GroupThreadID) {
     validationProcessedCandidateSum[localIndex] = processedCandidateSum;
     validationContributorSum[localIndex] = contributorSum;
     validationMaxProcessedCandidates[localIndex] = maxProcessedCandidates;
+    validationProcessedCandidateBucketsLow[localIndex] = processedCandidateBucketsLow;
+    validationProcessedCandidateBucketsHigh[localIndex] = processedCandidateBucketsHigh;
     validationNonFiniteGaussianCount[localIndex] = nonFiniteGaussianCount;
     validationNonFinitePositionCount[localIndex] = nonFinitePositionCount;
     validationNonFiniteOpacityCount[localIndex] = nonFiniteOpacityCount;
@@ -115,6 +123,10 @@ void main(uint3 groupThreadID : SV_GroupThreadID) {
             validationMaxProcessedCandidates[localIndex] = max(
                 validationMaxProcessedCandidates[localIndex],
                 validationMaxProcessedCandidates[localIndex + stride]);
+            validationProcessedCandidateBucketsLow[localIndex] +=
+                validationProcessedCandidateBucketsLow[localIndex + stride];
+            validationProcessedCandidateBucketsHigh[localIndex] +=
+                validationProcessedCandidateBucketsHigh[localIndex + stride];
             validationNonFiniteGaussianCount[localIndex] +=
                 validationNonFiniteGaussianCount[localIndex + stride];
             validationNonFinitePositionCount[localIndex] +=
@@ -158,6 +170,8 @@ void main(uint3 groupThreadID : SV_GroupThreadID) {
         result.contributorSum = validationContributorSum[0];
         result.maxProcessedCandidates = validationMaxProcessedCandidates[0];
         result.padding0 = 0u;
+        result.processedCandidateBucketsLow = validationProcessedCandidateBucketsLow[0];
+        result.processedCandidateBucketsHigh = validationProcessedCandidateBucketsHigh[0];
         validationFinalResult[0] = result;
     }
 }

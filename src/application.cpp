@@ -802,6 +802,14 @@ void Application::drawTrainingControls() {
             training_.setPixelTo2DGSMode(
                 static_cast<TrainingPixelTo2DGSMode>(training_pixel_to_2dgs_mode_));
         }
+        if (ImGui::SliderFloat("Auto Min Subgroup Utilization",
+                               &training_pixel_to_2dgs_min_subgroup_utilization_,
+                               0.0f,
+                               1.0f,
+                               "%.2f")) {
+            training_.setPixelTo2DGSMinSubgroupUtilization(
+                training_pixel_to_2dgs_min_subgroup_utilization_);
+        }
         if (training_.isRendererInitialized()) {
             const int activePixelBackwardMode = static_cast<int>(training_.activePixelTo2DGSMode());
             ImGui::Text("Active Pixel Backward %s", pixelBackwardModes[activePixelBackwardMode]);
@@ -912,10 +920,18 @@ void Application::drawTrainingControls() {
         ImGui::BeginDisabled();
     }
 
-    if (ImGui::Button(training_running_ ? "Pause Training" : "Start Training")) {
+    const bool benchmarkActive = training_.isFixedWorkloadBenchmarkActive();
+    const char* primaryTrainingButtonLabel = benchmarkActive
+        ? "Stop Benchmark"
+        : (training_running_ ? "Pause Training" : "Start Training");
+    if (ImGui::Button(primaryTrainingButtonLabel)) {
         if (training_running_) {
+            if (benchmarkActive) {
+                training_.stopFixedWorkloadBenchmark();
+            }
             training_running_ = false;
-            setTrainingStatus("Training paused.");
+            setTrainingStatus(benchmarkActive ? "Fixed workload benchmark stopped."
+                                              : "Training paused.");
         } else {
             try {
                 if (!training_dataset_loaded_) {
@@ -928,6 +944,32 @@ void Application::drawTrainingControls() {
                 initializeTrainingIfNeeded();
                 training_running_ = true;
                 setTrainingStatus("Training started.");
+            } catch (const std::exception& error) {
+                training_running_ = false;
+                setTrainingError(error.what());
+            }
+        }
+    }
+
+    if (!training_running_) {
+        ImGui::SameLine();
+        if (ImGui::Button("Start Fixed Benchmark")) {
+            try {
+                if (!training_dataset_loaded_) {
+                    loadTrainingDatasetFromUi();
+                    if (!training_dataset_loaded_) {
+                        return;
+                    }
+                }
+                applyTrainingConfigFromUi();
+                initializeTrainingIfNeeded();
+                TrainingFixedBenchmarkConfig benchmarkConfig{};
+                benchmarkConfig.frameIndex = training_benchmark_frame_;
+                benchmarkConfig.warmupSteps = training_benchmark_warmup_steps_;
+                benchmarkConfig.measuredSteps = training_benchmark_measured_steps_;
+                training_.startFixedWorkloadBenchmark(benchmarkConfig);
+                training_running_ = true;
+                setTrainingStatus("Fixed workload benchmark started.");
             } catch (const std::exception& error) {
                 training_running_ = false;
                 setTrainingError(error.what());
@@ -959,6 +1001,30 @@ void Application::drawTrainingControls() {
     }
     ImGui::Text("Steps %llu", static_cast<unsigned long long>(training_steps_done_));
     ImGui::Text("Gaussians %u", training_.gaussianCount());
+    if (!training_running_) {
+        ImGui::InputScalar("Benchmark Frame", ImGuiDataType_U32, &training_benchmark_frame_);
+        if (training_frame_count_ > 0u) {
+            training_benchmark_frame_ = std::min(training_benchmark_frame_, training_frame_count_ - 1u);
+        } else {
+            training_benchmark_frame_ = 0u;
+        }
+        ImGui::InputScalar("Benchmark Warmup", ImGuiDataType_U32,
+                           &training_benchmark_warmup_steps_);
+        ImGui::InputScalar("Benchmark Measured", ImGuiDataType_U32,
+                           &training_benchmark_measured_steps_);
+        training_benchmark_measured_steps_ = std::max(training_benchmark_measured_steps_, 1u);
+    }
+    const auto& benchmark = training_.fixedWorkloadBenchmarkStats();
+    if (benchmark.active || benchmark.complete || benchmark.completedWarmupSteps > 0u ||
+        benchmark.completedMeasuredSteps > 0u) {
+        ImGui::Text("Fixed benchmark frame %u, warmup %u/%u, measured %u/%u, %s",
+                    benchmark.frameIndex,
+                    benchmark.completedWarmupSteps,
+                    benchmark.warmupSteps,
+                    benchmark.completedMeasuredSteps,
+                    benchmark.measuredSteps,
+                    benchmark.active ? "running" : (benchmark.complete ? "complete" : "stopped"));
+    }
     const auto& densification = training_.densificationStats();
     const uint32_t densificationIteration = training_.densificationStatsIteration();
     if (densificationIteration > 0) {
@@ -983,6 +1049,29 @@ void Application::drawTrainingControls() {
                 validation.meanProcessedCandidatesPerPixel,
                 validation.meanContributorsPerPixel,
                 validation.maxProcessedCandidatesPerPixel);
+    const auto& candidateProfile = training_.candidateProfileStats();
+    if (candidateProfile.sampleCount > 0u) {
+        const float emptyCandidatePercent = candidateProfile.meanProcessedCandidatesPerPixel > 0.0f
+            ? 100.0f * (1.0f - candidateProfile.meanContributorsPerPixel /
+                                  candidateProfile.meanProcessedCandidatesPerPixel)
+            : 0.0f;
+        ImGui::Text("Validation history n=%u: candidates %.2f, contributors %.2f, empty %.2f%%, max %u",
+                    candidateProfile.sampleCount,
+                    candidateProfile.meanProcessedCandidatesPerPixel,
+                    candidateProfile.meanContributorsPerPixel,
+                    emptyCandidatePercent,
+                    candidateProfile.maxProcessedCandidatesPerPixel);
+        ImGui::Text("Processed pixels 0/1-32/33-64/65-128: %.1f%% / %.1f%% / %.1f%% / %.1f%%",
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[0],
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[1],
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[2],
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[3]);
+        ImGui::Text("Processed pixels 129-256/257-512/513-1024/>1024: %.1f%% / %.1f%% / %.1f%% / %.1f%%",
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[4],
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[5],
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[6],
+                    100.0f * candidateProfile.meanPixelFractionByProcessedBucket[7]);
+    }
     if (!validation.valid && training_steps_done_ > 0) {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f),
                            "Validation issue: invalid loss %u, invalid pixels %u, non-finite gaussians %u",
@@ -1254,7 +1343,7 @@ void Application::runTrainingStepFromUi() {
     if (!training_dataset_loaded_) {
         throw std::runtime_error("Load a training dataset before starting training");
     }
-    if (training_.isTrainingComplete()) {
+    if (!training_.isFixedWorkloadBenchmarkActive() && training_.isTrainingComplete()) {
         training_running_ = false;
         setTrainingStatus("Training completed at " +
                           std::to_string(training_.trainingIteration()) +
@@ -1263,6 +1352,14 @@ void Application::runTrainingStepFromUi() {
     }
     training_.trainStep();
     ++training_steps_done_;
+    const auto& benchmark = training_.fixedWorkloadBenchmarkStats();
+    if (!benchmark.active && benchmark.complete) {
+        training_running_ = false;
+        setTrainingStatus("Fixed workload benchmark completed: " +
+                          std::to_string(benchmark.measuredSteps) +
+                          " measured steps.");
+        return;
+    }
     if (training_.isTrainingComplete()) {
         training_running_ = false;
         setTrainingStatus("Training completed at " +
@@ -1391,6 +1488,8 @@ void Application::applyTrainingConfigFromUi() {
     training_.setScheduleConfig(scheduleConfig);
     training_.setPixelTo2DGSMode(
         static_cast<TrainingPixelTo2DGSMode>(std::clamp(training_pixel_to_2dgs_mode_, 0, 3)));
+    training_.setPixelTo2DGSMinSubgroupUtilization(
+        training_pixel_to_2dgs_min_subgroup_utilization_);
     training_.setForwardCompositeMode(
         static_cast<TrainingForwardCompositeMode>(
             std::clamp(training_forward_composite_mode_, 0, 1)));

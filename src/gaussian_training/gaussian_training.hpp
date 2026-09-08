@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <filesystem>
@@ -56,10 +57,15 @@ public:
     void initializeModelFromDataset(const TrainingInitializationConfig& config = {});
     bool exportToPLY(const std::filesystem::path& path);
     void setTrainingFrameIndex(size_t frameIndex);
+    void startFixedWorkloadBenchmark(const TrainingFixedBenchmarkConfig& config);
+    void stopFixedWorkloadBenchmark();
     void setDensificationConfig(const TrainingDensificationConfig& config) { densificationConfig_ = config; }
     void setOptimizerConfig(const TrainingOptimizerConfig& config) { optimizerConfig_ = config; }
     void setScheduleConfig(const TrainingScheduleConfig& config);
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode);
+    void setPixelTo2DGSMinSubgroupUtilization(float utilization) {
+        pixelTo2DGSMinSubgroupUtilization_ = std::clamp(utilization, 0.0f, 1.0f);
+    }
     void setForwardCompositeMode(TrainingForwardCompositeMode mode);
     bool subgroupPixelTo2DGSSupported() const;
     TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
@@ -71,11 +77,16 @@ public:
     bool hasDataset() const { return !dataset_.empty(); }
     bool hasTrainableModel() const { return trainableGaussianCount_ > 0; }
     bool isTrainingComplete() const;
+    bool isFixedWorkloadBenchmarkActive() const { return fixedBenchmarkStats_.active; }
+    const TrainingFixedBenchmarkStats& fixedWorkloadBenchmarkStats() const {
+        return fixedBenchmarkStats_;
+    }
     bool usedRandomInitialization() const { return usedRandomInitialization_; }
     uint32_t gaussianCount() const { return trainableGaussianCount_; }
     uint32_t trainingIteration() const { return trainingIteration_; }
     uint32_t totalIterations() const { return scheduleConfig_.totalIterations; }
     const TrainingValidationStats& validationStats() const { return validationStats_; }
+    const TrainingCandidateProfileStats& candidateProfileStats() const { return candidateProfileStats_; }
     const TrainingDensificationStats& densificationStats() const { return lastDensificationStats_; }
     uint32_t densificationStatsIteration() const { return lastDensificationStatsIteration_; }
     const TrainingProfilingStats& profilingStats() const { return profilingStats_; }
@@ -120,6 +131,8 @@ private:
                                           uint32_t computeQueueFamilyIndex);
     void destroyTrainingProfilingResources();
     void collectGpuProfilingStats();
+    void resetProfilingStats();
+    void resetCandidateProfileStats();
     void resetProfilingLastSamples();
     void recordCpuProfilingSample(TrainingCpuProfileStage stage, float milliseconds);
     void recordGpuProfilingSample(TrainingGpuProfileStage stage, float milliseconds);
@@ -173,16 +186,20 @@ private:
     TrainingDensificationConfig densificationConfig_{};
     TrainingOptimizerConfig optimizerConfig_{};
     TrainingScheduleConfig scheduleConfig_{};
+    TrainingFixedBenchmarkStats fixedBenchmarkStats_{};
+    uint32_t fixedBenchmarkCompletedSteps_ = 0;
     std::mt19937 frameRng_{1u};
     std::vector<size_t> randomFrameStack_;
     uint32_t trainingIteration_ = 0;
     uint32_t optimizerStep_ = 0;
     uint32_t validationInterval_ = 100;
     TrainingValidationStats validationStats_{};
+    TrainingCandidateProfileStats candidateProfileStats_{};
     TrainingDensificationStats lastDensificationStats_{};
     uint32_t lastDensificationStatsIteration_ = 0;
     TrainingProfilingStats profilingStats_{};
     TrainingPixelTo2DGSMode pixelTo2DGSMode_ = TrainingPixelTo2DGSMode::Auto;
+    float pixelTo2DGSMinSubgroupUtilization_ = 0.5f;
     TrainingForwardCompositeMode forwardCompositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
     float sceneExtent_ = 1.0f;
 

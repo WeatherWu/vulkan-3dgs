@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <utility>
 #include <vector>
@@ -55,6 +56,7 @@ struct ConicGaussian2D {
     double b = 0.0;
     double c = 1.0;
     double opacity = 1.0;
+    double radius = 1.0;
 };
 
 double conicQuadratic(const ConicGaussian2D& gaussian, double dx, double dy) {
@@ -100,7 +102,10 @@ bool gaussianMayContributeToTile(const ConicGaussian2D& gaussian,
     }
 
     const double determinant = gaussian.a * gaussian.c - gaussian.b * gaussian.b;
-    if (!(gaussian.a > 0.0) || !(gaussian.c > 0.0) || !(determinant > 0.0)) {
+    if (!std::isfinite(gaussian.centerX) || !std::isfinite(gaussian.centerY) ||
+        !std::isfinite(gaussian.a) || !std::isfinite(gaussian.b) ||
+        !std::isfinite(gaussian.c) || !std::isfinite(gaussian.opacity) ||
+        !(gaussian.a > 0.0) || !(gaussian.c > 0.0) || !(determinant > 0.0)) {
         return true;
     }
 
@@ -121,6 +126,227 @@ bool gaussianMayContributeToTile(const ConicGaussian2D& gaussian,
     const double supportQuadratic = 2.0 * std::log(gaussian.opacity / alphaMinimum);
     const double tolerance = 1e-5 * std::max(1.0, std::abs(supportQuadratic));
     return minimumQuadratic <= supportQuadratic + tolerance;
+}
+
+struct TileBounds2D {
+    int minimumX = 0;
+    int minimumY = 0;
+    int maximumXExclusive = 0;
+    int maximumYExclusive = 0;
+
+    bool valid() const {
+        return maximumXExclusive > minimumX && maximumYExclusive > minimumY;
+    }
+};
+
+TileBounds2D coarseTileBounds(const ConicGaussian2D& gaussian,
+                              uint32_t width,
+                              uint32_t height) {
+    constexpr double tileSize = 16.0;
+    const int tileCountX = static_cast<int>((width + 15u) / 16u);
+    const int tileCountY = static_cast<int>((height + 15u) / 16u);
+    const int radius = static_cast<int>(gaussian.radius);
+    TileBounds2D bounds{};
+    bounds.minimumX = std::clamp(
+        static_cast<int>((gaussian.centerX - static_cast<double>(radius)) / tileSize),
+        0, tileCountX);
+    bounds.minimumY = std::clamp(
+        static_cast<int>((gaussian.centerY - static_cast<double>(radius)) / tileSize),
+        0, tileCountY);
+    bounds.maximumXExclusive = std::clamp(
+        static_cast<int>((gaussian.centerX + static_cast<double>(radius) + 15.0) / tileSize),
+        0, tileCountX);
+    bounds.maximumYExclusive = std::clamp(
+        static_cast<int>((gaussian.centerY + static_cast<double>(radius) + 15.0) / tileSize),
+        0, tileCountY);
+    return bounds;
+}
+
+struct GaussianTileCullingData {
+    TileBounds2D bounds{};
+    double centerX = 0.0;
+    double centerY = 0.0;
+    double a = 0.0;
+    double b = 0.0;
+    double c = 0.0;
+    double negativeBOverA = 0.0;
+    double negativeBOverC = 0.0;
+    double supportQuadratic = 0.0;
+    double tolerance = 0.0;
+    bool active = false;
+    bool useExactEllipse = false;
+};
+
+GaussianTileCullingData prepareGaussianTileCulling(const ConicGaussian2D& gaussian,
+                                                   uint32_t width,
+                                                   uint32_t height) {
+    constexpr double alphaMinimum = 1.0 / 255.0;
+    constexpr double tileSize = 16.0;
+    constexpr double lastPixelOffset = tileSize - 1.0;
+    GaussianTileCullingData culling{};
+    if (!(gaussian.opacity >= alphaMinimum) || !(gaussian.radius > 0.0) ||
+        !std::isfinite(gaussian.centerX) || !std::isfinite(gaussian.centerY) ||
+        !std::isfinite(gaussian.radius)) {
+        return culling;
+    }
+
+    culling.bounds = coarseTileBounds(gaussian, width, height);
+    if (!culling.bounds.valid()) {
+        return culling;
+    }
+    culling.active = true;
+    culling.centerX = gaussian.centerX;
+    culling.centerY = gaussian.centerY;
+    culling.a = gaussian.a;
+    culling.b = gaussian.b;
+    culling.c = gaussian.c;
+
+    const double determinant = gaussian.a * gaussian.c - gaussian.b * gaussian.b;
+    if (!std::isfinite(gaussian.a) || !std::isfinite(gaussian.b) ||
+        !std::isfinite(gaussian.c) || !std::isfinite(gaussian.opacity) ||
+        !(gaussian.a > 0.0) || !(gaussian.c > 0.0) || !(determinant > 0.0)) {
+        return culling;
+    }
+
+    culling.useExactEllipse = true;
+    culling.negativeBOverA = -gaussian.b / gaussian.a;
+    culling.negativeBOverC = -gaussian.b / gaussian.c;
+    culling.supportQuadratic = 2.0 * std::log(gaussian.opacity / alphaMinimum);
+    culling.tolerance = 1e-5 * std::max(1.0, std::abs(culling.supportQuadratic));
+
+    const double acceptedQuadratic = std::max(
+        0.0, culling.supportQuadratic + culling.tolerance);
+    const double extentX = std::sqrt(acceptedQuadratic * gaussian.c / determinant);
+    const double extentY = std::sqrt(acceptedQuadratic * gaussian.a / determinant);
+    if (!std::isfinite(extentX) || !std::isfinite(extentY)) {
+        return culling;
+    }
+
+    const int tileCountX = static_cast<int>((width + 15u) / 16u);
+    const int tileCountY = static_cast<int>((height + 15u) / 16u);
+    TileBounds2D tightBounds{};
+    tightBounds.minimumX = std::clamp(static_cast<int>(std::ceil(
+        (gaussian.centerX - extentX - lastPixelOffset) / tileSize)), 0, tileCountX);
+    tightBounds.minimumY = std::clamp(static_cast<int>(std::ceil(
+        (gaussian.centerY - extentY - lastPixelOffset) / tileSize)), 0, tileCountY);
+    tightBounds.maximumXExclusive = std::clamp(static_cast<int>(std::floor(
+        (gaussian.centerX + extentX) / tileSize)) + 1, 0, tileCountX);
+    tightBounds.maximumYExclusive = std::clamp(static_cast<int>(std::floor(
+        (gaussian.centerY + extentY) / tileSize)) + 1, 0, tileCountY);
+
+    culling.bounds.minimumX = std::max(culling.bounds.minimumX, tightBounds.minimumX);
+    culling.bounds.minimumY = std::max(culling.bounds.minimumY, tightBounds.minimumY);
+    culling.bounds.maximumXExclusive = std::min(
+        culling.bounds.maximumXExclusive, tightBounds.maximumXExclusive);
+    culling.bounds.maximumYExclusive = std::min(
+        culling.bounds.maximumYExclusive, tightBounds.maximumYExclusive);
+    return culling;
+}
+
+double optimizedMinimumConicQuadraticOnRectangle(const GaussianTileCullingData& culling,
+                                                 double minimumX,
+                                                 double minimumY,
+                                                 double maximumX,
+                                                 double maximumY) {
+    auto evaluate = [&](double x, double y) {
+        return culling.a * x * x + 2.0 * culling.b * x * y + culling.c * y * y;
+    };
+
+    const double yAtMinimumX = std::clamp(
+        culling.negativeBOverC * minimumX, minimumY, maximumY);
+    const double yAtMaximumX = std::clamp(
+        culling.negativeBOverC * maximumX, minimumY, maximumY);
+    const double xAtMinimumY = std::clamp(
+        culling.negativeBOverA * minimumY, minimumX, maximumX);
+    const double xAtMaximumY = std::clamp(
+        culling.negativeBOverA * maximumY, minimumX, maximumX);
+    return std::min({
+        evaluate(minimumX, yAtMinimumX),
+        evaluate(maximumX, yAtMaximumX),
+        evaluate(xAtMinimumY, minimumY),
+        evaluate(xAtMaximumY, maximumY),
+    });
+}
+
+bool optimizedGaussianMayContributeToTile(const GaussianTileCullingData& culling,
+                                          uint32_t tileX,
+                                          uint32_t tileY,
+                                          uint32_t width,
+                                          uint32_t height) {
+    if (!culling.useExactEllipse) {
+        return true;
+    }
+
+    constexpr uint32_t tileSize = 16u;
+    const uint32_t minimumPixelX = tileX * tileSize;
+    const uint32_t minimumPixelY = tileY * tileSize;
+    const uint32_t maximumPixelX = std::min(minimumPixelX + tileSize, width);
+    const uint32_t maximumPixelY = std::min(minimumPixelY + tileSize, height);
+    if (maximumPixelX <= minimumPixelX || maximumPixelY <= minimumPixelY) {
+        return false;
+    }
+
+    const double minimumX = static_cast<double>(minimumPixelX) - culling.centerX;
+    const double minimumY = static_cast<double>(minimumPixelY) - culling.centerY;
+    const double maximumX = static_cast<double>(maximumPixelX - 1u) - culling.centerX;
+    const double maximumY = static_cast<double>(maximumPixelY - 1u) - culling.centerY;
+    if (minimumX <= 0.0 && maximumX >= 0.0 &&
+        minimumY <= 0.0 && maximumY >= 0.0) {
+        return true;
+    }
+
+    const double minimumQuadratic = optimizedMinimumConicQuadraticOnRectangle(
+        culling, minimumX, minimumY, maximumX, maximumY);
+    return !std::isfinite(minimumQuadratic) ||
+           minimumQuadratic <= culling.supportQuadratic + culling.tolerance;
+}
+
+std::vector<uint32_t> acceptedTilesLegacy(const ConicGaussian2D& gaussian,
+                                          uint32_t width,
+                                          uint32_t height) {
+    std::vector<uint32_t> accepted;
+    if (!(gaussian.opacity >= 1.0 / 255.0) || !(gaussian.radius > 0.0) ||
+        !std::isfinite(gaussian.centerX) || !std::isfinite(gaussian.centerY) ||
+        !std::isfinite(gaussian.radius)) {
+        return accepted;
+    }
+    const TileBounds2D bounds = coarseTileBounds(gaussian, width, height);
+    const uint32_t tileCountX = (width + 15u) / 16u;
+    for (int tileY = bounds.minimumY; tileY < bounds.maximumYExclusive; ++tileY) {
+        for (int tileX = bounds.minimumX; tileX < bounds.maximumXExclusive; ++tileX) {
+            if (gaussianMayContributeToTile(
+                    gaussian, static_cast<uint32_t>(tileX), static_cast<uint32_t>(tileY),
+                    width, height)) {
+                accepted.push_back(static_cast<uint32_t>(tileY) * tileCountX +
+                                   static_cast<uint32_t>(tileX));
+            }
+        }
+    }
+    return accepted;
+}
+
+std::vector<uint32_t> acceptedTilesOptimized(const ConicGaussian2D& gaussian,
+                                             uint32_t width,
+                                             uint32_t height) {
+    std::vector<uint32_t> accepted;
+    const GaussianTileCullingData culling = prepareGaussianTileCulling(gaussian, width, height);
+    if (!culling.active || !culling.bounds.valid()) {
+        return accepted;
+    }
+    const uint32_t tileCountX = (width + 15u) / 16u;
+    for (int tileY = culling.bounds.minimumY;
+         tileY < culling.bounds.maximumYExclusive; ++tileY) {
+        for (int tileX = culling.bounds.minimumX;
+             tileX < culling.bounds.maximumXExclusive; ++tileX) {
+            if (optimizedGaussianMayContributeToTile(
+                    culling, static_cast<uint32_t>(tileX), static_cast<uint32_t>(tileY),
+                    width, height)) {
+                accepted.push_back(static_cast<uint32_t>(tileY) * tileCountX +
+                                   static_cast<uint32_t>(tileX));
+            }
+        }
+    }
+    return accepted;
 }
 
 std::vector<uint32_t> hierarchicalExclusivePrefix(const std::vector<uint32_t>& values) {
@@ -260,6 +486,125 @@ bool testConservativeEllipseTileCulling() {
         }
     }
     return culledTileCount > 0u;
+}
+
+bool testOptimizedEllipseTileCullingMatchesLegacy() {
+    constexpr uint32_t width = 63u;
+    constexpr uint32_t height = 47u;
+    constexpr double alphaMinimum = 1.0 / 255.0;
+    std::vector<ConicGaussian2D> edgeCases = {
+        {31.5, 23.5, 1.0, 0.0, 1.0, 1.0, 8.0},
+        {16.0, 16.0, 0.04, 0.0, 2.0, 0.8, 15.0},
+        {32.0, 15.0, 0.8, 0.77, 0.8, 0.6, 14.0},
+        {61.5, 45.5, 0.2, -0.12, 1.4, 0.9, 12.0},
+        {20.0, 20.0, 1.0, 0.0, 1.0, alphaMinimum, 4.0},
+        {20.0, 20.0, 1.0, 0.0, 1.0, alphaMinimum * 0.5, 4.0},
+        {24.0, 24.0, -1.0, 0.0, 1.0, 0.8, 8.0},
+        {24.0, 24.0, 1.0, 1.0, 1.0, 0.8, 8.0},
+        {24.0, 24.0, 1.0, std::numeric_limits<double>::quiet_NaN(), 1.0, 0.8, 8.0},
+        {24.0, 24.0, std::numeric_limits<double>::infinity(), 0.0, 1.0, 0.8, 8.0},
+        {24.0, 24.0, 1.0, 0.0, 1.0, std::numeric_limits<double>::infinity(), 8.0},
+    };
+
+    uint64_t coarseCandidateCount = 0u;
+    uint64_t optimizedCandidateCount = 0u;
+    auto compare = [&](const ConicGaussian2D& gaussian) {
+        const std::vector<uint32_t> legacy = acceptedTilesLegacy(gaussian, width, height);
+        const std::vector<uint32_t> optimized = acceptedTilesOptimized(gaussian, width, height);
+        if (legacy != optimized) {
+            return false;
+        }
+        if (gaussian.opacity >= alphaMinimum && gaussian.radius > 0.0 &&
+            std::isfinite(gaussian.centerX) && std::isfinite(gaussian.centerY) &&
+            std::isfinite(gaussian.radius)) {
+            const TileBounds2D coarse = coarseTileBounds(gaussian, width, height);
+            const GaussianTileCullingData culling = prepareGaussianTileCulling(
+                gaussian, width, height);
+            if (coarse.valid()) {
+                coarseCandidateCount += static_cast<uint64_t>(
+                    coarse.maximumXExclusive - coarse.minimumX) *
+                    static_cast<uint64_t>(coarse.maximumYExclusive - coarse.minimumY);
+            }
+            if (culling.active && culling.bounds.valid()) {
+                optimizedCandidateCount += static_cast<uint64_t>(
+                    culling.bounds.maximumXExclusive - culling.bounds.minimumX) *
+                    static_cast<uint64_t>(
+                        culling.bounds.maximumYExclusive - culling.bounds.minimumY);
+            }
+        }
+        return true;
+    };
+
+    for (const ConicGaussian2D& gaussian : edgeCases) {
+        if (!compare(gaussian)) {
+            return false;
+        }
+    }
+
+    std::mt19937 random(29u);
+    std::uniform_real_distribution<double> centerXDistribution(-24.0, 88.0);
+    std::uniform_real_distribution<double> centerYDistribution(-24.0, 72.0);
+    std::uniform_real_distribution<double> eigenvalueDistribution(0.01, 2.0);
+    std::uniform_real_distribution<double> angleDistribution(0.0, 6.283185307179586);
+    std::uniform_real_distribution<double> opacityDistribution(0.001, 1.0);
+    for (uint32_t sample = 0u; sample < 2000u; ++sample) {
+        const double firstEigenvalue = eigenvalueDistribution(random);
+        const double secondEigenvalue = eigenvalueDistribution(random);
+        const double angle = angleDistribution(random);
+        const double cosine = std::cos(angle);
+        const double sine = std::sin(angle);
+        ConicGaussian2D gaussian{};
+        gaussian.centerX = centerXDistribution(random);
+        gaussian.centerY = centerYDistribution(random);
+        gaussian.a = firstEigenvalue * cosine * cosine + secondEigenvalue * sine * sine;
+        gaussian.b = (firstEigenvalue - secondEigenvalue) * cosine * sine;
+        gaussian.c = firstEigenvalue * sine * sine + secondEigenvalue * cosine * cosine;
+        gaussian.opacity = opacityDistribution(random);
+        gaussian.radius = std::ceil(3.0 / std::sqrt(
+            std::min(firstEigenvalue, secondEigenvalue)));
+        if (!compare(gaussian)) {
+            return false;
+        }
+    }
+
+    return optimizedCandidateCount < coarseCandidateCount;
+}
+
+bool useDirectPixelTo2DGS(const std::vector<uint32_t>& processedCounts,
+                          uint32_t laneCount,
+                          double minimumSubgroupUtilization) {
+    uint64_t sum = 0u;
+    uint32_t maximum = 0u;
+    for (uint32_t count : processedCounts) {
+        sum += count;
+        maximum = std::max(maximum, count);
+    }
+    if (maximum <= laneCount) {
+        return true;
+    }
+    const double capacity = static_cast<double>(processedCounts.size()) * maximum;
+    const double utilization = capacity > 0.0 ? static_cast<double>(sum) / capacity : 1.0;
+    return utilization < minimumSubgroupUtilization;
+}
+
+bool testAdaptivePixelTo2DGSSelection() {
+    constexpr uint32_t laneCount = 32u;
+    if (!useDirectPixelTo2DGS(std::vector<uint32_t>(laneCount, 16u), laneCount, 0.5)) {
+        return false;
+    }
+    if (useDirectPixelTo2DGS(std::vector<uint32_t>(laneCount, 128u), laneCount, 0.5)) {
+        return false;
+    }
+    if (useDirectPixelTo2DGS(std::vector<uint32_t>(8u, 128u), laneCount, 0.5)) {
+        return false;
+    }
+
+    std::vector<uint32_t> sparseLongTail(laneCount, 16u);
+    sparseLongTail[0] = 1024u;
+    if (!useDirectPixelTo2DGS(sparseLongTail, laneCount, 0.5)) {
+        return false;
+    }
+    return !useDirectPixelTo2DGS(sparseLongTail, laneCount, 0.0);
 }
 
 bool testPackedConicOffDiagonalGradient() {
@@ -412,6 +757,14 @@ int main() {
     }
     if (!testConservativeEllipseTileCulling()) {
         std::cerr << "conservative ellipse/tile culling test failed\n";
+        return 1;
+    }
+    if (!testOptimizedEllipseTileCullingMatchesLegacy()) {
+        std::cerr << "optimized ellipse/tile culling equivalence test failed\n";
+        return 1;
+    }
+    if (!testAdaptivePixelTo2DGSSelection()) {
+        std::cerr << "adaptive pixel-to-2DGS selection test failed\n";
         return 1;
     }
     if (!testHierarchicalExclusivePrefix()) {

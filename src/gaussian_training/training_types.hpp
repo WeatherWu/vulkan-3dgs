@@ -42,6 +42,10 @@ struct TrainingPushConstants {
     uint32_t validationIteration = 0;
     uint32_t optimizerEnabled = 1;
     uint32_t validationUsesDensifiedGaussians = 0;
+    float pixelTo2DGSMinSubgroupUtilization = 0.5f;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
 };
 
 struct TrainingPrefixPushConstants {
@@ -80,6 +84,22 @@ struct TrainingScheduleConfig {
     TrainingImageSelectionMode imageSelectionMode = TrainingImageSelectionMode::Random;
     uint32_t totalIterations = 30000;
     uint32_t randomSeed = 0;
+};
+
+struct TrainingFixedBenchmarkConfig {
+    uint32_t frameIndex = 0;
+    uint32_t warmupSteps = 200;
+    uint32_t measuredSteps = 1000;
+};
+
+struct TrainingFixedBenchmarkStats {
+    bool active = false;
+    bool complete = false;
+    uint32_t frameIndex = 0;
+    uint32_t warmupSteps = 0;
+    uint32_t measuredSteps = 0;
+    uint32_t completedWarmupSteps = 0;
+    uint32_t completedMeasuredSteps = 0;
 };
 
 struct TrainingOptimizerConfig {
@@ -121,8 +141,17 @@ struct TrainingValidationStats {
     float meanProcessedCandidatesPerPixel = 0.0f;
     float meanContributorsPerPixel = 0.0f;
     uint32_t maxProcessedCandidatesPerPixel = 0;
+    std::array<uint32_t, 8> processedCandidateHistogram{};
     bool renderedNonEmpty = false;
     bool valid = true;
+};
+
+struct TrainingCandidateProfileStats {
+    uint32_t sampleCount = 0;
+    float meanProcessedCandidatesPerPixel = 0.0f;
+    float meanContributorsPerPixel = 0.0f;
+    uint32_t maxProcessedCandidatesPerPixel = 0;
+    std::array<float, 8> meanPixelFractionByProcessedBucket{};
 };
 
 constexpr uint32_t kTrainingValidationWorkgroupSize = 256;
@@ -140,6 +169,8 @@ struct alignas(16) TrainingPixelValidationPartial {
     float contributorSum = 0.0f;
     uint32_t maxProcessedCandidates = 0;
     uint32_t padding1 = 0;
+    glm::uvec4 processedCandidateBucketsLow{};
+    glm::uvec4 processedCandidateBucketsHigh{};
 };
 
 struct alignas(16) TrainingGaussianValidationPartial {
@@ -174,6 +205,8 @@ struct alignas(16) TrainingValidationGpuResult {
     float contributorSum = 0.0f;
     uint32_t maxProcessedCandidates = 0;
     uint32_t padding0 = 0;
+    glm::uvec4 processedCandidateBucketsLow{};
+    glm::uvec4 processedCandidateBucketsHigh{};
 };
 
 struct SsimBackwardState {
@@ -347,10 +380,10 @@ static_assert(sizeof(GaussianGrad) == sizeof(glm::vec4) * 19);
 static_assert(sizeof(TrainingForwardCamera) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(AdamState) == sizeof(GaussianGrad) * 2);
 static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 4);
-static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 7);
+static_assert(sizeof(TrainingPushConstants) == sizeof(glm::vec4) * 8);
 static_assert(sizeof(TrainingPrefixPushConstants) == sizeof(glm::vec4));
-static_assert(sizeof(TrainingPixelValidationPartial) == sizeof(glm::vec4) * 3);
+static_assert(sizeof(TrainingPixelValidationPartial) == sizeof(glm::vec4) * 5);
 static_assert(sizeof(TrainingGaussianValidationPartial) == sizeof(glm::vec4) * 2);
-static_assert(sizeof(TrainingValidationGpuResult) == sizeof(glm::vec4) * 5);
+static_assert(sizeof(TrainingValidationGpuResult) == sizeof(glm::vec4) * 7);
 
 } // namespace vulkan3DGS

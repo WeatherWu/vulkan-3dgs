@@ -27,6 +27,10 @@ struct TrainingPushConstants {
     uint validationIteration;
     uint optimizerEnabled;
     uint validationUsesDensifiedGaussians;
+    float pixelTo2DGSMinSubgroupUtilization;
+    uint padding0;
+    uint padding1;
+    uint padding2;
 };
 
 struct TrainingPixelValidationPartial {
@@ -42,6 +46,8 @@ struct TrainingPixelValidationPartial {
     float contributorSum;
     uint maxProcessedCandidates;
     uint padding1;
+    uint4 processedCandidateBucketsLow;
+    uint4 processedCandidateBucketsHigh;
 };
 
 struct TrainingGaussianValidationPartial {
@@ -76,6 +82,8 @@ struct TrainingValidationGpuResult {
     float contributorSum;
     uint maxProcessedCandidates;
     uint padding0;
+    uint4 processedCandidateBucketsLow;
+    uint4 processedCandidateBucketsHigh;
 };
 
 struct GaussianTrainParam {

@@ -31,6 +31,33 @@ groupshared uint validationValidRenderedCount[256];
 groupshared float validationProcessedCandidateSum[256];
 groupshared float validationContributorSum[256];
 groupshared uint validationMaxProcessedCandidates[256];
+groupshared uint4 validationProcessedCandidateBucketsLow[256];
+groupshared uint4 validationProcessedCandidateBucketsHigh[256];
+
+uint trainProcessedCandidateBucket(uint processedCandidateCount) {
+    if (processedCandidateCount == 0u) {
+        return 0u;
+    }
+    if (processedCandidateCount <= 32u) {
+        return 1u;
+    }
+    if (processedCandidateCount <= 64u) {
+        return 2u;
+    }
+    if (processedCandidateCount <= 128u) {
+        return 3u;
+    }
+    if (processedCandidateCount <= 256u) {
+        return 4u;
+    }
+    if (processedCandidateCount <= 512u) {
+        return 5u;
+    }
+    if (processedCandidateCount <= 1024u) {
+        return 6u;
+    }
+    return 7u;
+}
 
 static const int SSIM_RADIUS = 5;
 static const int SSIM_SHARED_WIDTH = 26;
@@ -182,6 +209,16 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
     validationProcessedCandidateSum[reductionIndex] = float(processedCandidateCount);
     validationContributorSum[reductionIndex] = float(contributorCount);
     validationMaxProcessedCandidates[reductionIndex] = processedCandidateCount;
+    uint4 processedCandidateBucketsLow = uint4(0u);
+    uint4 processedCandidateBucketsHigh = uint4(0u);
+    uint processedCandidateBucket = trainProcessedCandidateBucket(processedCandidateCount);
+    if (processedCandidateBucket < 4u) {
+        processedCandidateBucketsLow[processedCandidateBucket] = active ? 1u : 0u;
+    } else {
+        processedCandidateBucketsHigh[processedCandidateBucket - 4u] = active ? 1u : 0u;
+    }
+    validationProcessedCandidateBucketsLow[reductionIndex] = processedCandidateBucketsLow;
+    validationProcessedCandidateBucketsHigh[reductionIndex] = processedCandidateBucketsHigh;
     GroupMemoryBarrierWithGroupSync();
 
     for (uint stride = 128u; stride > 0u; stride >>= 1u) {
@@ -199,6 +236,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
             validationMaxProcessedCandidates[reductionIndex] = max(
                 validationMaxProcessedCandidates[reductionIndex],
                 validationMaxProcessedCandidates[reductionIndex + stride]);
+            validationProcessedCandidateBucketsLow[reductionIndex] +=
+                validationProcessedCandidateBucketsLow[reductionIndex + stride];
+            validationProcessedCandidateBucketsHigh[reductionIndex] +=
+                validationProcessedCandidateBucketsHigh[reductionIndex + stride];
         }
         GroupMemoryBarrierWithGroupSync();
     }
@@ -217,6 +258,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
         partial.contributorSum = validationContributorSum[0];
         partial.maxProcessedCandidates = validationMaxProcessedCandidates[0];
         partial.padding1 = 0u;
+        partial.processedCandidateBucketsLow = validationProcessedCandidateBucketsLow[0];
+        partial.processedCandidateBucketsHigh = validationProcessedCandidateBucketsHigh[0];
         uint validationGroupCountX = (params.width + 15u) / 16u;
         pixelValidationPartials[groupID.x + groupID.y * validationGroupCountX] = partial;
     }

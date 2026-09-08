@@ -32,8 +32,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
-    TileBounds bounds = trainProjectedTileBounds(gaussian);
-    if (!bounds.valid) {
+    GaussianTileCullingData culling = trainPrepareGaussianTileCulling(gaussian);
+    if (!culling.active || !culling.bounds.valid) {
         return;
     }
 
@@ -44,9 +44,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint outputIndex = gaussianRange.x;
     uint outputEnd = min(gaussianRange.x + gaussianRange.y, params.tileItemCount);
     uint depthKey = floatDepthSortKey(gaussian.centerRadius.z);
-    for (uint tileY = bounds.minTile.y; tileY < bounds.maxTileExclusive.y; ++tileY) {
-        for (uint tileX = bounds.minTile.x; tileX < bounds.maxTileExclusive.x; ++tileX) {
-            if (!trainProjectedGaussianMayContributeToTile(gaussian, uint2(tileX, tileY))) {
+    for (uint tileY = culling.bounds.minTile.y;
+         tileY < culling.bounds.maxTileExclusive.y; ++tileY) {
+        for (uint tileX = culling.bounds.minTile.x;
+             tileX < culling.bounds.maxTileExclusive.x; ++tileX) {
+            if (!trainProjectedGaussianMayContributeToTile(culling, uint2(tileX, tileY))) {
                 continue;
             }
             if (outputIndex < outputEnd) {

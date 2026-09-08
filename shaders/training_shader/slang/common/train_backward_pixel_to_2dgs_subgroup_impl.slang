@@ -117,10 +117,20 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint laneIndex = WaveGetLaneIndex();
     uint subgroupMaxProcessedCount = reducePixelTo2DGSMax(
         processedCount, laneIndex, laneCount);
+    uint subgroupProcessedCountSum = reducePixelTo2DGSUint(
+        processedCount, laneIndex, laneCount);
+    uint subgroupValidPixelCount = reducePixelTo2DGSUint(
+        validPixel ? 1u : 0u, laneIndex, laneCount);
     float2 samplePosition = pixelCenter(pixel);
 
 #if TRAIN_PIXEL_TO_2DGS_ADAPTIVE
-    if (subgroupMaxProcessedCount <= laneCount) {
+    float subgroupCapacity = float(subgroupValidPixelCount) *
+                             float(subgroupMaxProcessedCount);
+    float subgroupUtilization = subgroupCapacity > 0.0
+        ? float(subgroupProcessedCountSum) / subgroupCapacity
+        : 1.0;
+    if (subgroupMaxProcessedCount <= laneCount ||
+        subgroupUtilization < params.pixelTo2DGSMinSubgroupUtilization) {
         if (validPixel) {
             backpropPixelTo2DGSDirect(processedCount,
                                       range,

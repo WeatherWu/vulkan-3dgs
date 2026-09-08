@@ -156,10 +156,14 @@ private:
     float training_scene_radius_scale_ = 1.0f;
     int training_mode_ = 1;
     int training_pixel_to_2dgs_mode_ = 0;
+    float training_pixel_to_2dgs_min_subgroup_utilization_ = 0.5f;
     int training_forward_composite_mode_ = 1;
     uint32_t training_total_iterations_ = 30000;
     uint32_t training_steps_per_frame_ = 1;
     uint32_t training_validation_interval_ = 100;
+    uint32_t training_benchmark_frame_ = 0;
+    uint32_t training_benchmark_warmup_steps_ = 200;
+    uint32_t training_benchmark_measured_steps_ = 1000;
     float training_position_lr_ = 0.00016f;
     float training_position_lr_final_ = 0.0000016f;
     float training_position_lr_delay_mult_ = 0.01f;

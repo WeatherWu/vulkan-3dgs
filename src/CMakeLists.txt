@@ -10,7 +10,7 @@ find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(Ktx CONFIG REQUIRED)
-find_package(COLMAP REQUIRED)
+# find_package(COLMAP REQUIRED)
 
 set(VULKAN_LINK_TARGETS Vulkan::Headers)
 if(TARGET Vulkan::Loader)
@@ -95,9 +95,9 @@ target_link_libraries(vulkan_3dgs_core PRIVATE
     glm::glm
     imgui::imgui
     KTX::ktx
-    colmap::colmap_image
-    colmap::colmap_scene
-    colmap::colmap_sensor
+    # colmap::colmap_image
+    # colmap::colmap_scene
+    # colmap::colmap_sensor
 )
 
 # 编译器选项
