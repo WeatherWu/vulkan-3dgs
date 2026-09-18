@@ -248,34 +248,34 @@ void backwardProjectedColorToSH(inout GaussianGrad gaussianGrad,
     float yz = y * z;
     float xz = x * z;
 
-    gaussianGrad.sh[0].xyz += gradColor * SH_C0;
+    trainAddSHGradient(gaussianGrad, 0u, gradColor * SH_C0);
     if (params.activeSHDegree < 1) {
         return;
     }
 
-    gaussianGrad.sh[1].xyz += gradColor * (-viewDirection.y * SH_C1);
-    gaussianGrad.sh[2].xyz += gradColor * ( viewDirection.z * SH_C1);
-    gaussianGrad.sh[3].xyz += gradColor * (-viewDirection.x * SH_C1);
+    trainAddSHGradient(gaussianGrad, 1u, gradColor * (-viewDirection.y * SH_C1));
+    trainAddSHGradient(gaussianGrad, 2u, gradColor * ( viewDirection.z * SH_C1));
+    trainAddSHGradient(gaussianGrad, 3u, gradColor * (-viewDirection.x * SH_C1));
     if (params.activeSHDegree < 2) {
         return;
     }
 
-    gaussianGrad.sh[4].xyz += gradColor * (SH_C2[0] * xy);
-    gaussianGrad.sh[5].xyz += gradColor * (SH_C2[1] * yz);
-    gaussianGrad.sh[6].xyz += gradColor * (SH_C2[2] * (2.0 * zz - xx - yy));
-    gaussianGrad.sh[7].xyz += gradColor * (SH_C2[3] * xz);
-    gaussianGrad.sh[8].xyz += gradColor * (SH_C2[4] * (xx - yy));
+    trainAddSHGradient(gaussianGrad, 4u, gradColor * (SH_C2[0] * xy));
+    trainAddSHGradient(gaussianGrad, 5u, gradColor * (SH_C2[1] * yz));
+    trainAddSHGradient(gaussianGrad, 6u, gradColor * (SH_C2[2] * (2.0 * zz - xx - yy)));
+    trainAddSHGradient(gaussianGrad, 7u, gradColor * (SH_C2[3] * xz));
+    trainAddSHGradient(gaussianGrad, 8u, gradColor * (SH_C2[4] * (xx - yy)));
     if (params.activeSHDegree < 3) {
         return;
     }
 
-    gaussianGrad.sh[9].xyz += gradColor * (SH_C3[0] * y * (3.0 * xx - yy));
-    gaussianGrad.sh[10].xyz += gradColor * (SH_C3[1] * xy * z);
-    gaussianGrad.sh[11].xyz += gradColor * (SH_C3[2] * y * (4.0 * zz - xx - yy));
-    gaussianGrad.sh[12].xyz += gradColor * (SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy));
-    gaussianGrad.sh[13].xyz += gradColor * (SH_C3[4] * x * (4.0 * zz - xx - yy));
-    gaussianGrad.sh[14].xyz += gradColor * (SH_C3[5] * z * (xx - yy));
-    gaussianGrad.sh[15].xyz += gradColor * (SH_C3[6] * x * (xx - 3.0 * yy));
+    trainAddSHGradient(gaussianGrad, 9u, gradColor * (SH_C3[0] * y * (3.0 * xx - yy)));
+    trainAddSHGradient(gaussianGrad, 10u, gradColor * (SH_C3[1] * xy * z));
+    trainAddSHGradient(gaussianGrad, 11u, gradColor * (SH_C3[2] * y * (4.0 * zz - xx - yy)));
+    trainAddSHGradient(gaussianGrad, 12u, gradColor * (SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy)));
+    trainAddSHGradient(gaussianGrad, 13u, gradColor * (SH_C3[4] * x * (4.0 * zz - xx - yy)));
+    trainAddSHGradient(gaussianGrad, 14u, gradColor * (SH_C3[5] * z * (xx - yy)));
+    trainAddSHGradient(gaussianGrad, 15u, gradColor * (SH_C3[6] * x * (xx - 3.0 * yy)));
 }
 
 float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLoss_dColor) {
@@ -303,11 +303,13 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
         return float3(0.0);
     }
 
+    float3 sh1 = trainGetSHCoefficient(gaussian, 1u);
+    float3 sh2 = trainGetSHCoefficient(gaussian, 2u);
+    float3 sh3 = trainGetSHCoefficient(gaussian, 3u);
     float3 dLoss_dViewDirection = float3(
-        dot(gradColor, -gaussian.sh[3].xyz * SH_C1),
-        dot(gradColor, -gaussian.sh[1].xyz * SH_C1),
-        dot(gradColor,  gaussian.sh[2].xyz * SH_C1)
-    );
+        dot(gradColor, -sh3 * SH_C1),
+        dot(gradColor, -sh1 * SH_C1),
+        dot(gradColor,  sh2 * SH_C1));
 
     float x = viewDirection.x;
     float y = viewDirection.y;
@@ -317,49 +319,61 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
     float zz = z * z;
 
     if (params.activeSHDegree >= 2) {
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[4].xyz) * (SH_C2[0] * y);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[4].xyz) * (SH_C2[0] * x);
+    float3 sh4 = trainGetSHCoefficient(gaussian, 4u);
+    float3 sh5 = trainGetSHCoefficient(gaussian, 5u);
+    float3 sh6 = trainGetSHCoefficient(gaussian, 6u);
+    float3 sh7 = trainGetSHCoefficient(gaussian, 7u);
+    float3 sh8 = trainGetSHCoefficient(gaussian, 8u);
+    dLoss_dViewDirection.x += dot(gradColor, sh4) * (SH_C2[0] * y);
+    dLoss_dViewDirection.y += dot(gradColor, sh4) * (SH_C2[0] * x);
 
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[5].xyz) * (SH_C2[1] * z);
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[5].xyz) * (SH_C2[1] * y);
+    dLoss_dViewDirection.y += dot(gradColor, sh5) * (SH_C2[1] * z);
+    dLoss_dViewDirection.z += dot(gradColor, sh5) * (SH_C2[1] * y);
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[6].xyz) * (-2.0 * SH_C2[2] * x);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[6].xyz) * (-2.0 * SH_C2[2] * y);
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[6].xyz) * (4.0 * SH_C2[2] * z);
+    dLoss_dViewDirection.x += dot(gradColor, sh6) * (-2.0 * SH_C2[2] * x);
+    dLoss_dViewDirection.y += dot(gradColor, sh6) * (-2.0 * SH_C2[2] * y);
+    dLoss_dViewDirection.z += dot(gradColor, sh6) * (4.0 * SH_C2[2] * z);
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[7].xyz) * (SH_C2[3] * z);
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[7].xyz) * (SH_C2[3] * x);
+    dLoss_dViewDirection.x += dot(gradColor, sh7) * (SH_C2[3] * z);
+    dLoss_dViewDirection.z += dot(gradColor, sh7) * (SH_C2[3] * x);
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[8].xyz) * (2.0 * SH_C2[4] * x);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[8].xyz) * (-2.0 * SH_C2[4] * y);
+    dLoss_dViewDirection.x += dot(gradColor, sh8) * (2.0 * SH_C2[4] * x);
+    dLoss_dViewDirection.y += dot(gradColor, sh8) * (-2.0 * SH_C2[4] * y);
     }
 
     if (params.activeSHDegree >= 3) {
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[9].xyz) * (6.0 * SH_C3[0] * x * y);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[9].xyz) * (3.0 * SH_C3[0] * (xx - yy));
+    float3 sh9 = trainGetSHCoefficient(gaussian, 9u);
+    float3 sh10 = trainGetSHCoefficient(gaussian, 10u);
+    float3 sh11 = trainGetSHCoefficient(gaussian, 11u);
+    float3 sh12 = trainGetSHCoefficient(gaussian, 12u);
+    float3 sh13 = trainGetSHCoefficient(gaussian, 13u);
+    float3 sh14 = trainGetSHCoefficient(gaussian, 14u);
+    float3 sh15 = trainGetSHCoefficient(gaussian, 15u);
+    dLoss_dViewDirection.x += dot(gradColor, sh9) * (6.0 * SH_C3[0] * x * y);
+    dLoss_dViewDirection.y += dot(gradColor, sh9) * (3.0 * SH_C3[0] * (xx - yy));
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[10].xyz) * (SH_C3[1] * y * z);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[10].xyz) * (SH_C3[1] * x * z);
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[10].xyz) * (SH_C3[1] * x * y);
+    dLoss_dViewDirection.x += dot(gradColor, sh10) * (SH_C3[1] * y * z);
+    dLoss_dViewDirection.y += dot(gradColor, sh10) * (SH_C3[1] * x * z);
+    dLoss_dViewDirection.z += dot(gradColor, sh10) * (SH_C3[1] * x * y);
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[11].xyz) * (-2.0 * SH_C3[2] * x * y);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[11].xyz) * (SH_C3[2] * (4.0 * zz - xx - 3.0 * yy));
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[11].xyz) * (8.0 * SH_C3[2] * y * z);
+    dLoss_dViewDirection.x += dot(gradColor, sh11) * (-2.0 * SH_C3[2] * x * y);
+    dLoss_dViewDirection.y += dot(gradColor, sh11) * (SH_C3[2] * (4.0 * zz - xx - 3.0 * yy));
+    dLoss_dViewDirection.z += dot(gradColor, sh11) * (8.0 * SH_C3[2] * y * z);
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[12].xyz) * (-6.0 * SH_C3[3] * x * z);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[12].xyz) * (-6.0 * SH_C3[3] * y * z);
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[12].xyz) * (SH_C3[3] * (6.0 * zz - 3.0 * xx - 3.0 * yy));
+    dLoss_dViewDirection.x += dot(gradColor, sh12) * (-6.0 * SH_C3[3] * x * z);
+    dLoss_dViewDirection.y += dot(gradColor, sh12) * (-6.0 * SH_C3[3] * y * z);
+    dLoss_dViewDirection.z += dot(gradColor, sh12) * (SH_C3[3] * (6.0 * zz - 3.0 * xx - 3.0 * yy));
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[13].xyz) * (SH_C3[4] * (4.0 * zz - 3.0 * xx - yy));
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[13].xyz) * (-2.0 * SH_C3[4] * x * y);
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[13].xyz) * (8.0 * SH_C3[4] * x * z);
+    dLoss_dViewDirection.x += dot(gradColor, sh13) * (SH_C3[4] * (4.0 * zz - 3.0 * xx - yy));
+    dLoss_dViewDirection.y += dot(gradColor, sh13) * (-2.0 * SH_C3[4] * x * y);
+    dLoss_dViewDirection.z += dot(gradColor, sh13) * (8.0 * SH_C3[4] * x * z);
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[14].xyz) * (2.0 * SH_C3[5] * x * z);
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[14].xyz) * (-2.0 * SH_C3[5] * y * z);
-    dLoss_dViewDirection.z += dot(gradColor, gaussian.sh[14].xyz) * (SH_C3[5] * (xx - yy));
+    dLoss_dViewDirection.x += dot(gradColor, sh14) * (2.0 * SH_C3[5] * x * z);
+    dLoss_dViewDirection.y += dot(gradColor, sh14) * (-2.0 * SH_C3[5] * y * z);
+    dLoss_dViewDirection.z += dot(gradColor, sh14) * (SH_C3[5] * (xx - yy));
 
-    dLoss_dViewDirection.x += dot(gradColor, gaussian.sh[15].xyz) * (3.0 * SH_C3[6] * (xx - yy));
-    dLoss_dViewDirection.y += dot(gradColor, gaussian.sh[15].xyz) * (-6.0 * SH_C3[6] * x * y);
+    dLoss_dViewDirection.x += dot(gradColor, sh15) * (3.0 * SH_C3[6] * (xx - yy));
+    dLoss_dViewDirection.y += dot(gradColor, sh15) * (-6.0 * SH_C3[6] * x * y);
     }
 
     float3 viewVector = gaussian.positionOpacity.xyz - trainingCamera.cameraPosition.xyz;
@@ -369,4 +383,45 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
     }
 
     return (dLoss_dViewDirection - viewDirection * dot(viewDirection, dLoss_dViewDirection)) / viewLength;
+}
+
+bool projectedGaussianHasBackwardSupport(ProjectedGaussian projectedGaussian) {
+    return projectedGaussian.centerRadius.w > 0.0 &&
+           isfinite(projectedGaussian.centerRadius.w);
+}
+
+void accumulateProjectedGradientToGaussian(
+    GaussianTrainParam gaussian,
+    ProjectedGaussianGrad projectedGrad,
+    inout GaussianGrad grad,
+    inout GaussianDensificationState densification) {
+    ProjectionLocalState projectionState = trainBuildProjectionLocalState(gaussian);
+    float2 dLoss_dCenter = projectedGrad.centerRadius.xy;
+    grad.positionOpacity.xyz += backwardPixelCenterToPosition(
+        projectionState, dLoss_dCenter);
+    grad.positionOpacity.xyz += backwardDepthToPosition(
+        projectedGrad.centerRadius.z);
+    grad.positionOpacity.w += projectedGrad.conicOpacity.w *
+                              trainOpacityActivationBackward(
+                                  gaussian.positionOpacity.w);
+
+    float3x3 dLoss_dCovariancePixel = backwardConicToCovariance(
+        projectionState.covariancePixel, projectedGrad.conicOpacity.xyz);
+    grad.positionOpacity.xyz += backwardCovariancePixelToPosition(
+        projectionState, dLoss_dCovariancePixel);
+    float3x3 dLoss_dCovariance3D = backwardCovariancePixelToCovariance3D(
+        projectionState, dLoss_dCovariancePixel);
+    grad.scale.xyz += backwardCovariance3DToScale(
+        gaussian, dLoss_dCovariance3D);
+    grad.rotation += backwardCovariance3DToRotation(
+        gaussian, dLoss_dCovariance3D);
+
+    grad.positionOpacity.xyz += backwardProjectedColorToPosition(
+        gaussian, projectedGrad.color.xyz);
+    backwardProjectedColorToSH(grad, gaussian, projectedGrad.color.xyz);
+
+    float2 densificationGrad = dLoss_dCenter *
+        (0.5 * max(trainingCamera.viewport.zw, float2(1.0)));
+    densification.screenGradSum += length(densificationGrad);
+    densification.screenGradCount += 1u;
 }

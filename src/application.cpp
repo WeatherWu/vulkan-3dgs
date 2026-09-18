@@ -13,10 +13,14 @@
 #include <cctype>
 #include <cfloat>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
+#include <thread>
 
 #include <ImGuiFileDialog.h>
 namespace vulkan3DGS {
@@ -66,6 +70,60 @@ std::string gpuDisplayLabel(const Device::PhysicalDeviceInfo& info) {
     return stream.str();
 }
 
+std::string formatTrainingDuration(double seconds) {
+    const uint64_t totalMilliseconds = static_cast<uint64_t>(
+        std::max(seconds, 0.0) * 1000.0);
+    const uint64_t milliseconds = totalMilliseconds % 1000u;
+    const uint64_t totalSeconds = totalMilliseconds / 1000u;
+    const uint64_t secondsPart = totalSeconds % 60u;
+    const uint64_t totalMinutes = totalSeconds / 60u;
+    const uint64_t minutesPart = totalMinutes % 60u;
+    const uint64_t hours = totalMinutes / 60u;
+
+    std::ostringstream stream;
+    stream << std::setfill('0') << std::setw(2) << hours << ':'
+           << std::setw(2) << minutesPart << ':'
+           << std::setw(2) << secondsPart << '.'
+           << std::setw(3) << milliseconds;
+    return stream.str();
+}
+
+std::optional<std::filesystem::path> environmentDirectory(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || !value || length <= 1u) {
+        std::free(value);
+        return std::nullopt;
+    }
+    std::filesystem::path path(value);
+    std::free(value);
+    return path;
+#else
+    const char* value = std::getenv(name);
+    if (!value || value[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::filesystem::path(value);
+#endif
+}
+
+std::filesystem::path trainingSettingsPath() {
+#ifdef _WIN32
+    if (auto appData = environmentDirectory("APPDATA")) {
+        return *appData / "vulkan-3dgs" / "training-settings.cfg";
+    }
+#else
+    if (auto configHome = environmentDirectory("XDG_CONFIG_HOME")) {
+        return *configHome / "vulkan-3dgs" / "training-settings.cfg";
+    }
+    if (auto home = environmentDirectory("HOME")) {
+        return *home / ".config" / "vulkan-3dgs" / "training-settings.cfg";
+    }
+#endif
+    return std::filesystem::current_path() / ".vulkan-3dgs-training-settings.cfg";
+}
+
 } // namespace
 
 Application::Application(const std::string& title,
@@ -80,6 +138,17 @@ Application::Application(const std::string& title,
 #endif
     
     LOG_INFO("Initializing Vulkan+3DGS Application");
+
+    copyToInputBuffer(training_dataset_path_, "data/mipnerf360/bicycle");
+    copyToInputBuffer(training_output_dir_, "output");
+    copyToInputBuffer(training_output_name_, "bicycle.ply");
+    loadTrainingSettings();
+
+    const bool usePersistedGpu = !gpuSelector.has_value() &&
+                                 !persisted_training_gpu_selector_.empty();
+    if (usePersistedGpu) {
+        gpuSelector = persisted_training_gpu_selector_;
+    }
     
     Context::initializeVulkanLoader();
 
@@ -103,10 +172,22 @@ Application::Application(const std::string& title,
         drawImGuiControls();
     });
 
-    training_device_ = std::make_unique<Device>(vk::SurfaceKHR{},
-                                                std::move(gpuSelector),
-                                                DeviceRole::Training);
-    training_device_->createDevice();
+    try {
+        training_device_ = std::make_unique<Device>(vk::SurfaceKHR{},
+                                                    std::move(gpuSelector),
+                                                    DeviceRole::Training);
+        training_device_->createDevice();
+    } catch (const std::exception& error) {
+        if (!usePersistedGpu) {
+            throw;
+        }
+        LOG_WARN("Saved training GPU is unavailable ({}); selecting the default GPU",
+                 error.what());
+        training_device_ = std::make_unique<Device>(vk::SurfaceKHR{},
+                                                    std::nullopt,
+                                                    DeviceRole::Training);
+        training_device_->createDevice();
+    }
     syncTrainingGpuSelection();
 
     window_->set_resize_callback([this](int width, int height) {
@@ -133,9 +214,6 @@ Application::Application(const std::string& title,
         handleScroll(xoffset, yoffset);
     });
 
-    copyToInputBuffer(training_dataset_path_, "data/mipnerf360/bicycle");
-    copyToInputBuffer(training_output_dir_, "output");
-    copyToInputBuffer(training_output_name_, "bicycle.ply");
     training_status_ = "Training dataset is not loaded";
     
     initialize();
@@ -157,6 +235,8 @@ void Application::run() {
 void Application::tick() {
     window_->poll_events();
 
+    consumeTrainingWorkerResult();
+
     if (pending_training_gpu_selector_.has_value()) {
         applyPendingTrainingGpuSelection();
     }
@@ -172,7 +252,18 @@ void Application::tick() {
     last_tick_time_ = currentTime;
 
     update(deltaTime);
-    render();
+    bool renderUi = true;
+    if (training_async_active_ && training_pure_active_) {
+        constexpr double pureUiIntervalSeconds = 0.1;
+        renderUi = currentTime - training_pure_last_ui_render_time_ >=
+                   pureUiIntervalSeconds;
+    }
+    if (renderUi) {
+        training_pure_last_ui_render_time_ = currentTime;
+        render();
+    } else {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 void Application::switchRenderMode(RenderMode mode) {
@@ -232,13 +323,16 @@ void Application::initialize() {
 void Application::update(float delta_time) {
     updateOrbitCamera(delta_time);
 
-    if (training_running_) {
+    if (training_running_ && !training_async_active_) {
         try {
-            for (uint32_t i = 0; training_running_ && i < std::max(training_steps_per_frame_, 1u); ++i) {
+            const uint32_t stepBudget = std::max(training_steps_per_frame_, 1u);
+            for (uint32_t i = 0; training_running_ && i < stepBudget; ++i) {
                 runTrainingStepFromUi();
             }
         } catch (const std::exception& error) {
             training_running_ = false;
+            training_pure_active_ = false;
+            stopTrainingTimer();
             setTrainingError(error.what());
         }
     }
@@ -328,6 +422,8 @@ void Application::setTrueCamera(const vulkan3DGS::Camera& camera) {
 }
 
 void Application::cleanup() {
+    stopTrainingWorkerAndJoin();
+    saveTrainingSettings();
     training_.cleanup();
     training_initialized_ = false;
     training_device_.reset();
@@ -614,9 +710,12 @@ void Application::syncTrainingGpuSelection() {
 }
 
 void Application::applyPendingTrainingGpuSelection() {
+    stopTrainingWorkerAndJoin();
     const std::string selector = *pending_training_gpu_selector_;
     pending_training_gpu_selector_.reset();
     training_running_ = false;
+    training_pure_active_ = false;
+    resetTrainingTimer();
 
     try {
         training_.cleanup();
@@ -630,6 +729,7 @@ void Application::applyPendingTrainingGpuSelection() {
         syncTrainingGpuSelection();
 
         const auto& gpu = training_device_->getSelectedPhysicalDeviceInfo();
+        saveTrainingSettings();
         setTrainingStatus("Training GPU selected: [" + std::to_string(gpu.vulkanIndex) +
                           "] " + gpu.name + ". Dataset must be loaded again.");
     } catch (const std::exception& error) {
@@ -708,6 +808,7 @@ void Application::updateModelMatrix() {
 
 void Application::drawTrainingControls() {
     ImGui::Begin("Training");
+    const TrainingUiSnapshot trainingSnapshot = trainingSnapshotForUi();
 
     drawTrainingGpuControl();
     ImGui::Separator();
@@ -721,6 +822,8 @@ void Application::drawTrainingControls() {
         training_dataset_loaded_ = false;
         training_initialized_ = false;
         training_running_ = false;
+        training_pure_active_ = false;
+        resetTrainingTimer();
         training_frame_count_ = 0;
         training_width_ = 0;
         training_height_ = 0;
@@ -738,6 +841,8 @@ void Application::drawTrainingControls() {
         training_dataset_loaded_ = false;
         training_initialized_ = false;
         training_running_ = false;
+        training_pure_active_ = false;
+        resetTrainingTimer();
         training_frame_count_ = 0;
         training_width_ = 0;
         training_height_ = 0;
@@ -794,11 +899,14 @@ void Application::drawTrainingControls() {
             "Auto (Adaptive)",
             "Direct",
             "Workgroup Shared",
-            "Subgroup"
+            "Subgroup",
+            "Tile Gaussian Atomic",
+            "VkSplat Per-Splat",
+            "VkSplat Tensor (Adapted)"
         };
         if (ImGui::Combo("Pixel Backward", &training_pixel_to_2dgs_mode_,
                          pixelBackwardModes, IM_ARRAYSIZE(pixelBackwardModes))) {
-            training_pixel_to_2dgs_mode_ = std::clamp(training_pixel_to_2dgs_mode_, 0, 3);
+            training_pixel_to_2dgs_mode_ = std::clamp(training_pixel_to_2dgs_mode_, 0, 6);
             training_.setPixelTo2DGSMode(
                 static_cast<TrainingPixelTo2DGSMode>(training_pixel_to_2dgs_mode_));
         }
@@ -810,9 +918,24 @@ void Application::drawTrainingControls() {
             training_.setPixelTo2DGSMinSubgroupUtilization(
                 training_pixel_to_2dgs_min_subgroup_utilization_);
         }
-        if (training_.isRendererInitialized()) {
-            const int activePixelBackwardMode = static_cast<int>(training_.activePixelTo2DGSMode());
+        if (trainingSnapshot.rendererInitialized) {
+            const int activePixelBackwardMode = static_cast<int>(trainingSnapshot.activePixelMode);
             ImGui::Text("Active Pixel Backward %s", pixelBackwardModes[activePixelBackwardMode]);
+            if (training_pixel_to_2dgs_mode_ == 4 &&
+                !trainingSnapshot.tileGaussianSupported) {
+                ImGui::TextDisabled(
+                    "Tile Gaussian unavailable on this GPU; using Direct.");
+            }
+            if (training_pixel_to_2dgs_mode_ == 5 &&
+                !trainingSnapshot.vkSplatPerSplatSupported) {
+                ImGui::TextDisabled(
+                    "VkSplat Per-Splat unavailable on this GPU; using Direct.");
+            }
+            if (training_pixel_to_2dgs_mode_ == 6 &&
+                !trainingSnapshot.vkSplatTensorSupported) {
+                ImGui::TextDisabled(
+                    "VkSplat Tensor requires 45 KiB shared memory; using Direct.");
+            }
         }
         const char* forwardCompositeModes[] = {
             "Direct",
@@ -832,15 +955,22 @@ void Application::drawTrainingControls() {
         }
         if (!canEditTrainingSetup) {
             ImGui::EndDisabled();
+            ImGui::BeginDisabled();
         }
-        ImGui::InputScalar("Steps/Frame", ImGuiDataType_U32, &training_steps_per_frame_);
+        ImGui::InputScalar("Benchmark Steps/Frame", ImGuiDataType_U32, &training_steps_per_frame_);
         training_steps_per_frame_ = std::max(training_steps_per_frame_, 1u);
+        ImGui::Checkbox("Pure Training", &training_pure_mode_);
+        if (training_pure_mode_) {
+            ImGui::TextDisabled(
+                "Only elapsed time refreshes; the final PLY is exported automatically.");
+        }
         if (ImGui::InputScalar("Validation Interval",
                                ImGuiDataType_U32,
                                &training_validation_interval_)) {
             training_.setValidationInterval(training_validation_interval_);
         }
         if (!canEditTrainingSetup) {
+            ImGui::EndDisabled();
             ImGui::BeginDisabled();
         }
         ImGui::InputFloat("Position LR", &training_position_lr_, 0.00001f, 0.0001f, "%.6g");
@@ -920,18 +1050,30 @@ void Application::drawTrainingControls() {
         ImGui::BeginDisabled();
     }
 
-    const bool benchmarkActive = training_.isFixedWorkloadBenchmarkActive();
-    const char* primaryTrainingButtonLabel = benchmarkActive
+    const bool benchmarkActive = trainingSnapshot.fixedBenchmark.active;
+    const char* primaryTrainingButtonLabel = training_stop_requested_
+        ? "Stopping Training..."
+        : benchmarkActive
         ? "Stop Benchmark"
         : (training_running_ ? "Pause Training" : "Start Training");
+    if (training_stop_requested_) {
+        ImGui::BeginDisabled();
+    }
     if (ImGui::Button(primaryTrainingButtonLabel)) {
         if (training_running_) {
             if (benchmarkActive) {
                 training_.stopFixedWorkloadBenchmark();
+                training_running_ = false;
+                setTrainingStatus("Fixed workload benchmark stopped.");
+            } else if (training_async_active_) {
+                requestTrainingWorkerStop();
+                setTrainingStatus("Training pause requested; waiting for the current step.");
+            } else {
+                stopTrainingTimer();
+                training_running_ = false;
+                training_pure_active_ = false;
+                setTrainingStatus("Training paused.");
             }
-            training_running_ = false;
-            setTrainingStatus(benchmarkActive ? "Fixed workload benchmark stopped."
-                                              : "Training paused.");
         } else {
             try {
                 if (!training_dataset_loaded_) {
@@ -942,13 +1084,23 @@ void Application::drawTrainingControls() {
                 }
                 applyTrainingConfigFromUi();
                 initializeTrainingIfNeeded();
-                training_running_ = true;
-                setTrainingStatus("Training started.");
+                if (trainingSnapshot.trainingIteration == 0u) {
+                    resetTrainingTimer();
+                }
+                startTrainingTimer();
+                saveTrainingSettings();
+                startTrainingWorker(training_pure_mode_);
+                setTrainingStatus(training_pure_mode_
+                    ? "Pure asynchronous training started; only elapsed time updates until completion."
+                    : "Asynchronous training started.");
             } catch (const std::exception& error) {
-                training_running_ = false;
+                stopTrainingWorkerAndJoin();
                 setTrainingError(error.what());
             }
         }
+    }
+    if (training_stop_requested_) {
+        ImGui::EndDisabled();
     }
 
     if (!training_running_) {
@@ -968,10 +1120,12 @@ void Application::drawTrainingControls() {
                 benchmarkConfig.warmupSteps = training_benchmark_warmup_steps_;
                 benchmarkConfig.measuredSteps = training_benchmark_measured_steps_;
                 training_.startFixedWorkloadBenchmark(benchmarkConfig);
+                training_pure_active_ = false;
                 training_running_ = true;
                 setTrainingStatus("Fixed workload benchmark started.");
             } catch (const std::exception& error) {
                 training_running_ = false;
+                training_pure_active_ = false;
                 setTrainingError(error.what());
             }
         }
@@ -994,13 +1148,28 @@ void Application::drawTrainingControls() {
         ImGui::TextWrapped("Start Training will validate and load the dataset first.");
     }
 
-    if (training_.totalIterations() > 0) {
-        ImGui::Text("Iterations %u / %u", training_.trainingIteration(), training_.totalIterations());
-    } else {
-        ImGui::Text("Iterations %u", training_.trainingIteration());
+    const bool pureWorkerRunning = training_async_active_ && training_pure_active_;
+    if (!pureWorkerRunning) {
+        if (trainingSnapshot.totalIterations > 0) {
+            ImGui::Text("Iterations %u / %u", trainingSnapshot.trainingIteration, trainingSnapshot.totalIterations);
+        } else {
+            ImGui::Text("Iterations %u", trainingSnapshot.trainingIteration);
+        }
+        const uint64_t displayedSteps = training_async_active_
+            ? static_cast<uint64_t>(trainingSnapshot.trainingIteration)
+            : training_steps_done_;
+        ImGui::Text("Steps %llu", static_cast<unsigned long long>(displayedSteps));
     }
-    ImGui::Text("Steps %llu", static_cast<unsigned long long>(training_steps_done_));
-    ImGui::Text("Gaussians %u", training_.gaussianCount());
+    const std::string trainingElapsed = formatTrainingDuration(trainingElapsedSeconds());
+    ImGui::Text("Total training time %s%s",
+                trainingElapsed.c_str(),
+                training_timer_running_ ? " (running)" : "");
+    if (!pureWorkerRunning) {
+        ImGui::Text("Gaussians %u", trainingSnapshot.gaussianCount);
+    } else {
+        ImGui::TextDisabled(
+            "Pure mode: detailed training data will be published after completion.");
+    }
     if (!training_running_) {
         ImGui::InputScalar("Benchmark Frame", ImGuiDataType_U32, &training_benchmark_frame_);
         if (training_frame_count_ > 0u) {
@@ -1014,7 +1183,7 @@ void Application::drawTrainingControls() {
                            &training_benchmark_measured_steps_);
         training_benchmark_measured_steps_ = std::max(training_benchmark_measured_steps_, 1u);
     }
-    const auto& benchmark = training_.fixedWorkloadBenchmarkStats();
+    const auto& benchmark = trainingSnapshot.fixedBenchmark;
     if (benchmark.active || benchmark.complete || benchmark.completedWarmupSteps > 0u ||
         benchmark.completedMeasuredSteps > 0u) {
         ImGui::Text("Fixed benchmark frame %u, warmup %u/%u, measured %u/%u, %s",
@@ -1025,8 +1194,9 @@ void Application::drawTrainingControls() {
                     benchmark.measuredSteps,
                     benchmark.active ? "running" : (benchmark.complete ? "complete" : "stopped"));
     }
-    const auto& densification = training_.densificationStats();
-    const uint32_t densificationIteration = training_.densificationStatsIteration();
+    if (!pureWorkerRunning) {
+    const auto& densification = trainingSnapshot.densification;
+    const uint32_t densificationIteration = trainingSnapshot.densificationIteration;
     if (densificationIteration > 0) {
         ImGui::Text("Densify/prune iter %u, output %u", densificationIteration, densification.outputCount);
         ImGui::Text("Densify kept %u, cloned %u, split %u, pruned %u",
@@ -1041,7 +1211,7 @@ void Application::drawTrainingControls() {
     } else {
         ImGui::Text("Densify/prune not run yet");
     }
-    const auto& validation = training_.validationStats();
+    const auto& validation = trainingSnapshot.validation;
     ImGui::Text("Loss %.6g", validation.meanLoss);
     ImGui::Text("Render alpha %.6g", validation.meanRenderedAlpha);
     ImGui::Text("Tile items %u", validation.tileItemCount);
@@ -1049,7 +1219,7 @@ void Application::drawTrainingControls() {
                 validation.meanProcessedCandidatesPerPixel,
                 validation.meanContributorsPerPixel,
                 validation.maxProcessedCandidatesPerPixel);
-    const auto& candidateProfile = training_.candidateProfileStats();
+    const auto& candidateProfile = trainingSnapshot.candidateProfile;
     if (candidateProfile.sampleCount > 0u) {
         const float emptyCandidatePercent = candidateProfile.meanProcessedCandidatesPerPixel > 0.0f
             ? 100.0f * (1.0f - candidateProfile.meanContributorsPerPixel /
@@ -1072,7 +1242,7 @@ void Application::drawTrainingControls() {
                     100.0f * candidateProfile.meanPixelFractionByProcessedBucket[6],
                     100.0f * candidateProfile.meanPixelFractionByProcessedBucket[7]);
     }
-    if (!validation.valid && training_steps_done_ > 0) {
+    if (!validation.valid && trainingSnapshot.trainingIteration > 0u) {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f),
                            "Validation issue: invalid loss %u, invalid pixels %u, non-finite gaussians %u",
                            validation.invalidLossCount,
@@ -1114,14 +1284,16 @@ void Application::drawTrainingControls() {
             "Backward clear",
             "Loss to pixel",
             "Pixel to 2DGS",
+            "Tile-local backward",
             "2DGS to 3DGS",
+            "Fused projection/optimizer",
             "Optimizer",
             "Validation",
             "Densify/prune",
         };
         static_assert(sizeof(cpuStageNames) / sizeof(cpuStageNames[0]) == kTrainingCpuProfileStageCount);
         static_assert(sizeof(gpuStageNames) / sizeof(gpuStageNames[0]) == kTrainingGpuProfileStageCount);
-        const auto& profiling = training_.profilingStats();
+        const auto& profiling = trainingSnapshot.profiling;
         ImGui::Text("CPU last / average (ms)");
         for (size_t i = 0; i < kTrainingCpuProfileStageCount; ++i) {
             const auto& timing = profiling.cpu[i];
@@ -1140,7 +1312,7 @@ void Application::drawTrainingControls() {
         }
     }
     if (ImGui::CollapsingHeader("Image Cache", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const ImageStreamerStats cacheStats = training_.imageCacheStats();
+        const ImageStreamerStats cacheStats = trainingSnapshot.imageCache;
         constexpr double bytesPerMiB = 1024.0 * 1024.0;
         ImGui::Text("Host %.1f / %.1f MiB, %llu images",
                     static_cast<double>(cacheStats.hostCachedBytes) / bytesPerMiB,
@@ -1166,7 +1338,7 @@ void Application::drawTrainingControls() {
                     static_cast<unsigned long long>(cacheStats.disk.cachedFiles),
                     static_cast<unsigned long long>(cacheStats.disk.recoveries),
                     static_cast<unsigned long long>(cacheStats.disk.evictions));
-        const DeviceImageCacheStats deviceCacheStats = training_.deviceImageCacheStats();
+        const DeviceImageCacheStats deviceCacheStats = trainingSnapshot.deviceImageCache;
         static constexpr const char* deviceCacheModes[] = {"Streaming", "Partial", "Full"};
         const uint32_t deviceMode = std::min(static_cast<uint32_t>(deviceCacheStats.mode), 2u);
         ImGui::Text("GPU %s %.1f / %.1f MiB, %u resident / %u slots / %u total",
@@ -1195,10 +1367,14 @@ void Application::drawTrainingControls() {
         }
     }
     ImGui::Text("Frame %llu / %u",
-                static_cast<unsigned long long>(training_.hasDataset() ? training_.currentFrameIndex() : 0),
+                static_cast<unsigned long long>(trainingSnapshot.currentFrameIndex),
                 training_frame_count_);
+    }
 
     ImGui::Separator();
+    if (training_running_) {
+        ImGui::BeginDisabled();
+    }
     ImGui::InputText("Output Folder", training_output_dir_.data(), training_output_dir_.size());
     ImGui::SameLine();
     if (ImGui::Button("Browse##OutputFolder")) {
@@ -1211,6 +1387,9 @@ void Application::drawTrainingControls() {
     ImGui::SameLine();
     if (ImGui::Button("Save As")) {
         saveTrainingPlyAsFromUi();
+    }
+    if (training_running_) {
+        ImGui::EndDisabled();
     }
 
     if (!training_status_.empty()) {
@@ -1229,7 +1408,9 @@ void Application::drawTrainingControls() {
         ImGui::EndPopup();
     }
 
-    drawTrainingFileDialogs();
+    if (!training_running_) {
+        drawTrainingFileDialogs();
+    }
     ImGui::End();
 }
 
@@ -1265,7 +1446,10 @@ void Application::validateTrainingDatasetFromUi() {
 }
 
 void Application::loadTrainingDatasetFromUi() {
+    stopTrainingWorkerAndJoin();
     training_running_ = false;
+    training_pure_active_ = false;
+    resetTrainingTimer();
     training_dataset_loaded_ = false;
     training_initialized_ = false;
 
@@ -1339,15 +1523,181 @@ void Application::initializeTrainingIfNeeded() {
     training_initialized_ = true;
 }
 
+Application::TrainingUiSnapshot Application::captureTrainingSnapshot() const {
+    TrainingUiSnapshot snapshot{};
+    snapshot.rendererInitialized = training_.isRendererInitialized();
+    snapshot.hasDataset = training_.hasDataset();
+    snapshot.hasTrainableModel = training_.hasTrainableModel();
+    snapshot.trainingComplete = training_.isTrainingComplete();
+    snapshot.subgroupSupported = training_.subgroupPixelTo2DGSSupported();
+    snapshot.tileGaussianSupported = training_.tileGaussianPixelTo2DGSSupported();
+    snapshot.vkSplatPerSplatSupported = training_.vkSplatPerSplatSupported();
+    snapshot.vkSplatTensorSupported = training_.vkSplatTensorSupported();
+    snapshot.activePixelMode = training_.activePixelTo2DGSMode();
+    snapshot.gaussianCount = training_.gaussianCount();
+    snapshot.trainingIteration = training_.trainingIteration();
+    snapshot.totalIterations = training_.totalIterations();
+    snapshot.densificationIteration = training_.densificationStatsIteration();
+    snapshot.currentFrameIndex = snapshot.hasDataset
+        ? training_.currentFrameIndex()
+        : 0u;
+    snapshot.fixedBenchmark = training_.fixedWorkloadBenchmarkStats();
+    snapshot.validation = training_.validationStats();
+    snapshot.candidateProfile = training_.candidateProfileStats();
+    snapshot.densification = training_.densificationStats();
+    snapshot.profiling = training_.profilingStats();
+    snapshot.imageCache = training_.imageCacheStats();
+    snapshot.deviceImageCache = training_.deviceImageCacheStats();
+    return snapshot;
+}
+
+void Application::publishTrainingSnapshot() {
+    TrainingUiSnapshot snapshot = captureTrainingSnapshot();
+    std::lock_guard lock(training_snapshot_mutex_);
+    training_snapshot_ = std::move(snapshot);
+    training_snapshot_valid_ = true;
+}
+
+Application::TrainingUiSnapshot Application::trainingSnapshotForUi() const {
+    {
+        std::lock_guard lock(training_snapshot_mutex_);
+        if (training_snapshot_valid_ && training_async_active_) {
+            return training_snapshot_;
+        }
+    }
+    return captureTrainingSnapshot();
+}
+
+void Application::startTrainingWorker(bool pure) {
+    if (training_worker_.joinable()) {
+        training_worker_.join();
+    }
+    training_worker_result_ready_.store(false, std::memory_order_release);
+    training_async_active_ = true;
+    training_stop_requested_ = false;
+    training_pure_active_ = pure;
+    training_running_ = true;
+    training_pure_last_ui_render_time_ = 0.0;
+    publishTrainingSnapshot();
+    training_worker_ = std::jthread(
+        [this, pure](std::stop_token stopToken) {
+            trainingWorkerMain(stopToken, pure);
+        });
+}
+
+void Application::trainingWorkerMain(std::stop_token stopToken, bool pure) {
+    TrainingWorkerResult result{};
+    result.pure = pure;
+    try {
+        uint32_t stepsSinceSnapshot = 0u;
+        while (!stopToken.stop_requested() && !training_.isTrainingComplete()) {
+            training_.trainStep();
+            ++stepsSinceSnapshot;
+            if (!pure && stepsSinceSnapshot >= 32u) {
+                publishTrainingSnapshot();
+                stepsSinceSnapshot = 0u;
+            }
+        }
+        result.completed = training_.isTrainingComplete();
+    } catch (const std::exception& error) {
+        result.error = error.what();
+    } catch (...) {
+        result.error = "Unknown exception in asynchronous training worker";
+    }
+
+    result.finishedAt = std::chrono::steady_clock::now();
+    try {
+        publishTrainingSnapshot();
+    } catch (const std::exception& error) {
+        if (result.error.empty()) {
+            result.error = std::string("Failed to publish final training snapshot: ") +
+                           error.what();
+        }
+    }
+    {
+        std::lock_guard lock(training_worker_result_mutex_);
+        training_worker_result_ = std::move(result);
+    }
+    training_worker_result_ready_.store(true, std::memory_order_release);
+}
+
+void Application::requestTrainingWorkerStop() {
+    if (!training_async_active_ || !training_worker_.joinable()) {
+        return;
+    }
+    training_stop_requested_ = true;
+    training_worker_.request_stop();
+}
+
+void Application::stopTrainingWorkerAndJoin() {
+    if (training_worker_.joinable()) {
+        training_worker_.request_stop();
+        training_worker_.join();
+    }
+    training_worker_result_ready_.store(false, std::memory_order_release);
+    training_async_active_ = false;
+    training_stop_requested_ = false;
+    training_running_ = false;
+    training_pure_active_ = false;
+    stopTrainingTimer();
+}
+
+void Application::consumeTrainingWorkerResult() {
+    if (!training_worker_result_ready_.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (training_worker_.joinable()) {
+        training_worker_.join();
+    }
+
+    TrainingWorkerResult result{};
+    {
+        std::lock_guard lock(training_worker_result_mutex_);
+        result = training_worker_result_;
+    }
+    training_worker_result_ready_.store(false, std::memory_order_release);
+    training_async_active_ = false;
+    training_stop_requested_ = false;
+    stopTrainingTimerAt(result.finishedAt);
+
+    TrainingUiSnapshot snapshot{};
+    {
+        std::lock_guard lock(training_snapshot_mutex_);
+        snapshot = training_snapshot_;
+    }
+    training_steps_done_ = snapshot.trainingIteration;
+
+    if (!result.error.empty()) {
+        training_running_ = false;
+        training_pure_active_ = false;
+        setTrainingError(result.error);
+        return;
+    }
+    if (result.completed) {
+        try {
+            finishTrainingRun();
+        } catch (const std::exception& error) {
+            training_running_ = false;
+            training_pure_active_ = false;
+            setTrainingError(error.what());
+        }
+        return;
+    }
+
+    training_running_ = false;
+    training_pure_active_ = false;
+    setTrainingStatus("Training paused at " +
+                      std::to_string(snapshot.trainingIteration) +
+                      " iterations after " +
+                      formatTrainingDuration(trainingElapsedSeconds()) + ".");
+}
+
 void Application::runTrainingStepFromUi() {
     if (!training_dataset_loaded_) {
         throw std::runtime_error("Load a training dataset before starting training");
     }
     if (!training_.isFixedWorkloadBenchmarkActive() && training_.isTrainingComplete()) {
-        training_running_ = false;
-        setTrainingStatus("Training completed at " +
-                          std::to_string(training_.trainingIteration()) +
-                          " iterations.");
+        finishTrainingRun();
         return;
     }
     training_.trainStep();
@@ -1361,11 +1711,31 @@ void Application::runTrainingStepFromUi() {
         return;
     }
     if (training_.isTrainingComplete()) {
-        training_running_ = false;
-        setTrainingStatus("Training completed at " +
-                          std::to_string(training_.trainingIteration()) +
-                          " iterations.");
+        finishTrainingRun();
     }
+}
+
+void Application::finishTrainingRun() {
+    const bool completedPureTraining = training_pure_active_;
+    training_running_ = false;
+    training_pure_active_ = false;
+    stopTrainingTimer();
+
+    std::string status = "Training completed at " +
+                         std::to_string(training_.trainingIteration()) +
+                         " iterations in " +
+                         formatTrainingDuration(trainingElapsedSeconds()) + ".";
+    if (completedPureTraining) {
+        std::filesystem::path outputPath = outputPlyPath();
+        if (outputPath.extension().empty()) {
+            outputPath += ".ply";
+        }
+        if (!training_.exportToPLY(outputPath)) {
+            throw std::runtime_error("Failed to export PLY: " + outputPath.string());
+        }
+        status += " Saved PLY: " + outputPath.string();
+    }
+    setTrainingStatus(status);
 }
 
 void Application::exportTrainingModelFromUi() {
@@ -1487,7 +1857,7 @@ void Application::applyTrainingConfigFromUi() {
     training_total_iterations_ = scheduleConfig.totalIterations > 0 ? scheduleConfig.totalIterations : 30000u;
     training_.setScheduleConfig(scheduleConfig);
     training_.setPixelTo2DGSMode(
-        static_cast<TrainingPixelTo2DGSMode>(std::clamp(training_pixel_to_2dgs_mode_, 0, 3)));
+        static_cast<TrainingPixelTo2DGSMode>(std::clamp(training_pixel_to_2dgs_mode_, 0, 6)));
     training_.setPixelTo2DGSMinSubgroupUtilization(
         training_pixel_to_2dgs_min_subgroup_utilization_);
     training_.setForwardCompositeMode(
@@ -1551,6 +1921,213 @@ void Application::applyTrainingDensificationConfigFromUi() {
     config.screenSizePruneThreshold = std::max(training_screen_size_prune_threshold_, 0.0f);
     config.worldSizePruneThreshold = std::max(training_world_size_prune_threshold_, 0.0f);
     training_.setDensificationConfig(config);
+}
+
+void Application::loadTrainingSettings() {
+    const std::filesystem::path path = trainingSettingsPath();
+    std::ifstream input(path);
+    if (!input.is_open()) {
+        return;
+    }
+
+    std::string line;
+    while (std::getline(input, line)) {
+        std::istringstream row(line);
+        std::string key;
+        row >> key;
+        if (key.empty() || key[0] == '#') {
+            continue;
+        }
+
+        if (key == "dataset") {
+            std::string value;
+            if (row >> std::quoted(value)) copyToInputBuffer(training_dataset_path_, value);
+        } else if (key == "output_dir") {
+            std::string value;
+            if (row >> std::quoted(value)) copyToInputBuffer(training_output_dir_, value);
+        } else if (key == "output_name") {
+            std::string value;
+            if (row >> std::quoted(value)) copyToInputBuffer(training_output_name_, value);
+        } else if (key == "gpu_selector") {
+            row >> std::quoted(persisted_training_gpu_selector_);
+        } else if (key == "downscale") row >> training_downscale_;
+        else if (key == "initial_gaussians") row >> training_initial_gaussians_;
+        else if (key == "random_seed") row >> training_random_seed_;
+        else if (key == "initial_opacity") row >> training_initial_opacity_;
+        else if (key == "scene_radius_scale") row >> training_scene_radius_scale_;
+        else if (key == "training_mode") row >> training_mode_;
+        else if (key == "pixel_to_2dgs_mode") row >> training_pixel_to_2dgs_mode_;
+        else if (key == "pixel_to_2dgs_min_subgroup_utilization") row >> training_pixel_to_2dgs_min_subgroup_utilization_;
+        else if (key == "forward_composite_mode") row >> training_forward_composite_mode_;
+        else if (key == "total_iterations") row >> training_total_iterations_;
+        else if (key == "steps_per_frame") row >> training_steps_per_frame_;
+        else if (key == "validation_interval") row >> training_validation_interval_;
+        else if (key == "benchmark_frame") row >> training_benchmark_frame_;
+        else if (key == "benchmark_warmup") row >> training_benchmark_warmup_steps_;
+        else if (key == "benchmark_measured") row >> training_benchmark_measured_steps_;
+        else if (key == "pure_training") {
+            int value = 0;
+            if (row >> value) training_pure_mode_ = value != 0;
+        } else if (key == "position_lr") row >> training_position_lr_;
+        else if (key == "position_lr_final") row >> training_position_lr_final_;
+        else if (key == "position_lr_delay_mult") row >> training_position_lr_delay_mult_;
+        else if (key == "position_lr_delay_steps") row >> training_position_lr_delay_steps_;
+        else if (key == "position_lr_max_steps") row >> training_position_lr_max_steps_;
+        else if (key == "feature_lr") row >> training_feature_lr_;
+        else if (key == "feature_rest_lr") row >> training_feature_rest_lr_;
+        else if (key == "opacity_lr") row >> training_opacity_lr_;
+        else if (key == "scale_lr") row >> training_scale_lr_;
+        else if (key == "rotation_lr") row >> training_rotation_lr_;
+        else if (key == "adam_beta1") row >> training_adam_beta1_;
+        else if (key == "adam_beta2") row >> training_adam_beta2_;
+        else if (key == "adam_epsilon") row >> training_adam_epsilon_;
+        else if (key == "grad_clip") row >> training_grad_clip_;
+        else if (key == "loss_dssim_weight") row >> training_loss_dssim_weight_;
+        else if (key == "max_sh_degree") row >> training_max_sh_degree_;
+        else if (key == "sh_degree_interval") row >> training_sh_degree_interval_;
+        else if (key == "densification_enabled") {
+            int value = 0;
+            if (row >> value) training_densification_enabled_ = value != 0;
+        } else if (key == "densify_from_iteration") row >> training_densify_from_iteration_;
+        else if (key == "densify_until_iteration") row >> training_densify_until_iteration_;
+        else if (key == "densification_interval") row >> training_densification_interval_;
+        else if (key == "opacity_reset_interval") row >> training_opacity_reset_interval_;
+        else if (key == "max_gaussians") row >> training_max_gaussians_;
+        else if (key == "split_children") row >> training_split_children_;
+        else if (key == "densify_grad_threshold") row >> training_densify_grad_threshold_;
+        else if (key == "min_opacity") row >> training_min_opacity_;
+        else if (key == "percent_dense") row >> training_percent_dense_;
+        else if (key == "screen_prune_size") row >> training_screen_size_prune_threshold_;
+        else if (key == "world_prune_size") row >> training_world_size_prune_threshold_;
+    }
+
+    training_downscale_ = std::clamp(training_downscale_, 1, 16);
+    training_mode_ = std::clamp(training_mode_, 0, 1);
+    training_pixel_to_2dgs_mode_ = std::clamp(training_pixel_to_2dgs_mode_, 0, 6);
+    training_pixel_to_2dgs_min_subgroup_utilization_ = std::clamp(
+        training_pixel_to_2dgs_min_subgroup_utilization_, 0.0f, 1.0f);
+    training_forward_composite_mode_ = std::clamp(training_forward_composite_mode_, 0, 1);
+    training_steps_per_frame_ = std::max(training_steps_per_frame_, 1u);
+    training_benchmark_measured_steps_ = std::max(training_benchmark_measured_steps_, 1u);
+    training_max_sh_degree_ = std::min(training_max_sh_degree_, 3u);
+    training_sh_degree_interval_ = std::max(training_sh_degree_interval_, 1u);
+    training_split_children_ = std::clamp(training_split_children_, 2u, 8u);
+
+    LOG_INFO("Loaded training settings from {}", path.string());
+}
+
+void Application::saveTrainingSettings() const {
+    try {
+        const std::filesystem::path path = trainingSettingsPath();
+        if (path.has_parent_path()) {
+            std::filesystem::create_directories(path.parent_path());
+        }
+        std::ofstream output(path, std::ios::trunc);
+        if (!output.is_open()) {
+            LOG_WARN("Could not save training settings to {}", path.string());
+            return;
+        }
+
+        std::string gpuSelector = persisted_training_gpu_selector_;
+        if (training_device_) {
+            const auto& gpu = training_device_->getSelectedPhysicalDeviceInfo();
+            gpuSelector = gpu.uuid.empty() ? std::to_string(gpu.vulkanIndex) : gpu.uuid;
+        }
+
+        output << std::setprecision(std::numeric_limits<float>::max_digits10);
+        output << "version 1\n";
+        output << "dataset " << std::quoted(inputBufferString(training_dataset_path_)) << '\n';
+        output << "output_dir " << std::quoted(inputBufferString(training_output_dir_)) << '\n';
+        output << "output_name " << std::quoted(inputBufferString(training_output_name_)) << '\n';
+        output << "gpu_selector " << std::quoted(gpuSelector) << '\n';
+        output << "downscale " << training_downscale_ << '\n';
+        output << "initial_gaussians " << training_initial_gaussians_ << '\n';
+        output << "random_seed " << training_random_seed_ << '\n';
+        output << "initial_opacity " << training_initial_opacity_ << '\n';
+        output << "scene_radius_scale " << training_scene_radius_scale_ << '\n';
+        output << "training_mode " << training_mode_ << '\n';
+        output << "pixel_to_2dgs_mode " << training_pixel_to_2dgs_mode_ << '\n';
+        output << "pixel_to_2dgs_min_subgroup_utilization " << training_pixel_to_2dgs_min_subgroup_utilization_ << '\n';
+        output << "forward_composite_mode " << training_forward_composite_mode_ << '\n';
+        output << "total_iterations " << training_total_iterations_ << '\n';
+        output << "steps_per_frame " << training_steps_per_frame_ << '\n';
+        output << "validation_interval " << training_validation_interval_ << '\n';
+        output << "benchmark_frame " << training_benchmark_frame_ << '\n';
+        output << "benchmark_warmup " << training_benchmark_warmup_steps_ << '\n';
+        output << "benchmark_measured " << training_benchmark_measured_steps_ << '\n';
+        output << "pure_training " << (training_pure_mode_ ? 1 : 0) << '\n';
+        output << "position_lr " << training_position_lr_ << '\n';
+        output << "position_lr_final " << training_position_lr_final_ << '\n';
+        output << "position_lr_delay_mult " << training_position_lr_delay_mult_ << '\n';
+        output << "position_lr_delay_steps " << training_position_lr_delay_steps_ << '\n';
+        output << "position_lr_max_steps " << training_position_lr_max_steps_ << '\n';
+        output << "feature_lr " << training_feature_lr_ << '\n';
+        output << "feature_rest_lr " << training_feature_rest_lr_ << '\n';
+        output << "opacity_lr " << training_opacity_lr_ << '\n';
+        output << "scale_lr " << training_scale_lr_ << '\n';
+        output << "rotation_lr " << training_rotation_lr_ << '\n';
+        output << "adam_beta1 " << training_adam_beta1_ << '\n';
+        output << "adam_beta2 " << training_adam_beta2_ << '\n';
+        output << "adam_epsilon " << training_adam_epsilon_ << '\n';
+        output << "grad_clip " << training_grad_clip_ << '\n';
+        output << "loss_dssim_weight " << training_loss_dssim_weight_ << '\n';
+        output << "max_sh_degree " << training_max_sh_degree_ << '\n';
+        output << "sh_degree_interval " << training_sh_degree_interval_ << '\n';
+        output << "densification_enabled " << (training_densification_enabled_ ? 1 : 0) << '\n';
+        output << "densify_from_iteration " << training_densify_from_iteration_ << '\n';
+        output << "densify_until_iteration " << training_densify_until_iteration_ << '\n';
+        output << "densification_interval " << training_densification_interval_ << '\n';
+        output << "opacity_reset_interval " << training_opacity_reset_interval_ << '\n';
+        output << "max_gaussians " << training_max_gaussians_ << '\n';
+        output << "split_children " << training_split_children_ << '\n';
+        output << "densify_grad_threshold " << training_densify_grad_threshold_ << '\n';
+        output << "min_opacity " << training_min_opacity_ << '\n';
+        output << "percent_dense " << training_percent_dense_ << '\n';
+        output << "screen_prune_size " << training_screen_size_prune_threshold_ << '\n';
+        output << "world_prune_size " << training_world_size_prune_threshold_ << '\n';
+    } catch (const std::exception& error) {
+        LOG_WARN("Could not save training settings: {}", error.what());
+    }
+}
+
+void Application::startTrainingTimer() {
+    if (training_timer_running_) {
+        return;
+    }
+    training_timer_started_at_ = std::chrono::steady_clock::now();
+    training_timer_running_ = true;
+}
+
+void Application::stopTrainingTimer() {
+    stopTrainingTimerAt(std::chrono::steady_clock::now());
+}
+
+void Application::stopTrainingTimerAt(
+    std::chrono::steady_clock::time_point endTime) {
+    if (!training_timer_running_) {
+        return;
+    }
+    if (endTime > training_timer_started_at_) {
+        training_elapsed_seconds_ +=
+            std::chrono::duration<double>(
+                endTime - training_timer_started_at_).count();
+    }
+    training_timer_running_ = false;
+}
+
+void Application::resetTrainingTimer() {
+    training_elapsed_seconds_ = 0.0;
+    training_timer_started_at_ = {};
+    training_timer_running_ = false;
+}
+
+double Application::trainingElapsedSeconds() const {
+    if (!training_timer_running_) {
+        return training_elapsed_seconds_;
+    }
+    return training_elapsed_seconds_ +
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - training_timer_started_at_).count();
 }
 
 void Application::setTrainingStatus(const std::string& message) {

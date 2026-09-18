@@ -63,6 +63,7 @@ set(TRAINING_SHADER_COMMON_DEPS
     "${TRAINING_SHADER_COMMON_DIR}/train_backward_types.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_backward_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_backward_project_common.slang"
+    "${TRAINING_SHADER_COMMON_DIR}/train_optimizer_common.slang"
 )
 
 function(compile_slang_shader SHADER_SRC SHADER_STAGE OUTPUT_BASENAME)
@@ -173,7 +174,16 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2
                         "train_backward_pixel_to_2dgs_subgroup.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs_adaptive.comp.slang"
                         "train_backward_pixel_to_2dgs_adaptive.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_tile_gaussian_atomic.comp.slang"
+                        "train_backward_tile_gaussian_atomic.comp"
+                        "${TRAINING_SHADER_COMMON_DIR}/train_backward_tile_gaussian_impl.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_per_splat.comp.slang"
+                        "train_backward_vksplat_per_splat.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang"
+                        "train_backward_vksplat_tensor.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer.comp.slang"
+                        "train_backward_2dgs_to_3dgs_optimizer.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
 compile_training_shader("${TRAINING_SHADER_VALIDATION_DIR}/train_gaussian_validation.comp.slang"
                         "train_gaussian_validation.comp")

@@ -26,6 +26,9 @@ public:
     void setProfilingQueryPool(vk::QueryPool queryPool);
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) { pixelTo2DGSMode_ = mode; }
     bool subgroupPixelTo2DGSSupported() const { return subgroupPixelTo2DGSSupported_; }
+    bool tileGaussianPixelTo2DGSSupported() const { return tileGaussianPixelTo2DGSSupported_; }
+    bool vkSplatPerSplatSupported() const { return vkSplatPerSplatSupported_; }
+    bool vkSplatTensorSupported() const { return vkSplatTensorSupported_; }
     TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
     void backward() override;
     void gradientDescent() override;
@@ -41,7 +44,9 @@ private:
     void clearBackwardBuffers();
     void computeLossToPixel();
     void backpropPixelTo2DGS();
+    void backpropTileGaussian();
     void backprop2DGSTo3DGS();
+    void backprop2DGSTo3DGSAndOptimize();
     void optimizeParameters();
     void validateGaussians();
     void finalizeValidation();
@@ -62,7 +67,11 @@ private:
     ComputePipeline pixelTo2DGSWorkgroupPipeline_;
     ComputePipeline pixelTo2DGSSubgroupPipeline_;
     ComputePipeline pixelTo2DGSAdaptivePipeline_;
+    ComputePipeline tileGaussianAtomicPipeline_;
+    ComputePipeline vkSplatPerSplatPipeline_;
+    ComputePipeline vkSplatTensorPipeline_;
     ComputePipeline twoDGSTo3DGSPipeline_;
+    ComputePipeline fusedProjectionOptimizerPipeline_;
     ComputePipeline optimizerPipeline_;
     ComputePipeline gaussianValidationPipeline_;
     ComputePipeline validationFinalizePipeline_;
@@ -74,7 +83,11 @@ private:
     vk::DescriptorSet pixelTo2DGSWorkgroupDescriptorSet_ = nullptr;
     vk::DescriptorSet pixelTo2DGSSubgroupDescriptorSet_ = nullptr;
     vk::DescriptorSet pixelTo2DGSAdaptiveDescriptorSet_ = nullptr;
+    vk::DescriptorSet tileGaussianAtomicDescriptorSet_ = nullptr;
+    vk::DescriptorSet vkSplatPerSplatDescriptorSet_ = nullptr;
+    vk::DescriptorSet vkSplatTensorDescriptorSet_ = nullptr;
     vk::DescriptorSet twoDGSTo3DGSDescriptorSet_ = nullptr;
+    vk::DescriptorSet fusedProjectionOptimizerDescriptorSet_ = nullptr;
     vk::DescriptorSet optimizerDescriptorSet_ = nullptr;
     vk::DescriptorSet gaussianValidationDescriptorSet_ = nullptr;
     vk::DescriptorSet validationFinalizeDescriptorSet_ = nullptr;
@@ -85,7 +98,11 @@ private:
     TrainingPixelTo2DGSMode pixelTo2DGSMode_ = TrainingPixelTo2DGSMode::Auto;
     uint32_t subgroupSize_ = 0;
     bool subgroupPixelTo2DGSSupported_ = false;
+    bool tileGaussianPixelTo2DGSSupported_ = false;
+    bool vkSplatPerSplatSupported_ = false;
+    bool vkSplatTensorSupported_ = false;
     bool computeBackwardClear_ = false;
+    bool fusedProjectionOptimizerEnabled_ = true;
     bool initialized_ = false;
 };
 

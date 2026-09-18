@@ -1,8 +1,13 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
+#include <mutex>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
+#include <thread>
 #include <vector>
 #include <array>
 #include <filesystem>
@@ -80,6 +85,37 @@ protected:
     bool running_ = true;
     
 private:
+    struct TrainingUiSnapshot {
+        bool rendererInitialized = false;
+        bool hasDataset = false;
+        bool hasTrainableModel = false;
+        bool trainingComplete = false;
+        bool subgroupSupported = false;
+        bool tileGaussianSupported = false;
+        bool vkSplatPerSplatSupported = false;
+        bool vkSplatTensorSupported = false;
+        TrainingPixelTo2DGSMode activePixelMode = TrainingPixelTo2DGSMode::Direct;
+        uint32_t gaussianCount = 0;
+        uint32_t trainingIteration = 0;
+        uint32_t totalIterations = 0;
+        uint32_t densificationIteration = 0;
+        size_t currentFrameIndex = 0;
+        TrainingFixedBenchmarkStats fixedBenchmark{};
+        TrainingValidationStats validation{};
+        TrainingCandidateProfileStats candidateProfile{};
+        TrainingDensificationStats densification{};
+        TrainingProfilingStats profiling{};
+        ImageStreamerStats imageCache{};
+        DeviceImageCacheStats deviceImageCache{};
+    };
+
+    struct TrainingWorkerResult {
+        bool completed = false;
+        bool pure = false;
+        std::string error;
+        std::chrono::steady_clock::time_point finishedAt{};
+    };
+
     // 工厂方法：根据渲染模式创建对应的渲染器实例
     std::unique_ptr<Renderer> createRenderer(RenderMode mode);
     void drawImGuiControls();
@@ -99,6 +135,15 @@ private:
     void loadTrainingDatasetFromUi();
     void initializeTrainingIfNeeded();
     void runTrainingStepFromUi();
+    void finishTrainingRun();
+    void startTrainingWorker(bool pure);
+    void trainingWorkerMain(std::stop_token stopToken, bool pure);
+    void requestTrainingWorkerStop();
+    void stopTrainingWorkerAndJoin();
+    void consumeTrainingWorkerResult();
+    TrainingUiSnapshot captureTrainingSnapshot() const;
+    void publishTrainingSnapshot();
+    TrainingUiSnapshot trainingSnapshotForUi() const;
     void exportTrainingModelFromUi();
     void exportTrainingModelToPath(const std::filesystem::path& path);
     void chooseTrainingDatasetFolderFromUi();
@@ -107,6 +152,13 @@ private:
     void drawTrainingFileDialogs();
     void applyTrainingConfigFromUi();
     void applyTrainingDensificationConfigFromUi();
+    void loadTrainingSettings();
+    void saveTrainingSettings() const;
+    void startTrainingTimer();
+    void stopTrainingTimer();
+    void stopTrainingTimerAt(std::chrono::steady_clock::time_point endTime);
+    void resetTrainingTimer();
+    double trainingElapsedSeconds() const;
     void setTrainingStatus(const std::string& message);
     void setTrainingError(const std::string& message);
     std::filesystem::path outputPlyPath() const;
@@ -145,6 +197,18 @@ private:
     bool training_dataset_valid_ = false;
     bool training_dataset_loaded_ = false;
     bool training_running_ = false;
+    bool training_pure_mode_ = false;
+    bool training_pure_active_ = false;
+    bool training_async_active_ = false;
+    bool training_stop_requested_ = false;
+    double training_pure_last_ui_render_time_ = 0.0;
+    std::jthread training_worker_;
+    std::atomic<bool> training_worker_result_ready_{false};
+    mutable std::mutex training_worker_result_mutex_;
+    TrainingWorkerResult training_worker_result_{};
+    mutable std::mutex training_snapshot_mutex_;
+    TrainingUiSnapshot training_snapshot_{};
+    bool training_snapshot_valid_ = false;
     bool training_error_popup_pending_ = false;
     int training_downscale_ = 4;
     uint32_t training_frame_count_ = 0;
@@ -182,6 +246,9 @@ private:
     uint32_t training_max_sh_degree_ = 3;
     uint32_t training_sh_degree_interval_ = 1000;
     uint64_t training_steps_done_ = 0;
+    std::chrono::steady_clock::time_point training_timer_started_at_{};
+    double training_elapsed_seconds_ = 0.0;
+    bool training_timer_running_ = false;
     bool training_densification_enabled_ = true;
     uint32_t training_densify_from_iteration_ = 500;
     uint32_t training_densify_until_iteration_ = 15000;
@@ -197,6 +264,7 @@ private:
     std::array<char, 512> training_dataset_path_{};
     std::array<char, 512> training_output_dir_{};
     std::array<char, 256> training_output_name_{};
+    std::string persisted_training_gpu_selector_;
     std::string training_status_;
     std::string training_error_;
 };

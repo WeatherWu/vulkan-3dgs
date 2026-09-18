@@ -57,6 +57,7 @@ private:
     void prepareFrameData(vk::Extent2D extent);
 
     // ---- Swapchain ----
+    bool ensureSwapchainReadyForFrame();
     void recreateSwapchain(uint32_t width, uint32_t height);
 
     // ---- GPU 深度排序 ----
@@ -138,6 +139,8 @@ private:
     uint32_t acquiredImageIndex_ = 0;
     bool imageReadyForPresent_ = false;
     bool presentWaitSemaphoreConsumed_ = false;
+    GLFWwindow* window_ = nullptr;
+    bool swapchainRecreationPending_ = false;
 
 };
 

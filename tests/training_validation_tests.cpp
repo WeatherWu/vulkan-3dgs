@@ -11,9 +11,12 @@
 namespace {
 
 using vulkan3DGS::TrainingGaussianValidationPartial;
+using vulkan3DGS::GaussianTrainParam;
 using vulkan3DGS::TrainingPixelValidationPartial;
 using vulkan3DGS::TrainingValidationGpuResult;
 using vulkan3DGS::kTrainingValidationWorkgroupSize;
+using vulkan3DGS::setTrainingSHCoefficient;
+using vulkan3DGS::trainingSHCoefficient;
 
 struct PixelSample {
     float loss = 0.0f;
@@ -184,6 +187,25 @@ bool approximatelyEqualProfileCount(float lhs, float rhs) {
 } // namespace
 
 int main() {
+    GaussianTrainParam packedGaussian{};
+    for (uint32_t coefficient = 0u; coefficient < 16u; ++coefficient) {
+        const glm::vec3 value(
+            static_cast<float>(coefficient * 3u + 1u),
+            static_cast<float>(coefficient * 3u + 2u),
+            static_cast<float>(coefficient * 3u + 3u));
+        setTrainingSHCoefficient(packedGaussian, coefficient, value);
+    }
+    for (uint32_t coefficient = 0u; coefficient < 16u; ++coefficient) {
+        const glm::vec3 expected(
+            static_cast<float>(coefficient * 3u + 1u),
+            static_cast<float>(coefficient * 3u + 2u),
+            static_cast<float>(coefficient * 3u + 3u));
+        if (trainingSHCoefficient(packedGaussian, coefficient) != expected) {
+            std::cerr << "packed SH coefficient round-trip mismatch\n";
+            return 1;
+        }
+    }
+
     constexpr size_t pixelCount = 70001;
     constexpr size_t gaussianCount = 65793;
     std::vector<PixelSample> pixels(pixelCount);

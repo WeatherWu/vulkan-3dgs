@@ -44,15 +44,18 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint outputIndex = gaussianRange.x;
     uint outputEnd = min(gaussianRange.x + gaussianRange.y, params.tileItemCount);
     uint depthKey = floatDepthSortKey(gaussian.centerRadius.z);
-    for (uint tileY = culling.bounds.minTile.y;
-         tileY < culling.bounds.maxTileExclusive.y; ++tileY) {
-        for (uint tileX = culling.bounds.minTile.x;
-             tileX < culling.bounds.maxTileExclusive.x; ++tileX) {
-            if (!trainProjectedGaussianMayContributeToTile(culling, uint2(tileX, tileY))) {
-                continue;
-            }
+    bool scanRows = trainGaussianScansRows(culling);
+    uint stripMinimum = scanRows ? culling.bounds.minTile.y : culling.bounds.minTile.x;
+    uint stripMaximum = scanRows
+        ? culling.bounds.maxTileExclusive.y
+        : culling.bounds.maxTileExclusive.x;
+    for (uint stripTile = stripMinimum; stripTile < stripMaximum; ++stripTile) {
+        TileScanRange range = trainTileRangeForStrip(culling, stripTile, scanRows);
+        for (uint rangeTile = range.minimum;
+             rangeTile < range.maximumExclusive; ++rangeTile) {
             if (outputIndex < outputEnd) {
-                uint tileIndex = trainTileIndex(uint2(tileX, tileY));
+                uint2 tile = trainTileFromScan(stripTile, rangeTile, scanRows);
+                uint tileIndex = trainTileIndex(tile);
                 tileItems[outputIndex] = gaussianIndex;
                 tileKeyLow[outputIndex] = depthKey;
                 tileKeyHigh[outputIndex] = tileIndex;

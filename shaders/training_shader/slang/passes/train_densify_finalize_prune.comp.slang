@@ -49,7 +49,7 @@ bool finiteGaussianForDensify(GaussianTrainParam gaussian) {
     bool finite = all(isfinite(gaussian.positionOpacity)) &&
                   all(isfinite(gaussian.scale)) &&
                   all(isfinite(gaussian.rotation));
-    for (uint i = 0; i < 16; ++i) {
+    for (uint i = 0; i < 12; ++i) {
         finite = finite && all(isfinite(gaussian.sh[i]));
     }
     return finite;

@@ -10,11 +10,17 @@ struct GaussianTileCullingData {
     TileBounds bounds;
     float2 center;
     float3 conic;
-    float negativeBOverA;
-    float negativeBOverC;
+    float determinant;
+    float2 ellipseExtent;
+    float2 scanExtrema;
     float maximumQuadratic;
     bool active;
     bool useExactEllipse;
+};
+
+struct TileScanRange {
+    uint minimum;
+    uint maximumExclusive;
 };
 
 uint trainTileCountY() {
@@ -90,8 +96,9 @@ GaussianTileCullingData trainPrepareGaussianTileCulling(ProjectedGaussian gaussi
     culling.bounds.maxTileExclusive = uint2(0);
     culling.center = gaussian.centerRadius.xy;
     culling.conic = gaussian.conicOpacity.xyz;
-    culling.negativeBOverA = 0.0;
-    culling.negativeBOverC = 0.0;
+    culling.determinant = 0.0;
+    culling.ellipseExtent = float2(0.0);
+    culling.scanExtrema = float2(0.0);
     culling.maximumQuadratic = 0.0;
     culling.active = false;
     culling.useExactEllipse = false;
@@ -118,9 +125,6 @@ GaussianTileCullingData trainPrepareGaussianTileCulling(ProjectedGaussian gaussi
         return culling;
     }
 
-    culling.useExactEllipse = true;
-    culling.negativeBOverA = -b / a;
-    culling.negativeBOverC = -b / c;
     float supportQuadratic = 2.0 * log(gaussian.conicOpacity.w / TRAIN_ALPHA_MIN);
     float tolerance = 1e-5 * max(1.0, abs(supportQuadratic));
     culling.maximumQuadratic = supportQuadratic + tolerance;
@@ -132,6 +136,12 @@ GaussianTileCullingData trainPrepareGaussianTileCulling(ProjectedGaussian gaussi
     if (all(isfinite(extent))) {
         TileBounds tightBounds = trainProjectedTileBoundsForExtent(culling.center, extent);
         culling.bounds = trainIntersectTileBounds(culling.bounds, tightBounds);
+        culling.determinant = determinant;
+        culling.ellipseExtent = extent;
+        culling.scanExtrema = float2(
+            (-b / c) * sqrt(c * acceptedQuadratic / determinant),
+            (-b / a) * sqrt(a * acceptedQuadratic / determinant));
+        culling.useExactEllipse = all(isfinite(culling.scanExtrema));
     }
     return culling;
 }
@@ -150,61 +160,91 @@ bool trainGaussianDepthBefore(uint lhsGaussianIndex, uint rhsGaussianIndex, Stru
     return projectedGaussians[lhsGaussianIndex].centerRadius.z < projectedGaussians[rhsGaussianIndex].centerRadius.z;
 }
 
-float trainConicQuadratic(GaussianTileCullingData culling, float2 delta) {
-    float a = culling.conic.x;
-    float b = culling.conic.y;
-    float c = culling.conic.z;
-    return a * delta.x * delta.x + 2.0 * b * delta.x * delta.y + c * delta.y * delta.y;
+float2 trainEllipseRangeBound(float3 conic,
+                              float determinant,
+                              float maximumQuadratic,
+                              float stripExtremum,
+                              float stripMinimum,
+                              float stripMaximum) {
+    float a = conic.x;
+    float b = conic.y;
+    float minimumAt = clamp(-stripExtremum, stripMinimum, stripMaximum);
+    float maximumAt = clamp(stripExtremum, stripMinimum, stripMaximum);
+    float minimumRoot = sqrt(max(0.0,
+        a * maximumQuadratic - determinant * minimumAt * minimumAt));
+    float maximumRoot = sqrt(max(0.0,
+        a * maximumQuadratic - determinant * maximumAt * maximumAt));
+    return float2(
+        (-b * minimumAt - minimumRoot) / a,
+        (-b * maximumAt + maximumRoot) / a);
 }
 
-float trainMinimumConicQuadraticOnRectangle(GaussianTileCullingData culling,
-                                             float2 minimumDelta,
-                                             float2 maximumDelta) {
-    float yAtMinimumX = clamp(
-        culling.negativeBOverC * minimumDelta.x, minimumDelta.y, maximumDelta.y);
-    float yAtMaximumX = clamp(
-        culling.negativeBOverC * maximumDelta.x, minimumDelta.y, maximumDelta.y);
-    float minimumQuadratic = trainConicQuadratic(
-        culling, float2(minimumDelta.x, yAtMinimumX));
-    minimumQuadratic = min(
-        minimumQuadratic,
-        trainConicQuadratic(culling, float2(maximumDelta.x, yAtMaximumX)));
-
-    float xAtMinimumY = clamp(
-        culling.negativeBOverA * minimumDelta.y, minimumDelta.x, maximumDelta.x);
-    float xAtMaximumY = clamp(
-        culling.negativeBOverA * maximumDelta.y, minimumDelta.x, maximumDelta.x);
-    minimumQuadratic = min(
-        minimumQuadratic,
-        trainConicQuadratic(culling, float2(xAtMinimumY, minimumDelta.y)));
-    minimumQuadratic = min(
-        minimumQuadratic,
-        trainConicQuadratic(culling, float2(xAtMaximumY, maximumDelta.y)));
-    return minimumQuadratic;
-}
-
-bool trainProjectedGaussianMayContributeToTile(GaussianTileCullingData culling, uint2 tile) {
+TileScanRange trainTileRangeForStrip(GaussianTileCullingData culling,
+                                     uint stripTile,
+                                     bool scanRows) {
+    TileScanRange range;
+    uint boundMinimum = scanRows ? culling.bounds.minTile.x : culling.bounds.minTile.y;
+    uint boundMaximum = scanRows
+        ? culling.bounds.maxTileExclusive.x
+        : culling.bounds.maxTileExclusive.y;
+    range.minimum = boundMinimum;
+    range.maximumExclusive = boundMaximum;
     if (!culling.useExactEllipse) {
-        return true;
+        return range;
     }
 
-    uint2 minimumPixel = tile * TRAIN_TILE_SIZE;
-    uint2 maximumPixelExclusive = min(
-        minimumPixel + uint2(TRAIN_TILE_SIZE),
-        uint2(params.width, params.height));
-    if (any(maximumPixelExclusive <= minimumPixel)) {
-        return false;
+    uint stripImageExtent = scanRows ? params.height : params.width;
+    uint outputImageExtent = scanRows ? params.width : params.height;
+    uint minimumPixel = stripTile * TRAIN_TILE_SIZE;
+    uint maximumPixelExclusive = min(minimumPixel + TRAIN_TILE_SIZE, stripImageExtent);
+    if (maximumPixelExclusive <= minimumPixel) {
+        range.maximumExclusive = range.minimum;
+        return range;
     }
 
-    float2 minimumDelta = float2(minimumPixel) - culling.center;
-    float2 maximumDelta = float2(maximumPixelExclusive - uint2(1u)) - culling.center;
-    if (all(minimumDelta <= float2(0.0)) && all(maximumDelta >= float2(0.0))) {
-        return true;
+    float stripCenter = scanRows ? culling.center.y : culling.center.x;
+    float outputCenter = scanRows ? culling.center.x : culling.center.y;
+    float stripMinimum = float(minimumPixel) - stripCenter;
+    float stripMaximum = float(maximumPixelExclusive - 1u) - stripCenter;
+    float stripExtent = scanRows ? culling.ellipseExtent.y : culling.ellipseExtent.x;
+    if (stripMaximum < -stripExtent || stripMinimum > stripExtent) {
+        range.maximumExclusive = range.minimum;
+        return range;
     }
+    float3 orientedConic = scanRows ? culling.conic : culling.conic.zyx;
+    float stripExtremum = scanRows ? culling.scanExtrema.x : culling.scanExtrema.y;
+    float2 bound = trainEllipseRangeBound(
+        orientedConic,
+        culling.determinant,
+        culling.maximumQuadratic,
+        stripExtremum,
+        stripMinimum,
+        stripMaximum);
 
-    float minimumQuadratic = trainMinimumConicQuadraticOnRectangle(
-        culling, minimumDelta, maximumDelta);
-    return !isfinite(minimumQuadratic) || minimumQuadratic <= culling.maximumQuadratic;
+    float tileSize = float(TRAIN_TILE_SIZE);
+    float lastPixelOffset = float(TRAIN_TILE_SIZE - 1u);
+    int minimumTile = int(ceil((bound.x + outputCenter - lastPixelOffset) / tileSize));
+    int maximumTileExclusive = int(floor((bound.y + outputCenter) / tileSize)) + 1;
+    minimumTile = clamp(minimumTile, int(boundMinimum), int(boundMaximum));
+    if (minimumTile < int(boundMaximum)) {
+        uint lastPixel = min(
+            (uint(minimumTile) + 1u) * TRAIN_TILE_SIZE,
+            outputImageExtent) - 1u;
+        if (float(lastPixel) < bound.x + outputCenter) {
+            ++minimumTile;
+        }
+    }
+    maximumTileExclusive = clamp(
+        maximumTileExclusive, minimumTile, int(boundMaximum));
+    range.minimum = uint(minimumTile);
+    range.maximumExclusive = uint(maximumTileExclusive);
+    return range;
+}
+
+bool trainGaussianScansRows(GaussianTileCullingData culling) {
+    uint width = culling.bounds.maxTileExclusive.x - culling.bounds.minTile.x;
+    uint height = culling.bounds.maxTileExclusive.y - culling.bounds.minTile.y;
+    return height <= width;
 }
 
 uint trainProjectedGaussianTileCount(GaussianTileCullingData culling) {
@@ -213,14 +253,22 @@ uint trainProjectedGaussianTileCount(GaussianTileCullingData culling) {
     }
 
     uint count = 0u;
-    for (uint tileY = culling.bounds.minTile.y;
-         tileY < culling.bounds.maxTileExclusive.y; ++tileY) {
-        for (uint tileX = culling.bounds.minTile.x;
-             tileX < culling.bounds.maxTileExclusive.x; ++tileX) {
-            if (trainProjectedGaussianMayContributeToTile(culling, uint2(tileX, tileY))) {
-                ++count;
-            }
-        }
+    bool scanRows = trainGaussianScansRows(culling);
+    uint stripMinimum = scanRows ? culling.bounds.minTile.y : culling.bounds.minTile.x;
+    uint stripMaximum = scanRows
+        ? culling.bounds.maxTileExclusive.y
+        : culling.bounds.maxTileExclusive.x;
+    for (uint stripTile = stripMinimum; stripTile < stripMaximum; ++stripTile) {
+        TileScanRange range = trainTileRangeForStrip(culling, stripTile, scanRows);
+        count += range.maximumExclusive - range.minimum;
     }
     return count;
+}
+
+uint2 trainTileFromScan(uint stripTile, uint rangeTile, bool scanRows) {
+    if (scanRows) {
+        return uint2(rangeTile, stripTile);
+    } else {
+        return uint2(stripTile, rangeTile);
+    }
 }

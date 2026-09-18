@@ -464,7 +464,6 @@ void GaussianTraining::trainStep() {
         recordCpuProfilingSample(TrainingCpuProfileStage::TileBufferResize,
                                  std::chrono::duration<float, std::milli>(Clock::now() - tileResizeStart).count());
     }
-
     const bool pruneByScreenSize = (trainingIteration_ + 1u) > densificationConfig_.opacityResetInterval;
     if (runDensificationThisStep) {
         const uint32_t possibleGrowth = trainableGaussianCount_ *
@@ -763,18 +762,16 @@ bool GaussianTraining::exportToPLY(const std::filesystem::path& path) {
         file.write(reinterpret_cast<const char*>(&position.y), sizeof(float));
         file.write(reinterpret_cast<const char*>(&position.z), sizeof(float));
 
-        const float fDc[3] = {
-            gaussian.sh[0].x,
-            gaussian.sh[0].y,
-            gaussian.sh[0].z,
-        };
+        const glm::vec3 shDc = trainingSHCoefficient(gaussian, 0u);
+        const float fDc[3] = {shDc.x, shDc.y, shDc.z};
         file.write(reinterpret_cast<const char*>(fDc), sizeof(float) * 3);
 
         float fRest[45]{};
         int index = 0;
         for (int channel = 0; channel < 3; ++channel) {
             for (int basis = 1; basis < 16; ++basis) {
-                fRest[index++] = gaussian.sh[basis][channel];
+                fRest[index++] = trainingSHCoefficient(
+                    gaussian, static_cast<uint32_t>(basis))[channel];
             }
         }
         file.write(reinterpret_cast<const char*>(fRest), sizeof(float) * 45);
@@ -922,6 +919,21 @@ void GaussianTraining::setForwardCompositeMode(TrainingForwardCompositeMode mode
 bool GaussianTraining::subgroupPixelTo2DGSSupported() const {
     const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
     return gaussianBackward && gaussianBackward->subgroupPixelTo2DGSSupported();
+}
+
+bool GaussianTraining::tileGaussianPixelTo2DGSSupported() const {
+    const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    return gaussianBackward && gaussianBackward->tileGaussianPixelTo2DGSSupported();
+}
+
+bool GaussianTraining::vkSplatPerSplatSupported() const {
+    const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    return gaussianBackward && gaussianBackward->vkSplatPerSplatSupported();
+}
+
+bool GaussianTraining::vkSplatTensorSupported() const {
+    const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    return gaussianBackward && gaussianBackward->vkSplatTensorSupported();
 }
 
 TrainingPixelTo2DGSMode GaussianTraining::activePixelTo2DGSMode() const {
@@ -1281,7 +1293,7 @@ std::vector<GaussianTrainParam> GaussianTraining::createSparsePointInitialGaussi
         param.positionOpacity = glm::vec4(point.position, rawOpacity);
         param.scale = glm::vec4(glm::vec3(rawScale), 0.0f);
         param.rotation = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        param.sh[0] = glm::vec4(colorToSH0(point.color), 0.0f);
+        setTrainingSHCoefficient(param, 0u, colorToSH0(point.color));
         params.push_back(param);
     }
 
@@ -1333,7 +1345,7 @@ std::vector<GaussianTrainParam> GaussianTraining::createRandomInitialGaussians(
                                                      0.5f + colorJitter(rng)),
                                            glm::vec3(0.0f),
                                            glm::vec3(1.0f));
-        param.sh[0] = glm::vec4(colorToSH0(color), 0.0f);
+        setTrainingSHCoefficient(param, 0u, colorToSH0(color));
         params.push_back(param);
     }
 
@@ -1528,7 +1540,9 @@ void GaussianTraining::collectGpuProfilingStats() {
         "Backward clear",
         "Loss to pixel",
         "Pixel to 2DGS",
+        "Tile-local backward",
         "2DGS to 3DGS",
+        "Fused projection/optimizer",
         "Optimizer",
         "Validation",
         "Densification",

@@ -47,6 +47,38 @@ bool supportsPixelTo2DGSSubgroup(vk::PhysicalDevice physicalDevice, uint32_t& su
     return subgroupSize > 0u && supportsCompute && supportsBasic && supportsShuffle;
 }
 
+bool supportsTileGaussianPixelTo2DGS(vk::PhysicalDevice physicalDevice,
+                                     uint32_t subgroupSize,
+                                     bool subgroupSupported) {
+    constexpr uint32_t workgroupSize = 256u;
+    constexpr uint32_t minimumSubgroupSize = 16u;
+    constexpr uint32_t requiredSharedMemoryBytes = 32u * 1024u;
+    const auto limits = physicalDevice.getProperties().limits;
+    const bool powerOfTwo = subgroupSize > 0u &&
+                            (subgroupSize & (subgroupSize - 1u)) == 0u;
+    return subgroupSupported && powerOfTwo &&
+           subgroupSize >= minimumSubgroupSize &&
+           subgroupSize <= workgroupSize &&
+           workgroupSize % subgroupSize == 0u &&
+           limits.maxComputeSharedMemorySize >= requiredSharedMemoryBytes;
+}
+
+bool supportsVkSplatPerSplat(vk::PhysicalDevice physicalDevice,
+                             uint32_t subgroupSize,
+                             bool subgroupSupported) {
+    constexpr uint32_t maximumSubgroupSize = 128u;
+    constexpr uint32_t requiredSharedMemoryBytes = 12u * 1024u;
+    const auto limits = physicalDevice.getProperties().limits;
+    return subgroupSupported && subgroupSize <= maximumSubgroupSize &&
+           limits.maxComputeSharedMemorySize >= requiredSharedMemoryBytes;
+}
+
+bool supportsVkSplatTensorShared(vk::PhysicalDevice physicalDevice) {
+    constexpr uint32_t requiredSharedMemoryBytes = 45u * 1024u;
+    return physicalDevice.getProperties().limits.maxComputeSharedMemorySize >=
+           requiredSharedMemoryBytes;
+}
+
 bool forceComputeBackwardClear() {
 #ifdef _WIN32
     char* value = nullptr;
@@ -59,6 +91,27 @@ bool forceComputeBackwardClear() {
     return enabled;
 #else
     const char* value = std::getenv("VULKAN_3DGS_COMPUTE_BACKWARD_CLEAR");
+    return value && std::strcmp(value, "1") == 0;
+#endif
+}
+
+bool forceSeparateProjectionOptimizer() {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(
+            &value,
+            &length,
+            "VULKAN_3DGS_SEPARATE_PROJECTION_OPTIMIZER") != 0 ||
+        !value) {
+        return false;
+    }
+    const bool enabled = std::strcmp(value, "1") == 0;
+    std::free(value);
+    return enabled;
+#else
+    const char* value =
+        std::getenv("VULKAN_3DGS_SEPARATE_PROJECTION_OPTIMIZER");
     return value && std::strcmp(value, "1") == 0;
 #endif
 }
@@ -78,7 +131,13 @@ void GaussianBackwardRenderer::initialize(vk::Device device,
     gaussianCount_ = gaussianCount;
     extent_ = extent;
     subgroupPixelTo2DGSSupported_ = supportsPixelTo2DGSSubgroup(physicalDevice_, subgroupSize_);
+    tileGaussianPixelTo2DGSSupported_ = supportsTileGaussianPixelTo2DGS(
+        physicalDevice_, subgroupSize_, subgroupPixelTo2DGSSupported_);
+    vkSplatPerSplatSupported_ = supportsVkSplatPerSplat(
+        physicalDevice_, subgroupSize_, subgroupPixelTo2DGSSupported_);
+    vkSplatTensorSupported_ = supportsVkSplatTensorShared(physicalDevice_);
     computeBackwardClear_ = forceComputeBackwardClear();
+    fusedProjectionOptimizerEnabled_ = !forceSeparateProjectionOptimizer();
     createBackwardResources();
     initialized_ = true;
 
@@ -90,8 +149,26 @@ void GaussianBackwardRenderer::initialize(vk::Device device,
     } else {
         LOG_INFO("Pixel-to-2DGS subgroup path unavailable; Auto and Subgroup use Direct");
     }
+    if (tileGaussianPixelTo2DGSSupported_) {
+        LOG_INFO("Tile-Gaussian atomic path available");
+    } else {
+        LOG_INFO("Tile-Gaussian path unavailable; selected mode falls back to Direct");
+    }
+    LOG_INFO("VkSplat per-splat path {}", vkSplatPerSplatSupported_ ? "available" : "unavailable");
+    if (vkSplatTensorSupported_) {
+        LOG_INFO("VkSplat tensor path available with shared-memory reduction");
+    } else {
+        LOG_INFO("VkSplat tensor path unavailable");
+    }
     if (computeBackwardClear_) {
         LOG_WARN("Using compute backward clear because VULKAN_3DGS_COMPUTE_BACKWARD_CLEAR=1");
+    }
+    if (!fusedProjectionOptimizerEnabled_) {
+        LOG_WARN(
+            "Using separate projection backward and optimizer because "
+            "VULKAN_3DGS_SEPARATE_PROJECTION_OPTIMIZER=1");
+    } else {
+        LOG_INFO("Fused projection backward and optimizer enabled");
     }
 }
 
@@ -109,7 +186,11 @@ void GaussianBackwardRenderer::cleanup() {
     pushConstants_ = {};
     subgroupSize_ = 0;
     subgroupPixelTo2DGSSupported_ = false;
+    tileGaussianPixelTo2DGSSupported_ = false;
+    vkSplatPerSplatSupported_ = false;
+    vkSplatTensorSupported_ = false;
     computeBackwardClear_ = false;
+    fusedProjectionOptimizerEnabled_ = true;
     initialized_ = false;
 }
 
@@ -121,6 +202,18 @@ TrainingPixelTo2DGSMode GaussianBackwardRenderer::activePixelTo2DGSMode() const 
     }
     if (pixelTo2DGSMode_ == TrainingPixelTo2DGSMode::Subgroup &&
         !subgroupPixelTo2DGSSupported_) {
+        return TrainingPixelTo2DGSMode::Direct;
+    }
+    if (pixelTo2DGSMode_ == TrainingPixelTo2DGSMode::TileGaussianAtomic &&
+        !tileGaussianPixelTo2DGSSupported_) {
+        return TrainingPixelTo2DGSMode::Direct;
+    }
+    if (pixelTo2DGSMode_ == TrainingPixelTo2DGSMode::VkSplatPerSplat &&
+        !vkSplatPerSplatSupported_) {
+        return TrainingPixelTo2DGSMode::Direct;
+    }
+    if (pixelTo2DGSMode_ == TrainingPixelTo2DGSMode::VkSplatTensor &&
+        !vkSplatTensorSupported_) {
         return TrainingPixelTo2DGSMode::Direct;
     }
     return pixelTo2DGSMode_;
@@ -170,9 +263,18 @@ void GaussianBackwardRenderer::backward() {
     backpropPixelTo2DGS();
     writeProfilingTimestamp(TrainingGpuProfileStage::PixelTo2DGS, true);
 
-    writeProfilingTimestamp(TrainingGpuProfileStage::TwoDGSTo3DGS, false);
-    backprop2DGSTo3DGS();
-    writeProfilingTimestamp(TrainingGpuProfileStage::TwoDGSTo3DGS, true);
+    if (pushConstants_.optimizerEnabled != 0u &&
+        fusedProjectionOptimizerEnabled_) {
+        writeProfilingTimestamp(
+            TrainingGpuProfileStage::FusedProjectionOptimizer, false);
+        backprop2DGSTo3DGSAndOptimize();
+        writeProfilingTimestamp(
+            TrainingGpuProfileStage::FusedProjectionOptimizer, true);
+    } else {
+        writeProfilingTimestamp(TrainingGpuProfileStage::TwoDGSTo3DGS, false);
+        backprop2DGSTo3DGS();
+        writeProfilingTimestamp(TrainingGpuProfileStage::TwoDGSTo3DGS, true);
+    }
 }
 
 void GaussianBackwardRenderer::gradientDescent() {
@@ -191,7 +293,8 @@ void GaussianBackwardRenderer::gradientDescent() {
         return;
     }
 
-    if (pushConstants_.optimizerEnabled != 0u) {
+    if (pushConstants_.optimizerEnabled != 0u &&
+        !fusedProjectionOptimizerEnabled_) {
         writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, false);
         optimizeParameters();
         writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, true);
@@ -251,6 +354,17 @@ void GaussianBackwardRenderer::createBackwardResources() {
     };
     pixelTo2DGSConfig.pushConstantSize = sizeof(TrainingPushConstants);
 
+    ComputePipelineConfig tileGaussianAtomicConfig{};
+    tileGaussianAtomicConfig.descriptorBindings = {
+        storageBinding(3),
+        storageBinding(4),
+        storageBinding(5),
+        storageBinding(12),
+        storageBinding(13),
+        storageBinding(14),
+    };
+    tileGaussianAtomicConfig.pushConstantSize = sizeof(TrainingPushConstants);
+
     ComputePipelineConfig twoDGSTo3DGSConfig{};
     twoDGSTo3DGSConfig.descriptorBindings = {
         storageBinding(0),
@@ -261,6 +375,18 @@ void GaussianBackwardRenderer::createBackwardResources() {
         uniformBinding(11),
     };
     twoDGSTo3DGSConfig.pushConstantSize = sizeof(TrainingPushConstants);
+
+    ComputePipelineConfig fusedProjectionOptimizerConfig{};
+    fusedProjectionOptimizerConfig.descriptorBindings = {
+        storageBinding(0),
+        storageBinding(2),
+        storageBinding(3),
+        storageBinding(13),
+        storageBinding(16),
+        uniformBinding(11),
+    };
+    fusedProjectionOptimizerConfig.pushConstantSize =
+        sizeof(TrainingPushConstants);
 
     ComputePipelineConfig optimizerConfig{};
     optimizerConfig.descriptorBindings = {
@@ -303,7 +429,29 @@ void GaussianBackwardRenderer::createBackwardResources() {
             "shaders/train_backward_pixel_to_2dgs_adaptive.comp.spv",
             pixelTo2DGSConfig);
     }
+    if (tileGaussianPixelTo2DGSSupported_) {
+        tileGaussianAtomicPipeline_.initialize(
+            device_,
+            "shaders/train_backward_tile_gaussian_atomic.comp.spv",
+            tileGaussianAtomicConfig);
+    }
+    if (vkSplatPerSplatSupported_) {
+        vkSplatPerSplatPipeline_.initialize(
+            device_,
+            "shaders/train_backward_vksplat_per_splat.comp.spv",
+            pixelTo2DGSConfig);
+    }
+    if (vkSplatTensorSupported_) {
+        vkSplatTensorPipeline_.initialize(
+            device_,
+            "shaders/train_backward_vksplat_tensor.comp.spv",
+            pixelTo2DGSConfig);
+    }
     twoDGSTo3DGSPipeline_.initialize(device_, "shaders/train_backward_2dgs_to_3dgs.comp.spv", twoDGSTo3DGSConfig);
+    fusedProjectionOptimizerPipeline_.initialize(
+        device_,
+        "shaders/train_backward_2dgs_to_3dgs_optimizer.comp.spv",
+        fusedProjectionOptimizerConfig);
     optimizerPipeline_.initialize(device_, "shaders/train_optimizer.comp.spv", optimizerConfig);
     gaussianValidationPipeline_.initialize(device_,
                                            "shaders/train_gaussian_validation.comp.spv",
@@ -314,14 +462,14 @@ void GaussianBackwardRenderer::createBackwardResources() {
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(54);
+                .setDescriptorCount(80);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
-                .setDescriptorCount(1);
+                .setDescriptorCount(2);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(11);
+            .setMaxSets(16);
 
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
@@ -335,10 +483,20 @@ void GaussianBackwardRenderer::createBackwardResources() {
         optimizerPipeline_.getDescriptorSetLayout(),
         gaussianValidationPipeline_.getDescriptorSetLayout(),
         validationFinalizePipeline_.getDescriptorSetLayout(),
+        fusedProjectionOptimizerPipeline_.getDescriptorSetLayout(),
     };
     if (subgroupPixelTo2DGSSupported_) {
         layouts.push_back(pixelTo2DGSSubgroupPipeline_.getDescriptorSetLayout());
         layouts.push_back(pixelTo2DGSAdaptivePipeline_.getDescriptorSetLayout());
+    }
+    if (tileGaussianPixelTo2DGSSupported_) {
+        layouts.push_back(tileGaussianAtomicPipeline_.getDescriptorSetLayout());
+    }
+    if (vkSplatPerSplatSupported_) {
+        layouts.push_back(vkSplatPerSplatPipeline_.getDescriptorSetLayout());
+    }
+    if (vkSplatTensorSupported_) {
+        layouts.push_back(vkSplatTensorPipeline_.getDescriptorSetLayout());
     }
 
     vk::DescriptorSetAllocateInfo allocInfo{};
@@ -356,9 +514,20 @@ void GaussianBackwardRenderer::createBackwardResources() {
     optimizerDescriptorSet_ = descriptorSets[6];
     gaussianValidationDescriptorSet_ = descriptorSets[7];
     validationFinalizeDescriptorSet_ = descriptorSets[8];
+    fusedProjectionOptimizerDescriptorSet_ = descriptorSets[9];
+    size_t nextDescriptorSet = 10u;
     if (subgroupPixelTo2DGSSupported_) {
-        pixelTo2DGSSubgroupDescriptorSet_ = descriptorSets[9];
-        pixelTo2DGSAdaptiveDescriptorSet_ = descriptorSets[10];
+        pixelTo2DGSSubgroupDescriptorSet_ = descriptorSets[nextDescriptorSet++];
+        pixelTo2DGSAdaptiveDescriptorSet_ = descriptorSets[nextDescriptorSet++];
+    }
+    if (tileGaussianPixelTo2DGSSupported_) {
+        tileGaussianAtomicDescriptorSet_ = descriptorSets[nextDescriptorSet++];
+    }
+    if (vkSplatPerSplatSupported_) {
+        vkSplatPerSplatDescriptorSet_ = descriptorSets[nextDescriptorSet++];
+    }
+    if (vkSplatTensorSupported_) {
+        vkSplatTensorDescriptorSet_ = descriptorSets[nextDescriptorSet++];
     }
 }
 
@@ -373,7 +542,11 @@ void GaussianBackwardRenderer::destroyBackwardResources() {
         pixelTo2DGSWorkgroupDescriptorSet_ = nullptr;
         pixelTo2DGSSubgroupDescriptorSet_ = nullptr;
         pixelTo2DGSAdaptiveDescriptorSet_ = nullptr;
+        tileGaussianAtomicDescriptorSet_ = nullptr;
+        vkSplatPerSplatDescriptorSet_ = nullptr;
+        vkSplatTensorDescriptorSet_ = nullptr;
         twoDGSTo3DGSDescriptorSet_ = nullptr;
+        fusedProjectionOptimizerDescriptorSet_ = nullptr;
         optimizerDescriptorSet_ = nullptr;
         gaussianValidationDescriptorSet_ = nullptr;
         validationFinalizeDescriptorSet_ = nullptr;
@@ -382,9 +555,13 @@ void GaussianBackwardRenderer::destroyBackwardResources() {
     validationFinalizePipeline_.cleanup();
     gaussianValidationPipeline_.cleanup();
     optimizerPipeline_.cleanup();
+    fusedProjectionOptimizerPipeline_.cleanup();
     twoDGSTo3DGSPipeline_.cleanup();
     pixelTo2DGSAdaptivePipeline_.cleanup();
     pixelTo2DGSSubgroupPipeline_.cleanup();
+    tileGaussianAtomicPipeline_.cleanup();
+    vkSplatTensorPipeline_.cleanup();
+    vkSplatPerSplatPipeline_.cleanup();
     pixelTo2DGSWorkgroupPipeline_.cleanup();
     pixelTo2DGSPipeline_.cleanup();
     lossToPixelPipeline_.cleanup();
@@ -486,6 +663,9 @@ void GaussianBackwardRenderer::computeLoss() {
 void GaussianBackwardRenderer::clearBackwardBuffers() {
     const auto gaussianGradsInfo = trainingBuffers_->gaussianGradsInfo();
     const auto projectedGradsInfo = trainingBuffers_->projectedGradsInfo();
+    const bool clearGaussianGrads =
+        pushConstants_.optimizerEnabled == 0u ||
+        !fusedProjectionOptimizerEnabled_;
 
     if (pushConstants_.gaussianCount == 0) {
         return;
@@ -498,9 +678,14 @@ void GaussianBackwardRenderer::clearBackwardBuffers() {
             sizeof(ProjectedGaussianGrad) * static_cast<vk::DeviceSize>(pushConstants_.gaussianCount);
 
         commandBuffer_.fillBuffer(
-            gaussianGradsInfo.buffer, gaussianGradsInfo.offset, gaussianGradsSize, 0u);
-        commandBuffer_.fillBuffer(
             projectedGradsInfo.buffer, projectedGradsInfo.offset, projectedGradsSize, 0u);
+        if (clearGaussianGrads) {
+            commandBuffer_.fillBuffer(
+                gaussianGradsInfo.buffer,
+                gaussianGradsInfo.offset,
+                gaussianGradsSize,
+                0u);
+        }
 
         std::array<vk::BufferMemoryBarrier, 2> barriers{};
         barriers[0].setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
@@ -508,23 +693,23 @@ void GaussianBackwardRenderer::clearBackwardBuffers() {
                                      vk::AccessFlagBits::eShaderWrite)
                    .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                    .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                   .setBuffer(gaussianGradsInfo.buffer)
-                   .setOffset(gaussianGradsInfo.offset)
-                   .setSize(gaussianGradsSize);
+                   .setBuffer(projectedGradsInfo.buffer)
+                   .setOffset(projectedGradsInfo.offset)
+                   .setSize(projectedGradsSize);
         barriers[1].setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
                    .setDstAccessMask(vk::AccessFlagBits::eShaderRead |
                                      vk::AccessFlagBits::eShaderWrite)
                    .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                    .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                   .setBuffer(projectedGradsInfo.buffer)
-                   .setOffset(projectedGradsInfo.offset)
-                   .setSize(projectedGradsSize);
+                   .setBuffer(gaussianGradsInfo.buffer)
+                   .setOffset(gaussianGradsInfo.offset)
+                   .setSize(gaussianGradsSize);
         commandBuffer_.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                                        vk::PipelineStageFlagBits::eComputeShader,
                                        vk::DependencyFlagBits{},
                                        0,
                                        nullptr,
-                                       static_cast<uint32_t>(barriers.size()),
+                                       clearGaussianGrads ? 2u : 1u,
                                        barriers.data(),
                                        0,
                                        nullptr);
@@ -552,15 +737,24 @@ void GaussianBackwardRenderer::clearBackwardBuffers() {
                                                      &backwardClearDescriptorSet_,
                                                      0,
                                                      nullptr);
+    TrainingPushConstants clearPushConstants = pushConstants_;
+    clearPushConstants.clearGaussianGrads = clearGaussianGrads ? 1u : 0u;
     commandBuffer_.pushConstants(backwardClearPipeline_.getPipelineLayout(),
-                                                vk::ShaderStageFlagBits::eCompute,
-                                                0,
-                                                sizeof(TrainingPushConstants),
-                                                &pushConstants_);
+                                 vk::ShaderStageFlagBits::eCompute,
+                                 0,
+                                 sizeof(TrainingPushConstants),
+                                 &clearPushConstants);
 
     commandBuffer_.dispatch((pushConstants_.gaussianCount + 255u) / 256u, 1, 1);
-    shaderBufferBarrier({gaussianGradsInfo, projectedGradsInfo},
-                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    if (clearGaussianGrads) {
+        shaderBufferBarrier(
+            {gaussianGradsInfo, projectedGradsInfo},
+            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    } else {
+        shaderBufferBarrier(
+            {projectedGradsInfo},
+            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    }
 }
 
 void GaussianBackwardRenderer::computeLossToPixel() {
@@ -625,6 +819,10 @@ void GaussianBackwardRenderer::backpropPixelTo2DGS() {
     const auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
 
     const TrainingPixelTo2DGSMode activeMode = activePixelTo2DGSMode();
+    if (activeMode == TrainingPixelTo2DGSMode::TileGaussianAtomic) {
+        backpropTileGaussian();
+        return;
+    }
     ComputePipeline* pipeline = &pixelTo2DGSPipeline_;
     vk::DescriptorSet descriptorSet = pixelTo2DGSDescriptorSet_;
     if (activeMode == TrainingPixelTo2DGSMode::WorkgroupShared) {
@@ -636,6 +834,12 @@ void GaussianBackwardRenderer::backpropPixelTo2DGS() {
     } else if (activeMode == TrainingPixelTo2DGSMode::Auto) {
         pipeline = &pixelTo2DGSAdaptivePipeline_;
         descriptorSet = pixelTo2DGSAdaptiveDescriptorSet_;
+    } else if (activeMode == TrainingPixelTo2DGSMode::VkSplatPerSplat) {
+        pipeline = &vkSplatPerSplatPipeline_;
+        descriptorSet = vkSplatPerSplatDescriptorSet_;
+    } else if (activeMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
+        pipeline = &vkSplatTensorPipeline_;
+        descriptorSet = vkSplatTensorDescriptorSet_;
     }
 
     std::array<vk::WriteDescriptorSet, 6> writes{};
@@ -688,11 +892,81 @@ void GaussianBackwardRenderer::backpropPixelTo2DGS() {
         return;
     }
 
+    const bool profileTileLocal =
+        activeMode == TrainingPixelTo2DGSMode::VkSplatPerSplat ||
+        activeMode == TrainingPixelTo2DGSMode::VkSplatTensor;
+    if (profileTileLocal) {
+        writeProfilingTimestamp(TrainingGpuProfileStage::TileLocalBackward, false);
+    }
     commandBuffer_.dispatch((pushConstants_.width + 15u) / 16u,
-                                           (pushConstants_.height + 15u) / 16u,
-                                           1);
+                            (pushConstants_.height + 15u) / 16u,
+                            1);
+    if (profileTileLocal) {
+        writeProfilingTimestamp(TrainingGpuProfileStage::TileLocalBackward, true);
+    }
     shaderBufferBarrier({projectedGradsInfo},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+}
+
+void GaussianBackwardRenderer::backpropTileGaussian() {
+    ComputePipeline& pipeline = tileGaussianAtomicPipeline_;
+    vk::DescriptorSet descriptorSet = tileGaussianAtomicDescriptorSet_;
+    if (!descriptorSet) {
+        throw std::runtime_error("Tile-Gaussian backward descriptor set is not initialized");
+    }
+
+    const auto projectedInfo = trainingBuffers_->projectedInfo();
+    const auto tileItemsInfo = trainingBuffers_->tileItemsInfo();
+    const auto tileRangesInfo = trainingBuffers_->tileRangesInfo();
+    const auto pixelGradsInfo = trainingBuffers_->pixelGradsInfo();
+    const auto projectedGradsInfo = trainingBuffers_->projectedGradsInfo();
+    const auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
+
+    std::array<vk::WriteDescriptorSet, 6> writes{};
+    const std::array<uint32_t, 6> bindings = {3u, 4u, 5u, 12u, 13u, 14u};
+    const std::array<const vk::DescriptorBufferInfo*, 6> infos = {
+        &projectedInfo,
+        &tileItemsInfo,
+        &tileRangesInfo,
+        &pixelGradsInfo,
+        &projectedGradsInfo,
+        &pixelBlendStatesInfo};
+    for (size_t index = 0u; index < writes.size(); ++index) {
+        writes[index].setDstSet(descriptorSet)
+                     .setDstBinding(bindings[index])
+                     .setDescriptorCount(1)
+                     .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+                     .setPBufferInfo(infos[index]);
+    }
+    device_.updateDescriptorSets(
+        static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.getPipeline());
+    commandBuffer_.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                                      pipeline.getPipelineLayout(),
+                                      0,
+                                      1,
+                                      &descriptorSet,
+                                      0,
+                                      nullptr);
+    commandBuffer_.pushConstants(pipeline.getPipelineLayout(),
+                                 vk::ShaderStageFlagBits::eCompute,
+                                 0,
+                                 sizeof(TrainingPushConstants),
+                                 &pushConstants_);
+    if (pushConstants_.width == 0u || pushConstants_.height == 0u) {
+        return;
+    }
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::TileLocalBackward, false);
+    commandBuffer_.dispatch((pushConstants_.width + 15u) / 16u,
+                            (pushConstants_.height + 15u) / 16u,
+                            1);
+    writeProfilingTimestamp(TrainingGpuProfileStage::TileLocalBackward, true);
+
+    shaderBufferBarrier({projectedGradsInfo},
+                        vk::AccessFlagBits::eShaderRead |
+                            vk::AccessFlagBits::eShaderWrite);
 }
 
 void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
@@ -756,6 +1030,77 @@ void GaussianBackwardRenderer::backprop2DGSTo3DGS() {
     commandBuffer_.dispatch((pushConstants_.gaussianCount + 255u) / 256u, 1, 1);
     shaderBufferBarrier({gaussianGradsInfo, densificationStatesInfo},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead);
+}
+
+void GaussianBackwardRenderer::backprop2DGSTo3DGSAndOptimize() {
+    if (!fusedProjectionOptimizerDescriptorSet_) {
+        throw std::runtime_error(
+            "Fused projection-backward/optimizer descriptor set is not initialized");
+    }
+
+    const auto gaussianParamsInfo = trainingBuffers_->gaussianParamsInfo();
+    const auto adamStatesInfo = trainingBuffers_->adamStatesInfo();
+    const auto projectedInfo = trainingBuffers_->projectedInfo();
+    const auto projectedGradsInfo = trainingBuffers_->projectedGradsInfo();
+    const auto densificationStatesInfo =
+        trainingBuffers_->densificationStatesInfo();
+    const auto cameraInfo = trainingBuffers_->cameraInfo();
+
+    std::array<vk::WriteDescriptorSet, 6> writes{};
+    const std::array<uint32_t, 6> bindings = {0u, 2u, 3u, 13u, 16u, 11u};
+    const std::array<vk::DescriptorType, 6> descriptorTypes = {
+        vk::DescriptorType::eStorageBuffer,
+        vk::DescriptorType::eStorageBuffer,
+        vk::DescriptorType::eStorageBuffer,
+        vk::DescriptorType::eStorageBuffer,
+        vk::DescriptorType::eStorageBuffer,
+        vk::DescriptorType::eUniformBuffer};
+    const std::array<const vk::DescriptorBufferInfo*, 6> infos = {
+        &gaussianParamsInfo,
+        &adamStatesInfo,
+        &projectedInfo,
+        &projectedGradsInfo,
+        &densificationStatesInfo,
+        &cameraInfo};
+    for (size_t index = 0u; index < writes.size(); ++index) {
+        writes[index]
+            .setDstSet(fusedProjectionOptimizerDescriptorSet_)
+            .setDstBinding(bindings[index])
+            .setDescriptorCount(1)
+            .setDescriptorType(descriptorTypes[index])
+            .setPBufferInfo(infos[index]);
+    }
+    device_.updateDescriptorSets(
+        static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    commandBuffer_.bindPipeline(
+        vk::PipelineBindPoint::eCompute,
+        fusedProjectionOptimizerPipeline_.getPipeline());
+    commandBuffer_.bindDescriptorSets(
+        vk::PipelineBindPoint::eCompute,
+        fusedProjectionOptimizerPipeline_.getPipelineLayout(),
+        0,
+        1,
+        &fusedProjectionOptimizerDescriptorSet_,
+        0,
+        nullptr);
+    commandBuffer_.pushConstants(
+        fusedProjectionOptimizerPipeline_.getPipelineLayout(),
+        vk::ShaderStageFlagBits::eCompute,
+        0,
+        sizeof(TrainingPushConstants),
+        &pushConstants_);
+    if (pushConstants_.gaussianCount == 0u) {
+        return;
+    }
+
+    commandBuffer_.dispatch(
+        (pushConstants_.gaussianCount + 255u) / 256u, 1, 1);
+    shaderBufferBarrier(
+        {gaussianParamsInfo, adamStatesInfo, densificationStatesInfo},
+        vk::AccessFlagBits::eShaderRead |
+            vk::AccessFlagBits::eShaderWrite |
+            vk::AccessFlagBits::eTransferRead);
 }
 
 void GaussianBackwardRenderer::optimizeParameters() {

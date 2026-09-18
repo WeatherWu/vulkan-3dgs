@@ -28,7 +28,7 @@ struct TrainingPushConstants {
     uint optimizerEnabled;
     uint validationUsesDensifiedGaussians;
     float pixelTo2DGSMinSubgroupUtilization;
-    uint padding0;
+    uint clearGaussianGrads;
     uint padding1;
     uint padding2;
 };
@@ -90,7 +90,7 @@ struct GaussianTrainParam {
     float4 positionOpacity;
     float4 scale;
     float4 rotation;
-    float4 sh[16];
+    float4 sh[12];
 };
 
 struct ProjectedGaussian {
@@ -125,7 +125,7 @@ struct GaussianGrad {
     float4 positionOpacity;
     float4 scale;
     float4 rotation;
-    float4 sh[16];
+    float4 sh[12];
 };
 
 struct AdamState {
@@ -135,6 +135,24 @@ struct AdamState {
 
 [[vk::push_constant]]
 ConstantBuffer<TrainingPushConstants> params;
+
+float3 trainGetSHCoefficient(GaussianTrainParam gaussian, uint coefficient) {
+    uint block = coefficient / 4u;
+    uint lane = coefficient % 4u;
+    return float3(gaussian.sh[block][lane],
+                  gaussian.sh[4u + block][lane],
+                  gaussian.sh[8u + block][lane]);
+}
+
+void trainAddSHGradient(inout GaussianGrad grad,
+                        uint coefficient,
+                        float3 value) {
+    uint block = coefficient / 4u;
+    uint lane = coefficient % 4u;
+    grad.sh[block][lane] += value.x;
+    grad.sh[4u + block][lane] += value.y;
+    grad.sh[8u + block][lane] += value.z;
+}
 
 float4 evaluateSH(GaussianTrainParam gaussian, float3 viewDirection) {
     static const float SH_C0 = 0.28209479177387814;
@@ -156,7 +174,7 @@ float4 evaluateSH(GaussianTrainParam gaussian, float3 viewDirection) {
        -0.5900435899266435
     };
 
-    float4 result = gaussian.sh[0] * SH_C0;
+    float3 result = trainGetSHCoefficient(gaussian, 0u) * SH_C0;
     float x = viewDirection.x;
     float y = viewDirection.y;
     float z = viewDirection.z;
@@ -168,39 +186,39 @@ float4 evaluateSH(GaussianTrainParam gaussian, float3 viewDirection) {
     float xz = x * z;
 
     if (params.activeSHDegree < 1) {
-        return result;
+        return float4(result, 0.0);
     }
 
     result += SH_C1 * (
-        -y * gaussian.sh[1] +
-         z * gaussian.sh[2] -
-         x * gaussian.sh[3]
+        -y * trainGetSHCoefficient(gaussian, 1u) +
+         z * trainGetSHCoefficient(gaussian, 2u) -
+         x * trainGetSHCoefficient(gaussian, 3u)
     );
 
     if (params.activeSHDegree < 2) {
-        return result;
+        return float4(result, 0.0);
     }
 
     result +=
-        SH_C2[0] * xy * gaussian.sh[4] +
-        SH_C2[1] * yz * gaussian.sh[5] +
-        SH_C2[2] * (2.0 * zz - xx - yy) * gaussian.sh[6] +
-        SH_C2[3] * xz * gaussian.sh[7] +
-        SH_C2[4] * (xx - yy) * gaussian.sh[8];
+        SH_C2[0] * xy * trainGetSHCoefficient(gaussian, 4u) +
+        SH_C2[1] * yz * trainGetSHCoefficient(gaussian, 5u) +
+        SH_C2[2] * (2.0 * zz - xx - yy) * trainGetSHCoefficient(gaussian, 6u) +
+        SH_C2[3] * xz * trainGetSHCoefficient(gaussian, 7u) +
+        SH_C2[4] * (xx - yy) * trainGetSHCoefficient(gaussian, 8u);
 
     if (params.activeSHDegree < 3) {
-        return result;
+        return float4(result, 0.0);
     }
 
     result +=
-        SH_C3[0] * y * (3.0 * xx - yy) * gaussian.sh[9] +
-        SH_C3[1] * xy * z * gaussian.sh[10] +
-        SH_C3[2] * y * (4.0 * zz - xx - yy) * gaussian.sh[11] +
-        SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * gaussian.sh[12] +
-        SH_C3[4] * x * (4.0 * zz - xx - yy) * gaussian.sh[13] +
-        SH_C3[5] * z * (xx - yy) * gaussian.sh[14] +
-        SH_C3[6] * x * (xx - 3.0 * yy) * gaussian.sh[15];
-    return result;
+        SH_C3[0] * y * (3.0 * xx - yy) * trainGetSHCoefficient(gaussian, 9u) +
+        SH_C3[1] * xy * z * trainGetSHCoefficient(gaussian, 10u) +
+        SH_C3[2] * y * (4.0 * zz - xx - yy) * trainGetSHCoefficient(gaussian, 11u) +
+        SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * trainGetSHCoefficient(gaussian, 12u) +
+        SH_C3[4] * x * (4.0 * zz - xx - yy) * trainGetSHCoefficient(gaussian, 13u) +
+        SH_C3[5] * z * (xx - yy) * trainGetSHCoefficient(gaussian, 14u) +
+        SH_C3[6] * x * (xx - 3.0 * yy) * trainGetSHCoefficient(gaussian, 15u);
+    return float4(result, 0.0);
 }
 
 uint pixelIndex(uint2 pixel) {

@@ -45,7 +45,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
         bool finiteActivatedScale = all(isfinite(exp(gaussian.scale.xyz)));
         bool finiteRotation = all(isfinite(gaussian.rotation));
         bool finiteSH = true;
-        for (uint coefficient = 0u; coefficient < 16u; ++coefficient) {
+        for (uint coefficient = 0u; coefficient < 12u; ++coefficient) {
             finiteSH = finiteSH && all(isfinite(gaussian.sh[coefficient]));
         }
         bool finite = finitePosition && finiteOpacity && finiteRawScale &&

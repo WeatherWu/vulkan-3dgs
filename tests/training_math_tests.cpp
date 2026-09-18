@@ -349,6 +349,213 @@ std::vector<uint32_t> acceptedTilesOptimized(const ConicGaussian2D& gaussian,
     return accepted;
 }
 
+std::pair<int, int> scanlineTileRange(const GaussianTileCullingData& culling,
+                                      int stripTile,
+                                      bool scanRows,
+                                      uint32_t width,
+                                      uint32_t height) {
+    constexpr int tileSize = 16;
+    const int boundMinimum = scanRows
+        ? culling.bounds.minimumX
+        : culling.bounds.minimumY;
+    const int boundMaximum = scanRows
+        ? culling.bounds.maximumXExclusive
+        : culling.bounds.maximumYExclusive;
+    if (!culling.useExactEllipse) {
+        return {boundMinimum, boundMaximum};
+    }
+
+    const uint32_t imageExtent = scanRows ? height : width;
+    const uint32_t minimumPixel = static_cast<uint32_t>(stripTile) * tileSize;
+    const uint32_t maximumPixelExclusive = std::min(
+        minimumPixel + tileSize, imageExtent);
+    const double stripCenter = scanRows ? culling.centerY : culling.centerX;
+    const double outputCenter = scanRows ? culling.centerX : culling.centerY;
+    const double stripMinimum = static_cast<double>(minimumPixel) - stripCenter;
+    const double stripMaximum = static_cast<double>(maximumPixelExclusive - 1u) - stripCenter;
+
+    const double a = scanRows ? culling.a : culling.c;
+    const double b = culling.b;
+    const double c = scanRows ? culling.c : culling.a;
+    const double determinant = a * c - b * b;
+    const double acceptedQuadratic = culling.supportQuadratic + culling.tolerance;
+    const double stripExtent = std::sqrt(acceptedQuadratic * a / determinant);
+    if (stripMaximum < -stripExtent || stripMinimum > stripExtent) {
+        return {boundMinimum, boundMinimum};
+    }
+    const double stripExtremum = (-b / c) *
+        std::sqrt(c * acceptedQuadratic / determinant);
+    const double minimumAt = std::clamp(
+        -stripExtremum, stripMinimum, stripMaximum);
+    const double maximumAt = std::clamp(
+        stripExtremum, stripMinimum, stripMaximum);
+    const double minimumRoot = std::sqrt(std::max(
+        0.0, a * acceptedQuadratic - determinant * minimumAt * minimumAt));
+    const double maximumRoot = std::sqrt(std::max(
+        0.0, a * acceptedQuadratic - determinant * maximumAt * maximumAt));
+    const double rangeMinimum = (-b * minimumAt - minimumRoot) / a;
+    const double rangeMaximum = (-b * maximumAt + maximumRoot) / a;
+
+    int minimumTile = static_cast<int>(std::ceil(
+        (rangeMinimum + outputCenter - (tileSize - 1.0)) / tileSize));
+    int maximumTileExclusive = static_cast<int>(std::floor(
+        (rangeMaximum + outputCenter) / tileSize)) + 1;
+    minimumTile = std::clamp(minimumTile, boundMinimum, boundMaximum);
+    const uint32_t outputImageExtent = scanRows ? width : height;
+    if (minimumTile < boundMaximum) {
+        const uint32_t lastPixel = std::min(
+            (static_cast<uint32_t>(minimumTile) + 1u) * tileSize,
+            outputImageExtent) - 1u;
+        if (static_cast<double>(lastPixel) < rangeMinimum + outputCenter) {
+            ++minimumTile;
+        }
+    }
+    maximumTileExclusive = std::clamp(
+        maximumTileExclusive, minimumTile, boundMaximum);
+    return {minimumTile, maximumTileExclusive};
+}
+
+std::vector<uint32_t> acceptedTilesScanline(const ConicGaussian2D& gaussian,
+                                            uint32_t width,
+                                            uint32_t height) {
+    std::vector<uint32_t> accepted;
+    const GaussianTileCullingData culling = prepareGaussianTileCulling(
+        gaussian, width, height);
+    if (!culling.active || !culling.bounds.valid()) {
+        return accepted;
+    }
+
+    const int boundWidth = culling.bounds.maximumXExclusive - culling.bounds.minimumX;
+    const int boundHeight = culling.bounds.maximumYExclusive - culling.bounds.minimumY;
+    const bool scanRows = boundHeight <= boundWidth;
+    const int stripMinimum = scanRows
+        ? culling.bounds.minimumY
+        : culling.bounds.minimumX;
+    const int stripMaximum = scanRows
+        ? culling.bounds.maximumYExclusive
+        : culling.bounds.maximumXExclusive;
+    const uint32_t tileCountX = (width + 15u) / 16u;
+    for (int stripTile = stripMinimum; stripTile < stripMaximum; ++stripTile) {
+        const auto range = scanlineTileRange(
+            culling, stripTile, scanRows, width, height);
+        for (int rangeTile = range.first; rangeTile < range.second; ++rangeTile) {
+            const uint32_t tileX = static_cast<uint32_t>(
+                scanRows ? rangeTile : stripTile);
+            const uint32_t tileY = static_cast<uint32_t>(
+                scanRows ? stripTile : rangeTile);
+            accepted.push_back(tileY * tileCountX + tileX);
+        }
+    }
+    std::sort(accepted.begin(), accepted.end());
+    return accepted;
+}
+
+using CompactProjectedGrad = std::array<double, 9>;
+
+CompactProjectedGrad addCompactProjectedGrad(CompactProjectedGrad lhs,
+                                             const CompactProjectedGrad& rhs) {
+    for (size_t component = 0u; component < lhs.size(); ++component) {
+        lhs[component] += rhs[component];
+    }
+    return lhs;
+}
+
+bool testTileLocalSubgroupReduction() {
+    constexpr size_t pixelCount = 256u;
+    constexpr size_t gaussianCount = 7u;
+    std::array<std::array<CompactProjectedGrad, pixelCount>, gaussianCount> contributions{};
+    std::array<CompactProjectedGrad, gaussianCount> direct{};
+    for (size_t gaussian = 0u; gaussian < gaussianCount; ++gaussian) {
+        for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
+            if ((pixel + gaussian * 3u) % 5u == 0u) {
+                continue;
+            }
+            for (size_t component = 0u; component < 9u; ++component) {
+                contributions[gaussian][pixel][component] = static_cast<double>(
+                    ((gaussian + 1u) * (pixel + 3u) * (component + 2u)) % 17u);
+            }
+            direct[gaussian] = addCompactProjectedGrad(
+                direct[gaussian], contributions[gaussian][pixel]);
+        }
+    }
+
+    for (size_t subgroupSize : {16u, 32u, 64u}) {
+        std::array<CompactProjectedGrad, gaussianCount> tileReduced{};
+        for (size_t gaussian = 0u; gaussian < gaussianCount; ++gaussian) {
+            for (size_t subgroupStart = 0u;
+                 subgroupStart < pixelCount;
+                 subgroupStart += subgroupSize) {
+                CompactProjectedGrad subgroup{};
+                for (size_t lane = 0u; lane < subgroupSize; ++lane) {
+                    subgroup = addCompactProjectedGrad(
+                        subgroup, contributions[gaussian][subgroupStart + lane]);
+                }
+                tileReduced[gaussian] = addCompactProjectedGrad(
+                    tileReduced[gaussian], subgroup);
+            }
+        }
+        if (tileReduced != direct) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool testVkSplatTraversalOrder() {
+    constexpr uint32_t gaussianCount = 11u;
+    constexpr uint32_t pixelCount = 9u;
+    constexpr uint32_t perSplatBatchSize = 4u;
+    constexpr uint32_t tensorBatchSize = 16u;
+    const std::array<uint32_t, pixelCount> processedCounts = {
+        0u, 1u, 2u, 3u, 5u, 7u, 9u, 10u, 11u};
+    std::array<std::vector<uint32_t>, pixelCount> perSplatOrder;
+    std::array<std::vector<uint32_t>, pixelCount> tensorOrder;
+
+    for (uint32_t batchBase = 0u; batchBase < gaussianCount;
+         batchBase += perSplatBatchSize) {
+        const uint32_t batchCount = std::min(
+            perSplatBatchSize, gaussianCount - batchBase);
+        for (uint32_t threadRank = 0u; threadRank < batchCount; ++threadRank) {
+            const uint32_t itemOffset = gaussianCount - 1u -
+                                        (batchBase + threadRank);
+            for (uint32_t step = 0u; step < batchCount + pixelCount - 1u; ++step) {
+                const int pixelRank = static_cast<int>(step) -
+                                      static_cast<int>(threadRank);
+                if (pixelRank >= 0 && pixelRank < static_cast<int>(pixelCount) &&
+                    itemOffset < processedCounts[static_cast<size_t>(pixelRank)]) {
+                    perSplatOrder[static_cast<size_t>(pixelRank)].push_back(itemOffset);
+                }
+            }
+        }
+    }
+
+    uint32_t remaining = gaussianCount;
+    while (remaining > 0u) {
+        const uint32_t batchCount = std::min(tensorBatchSize, remaining);
+        const uint32_t batchStart = remaining - batchCount;
+        for (uint32_t reverseIndex = 0u; reverseIndex < batchCount; ++reverseIndex) {
+            const uint32_t itemOffset = batchStart + batchCount - 1u - reverseIndex;
+            for (uint32_t pixel = 0u; pixel < pixelCount; ++pixel) {
+                if (itemOffset < processedCounts[pixel]) {
+                    tensorOrder[pixel].push_back(itemOffset);
+                }
+            }
+        }
+        remaining = batchStart;
+    }
+
+    for (uint32_t pixel = 0u; pixel < pixelCount; ++pixel) {
+        std::vector<uint32_t> expected;
+        for (uint32_t item = processedCounts[pixel]; item > 0u; --item) {
+            expected.push_back(item - 1u);
+        }
+        if (perSplatOrder[pixel] != expected || tensorOrder[pixel] != expected) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::vector<uint32_t> hierarchicalExclusivePrefix(const std::vector<uint32_t>& values) {
     constexpr size_t blockSize = 256u;
     std::vector<uint32_t> result(values.size(), 0u);
@@ -570,6 +777,59 @@ bool testOptimizedEllipseTileCullingMatchesLegacy() {
     return optimizedCandidateCount < coarseCandidateCount;
 }
 
+bool testScanlineEllipseTileCullingMatchesRectanglePredicate() {
+    constexpr uint32_t width = 63u;
+    constexpr uint32_t height = 47u;
+    constexpr double alphaMinimum = 1.0 / 255.0;
+    std::vector<ConicGaussian2D> cases = {
+        {31.5, 23.5, 1.0, 0.0, 1.0, 1.0, 8.0},
+        {16.0, 16.0, 0.04, 0.0, 2.0, 0.8, 15.0},
+        {32.0, 15.0, 0.8, 0.77, 0.8, 0.6, 14.0},
+        {61.5, 45.5, 0.2, -0.12, 1.4, 0.9, 12.0},
+        {20.0, 20.0, 1.0, 0.0, 1.0, alphaMinimum, 4.0},
+        {20.0, 20.0, 1.0, 0.0, 1.0, alphaMinimum * 0.5, 4.0},
+        {24.0, 24.0, -1.0, 0.0, 1.0, 0.8, 8.0},
+        {24.0, 24.0, 1.0, 1.0, 1.0, 0.8, 8.0},
+    };
+
+    std::mt19937 random(41u);
+    std::uniform_real_distribution<double> centerXDistribution(-24.0, 88.0);
+    std::uniform_real_distribution<double> centerYDistribution(-24.0, 72.0);
+    std::uniform_real_distribution<double> eigenvalueDistribution(0.01, 2.0);
+    std::uniform_real_distribution<double> angleDistribution(0.0, 6.283185307179586);
+    std::uniform_real_distribution<double> opacityDistribution(alphaMinimum, 1.0);
+    for (uint32_t sample = 0u; sample < 4000u; ++sample) {
+        const double firstEigenvalue = eigenvalueDistribution(random);
+        const double secondEigenvalue = eigenvalueDistribution(random);
+        const double angle = angleDistribution(random);
+        const double cosine = std::cos(angle);
+        const double sine = std::sin(angle);
+        ConicGaussian2D gaussian{};
+        gaussian.centerX = centerXDistribution(random);
+        gaussian.centerY = centerYDistribution(random);
+        gaussian.a = firstEigenvalue * cosine * cosine + secondEigenvalue * sine * sine;
+        gaussian.b = (firstEigenvalue - secondEigenvalue) * cosine * sine;
+        gaussian.c = firstEigenvalue * sine * sine + secondEigenvalue * cosine * cosine;
+        gaussian.opacity = opacityDistribution(random);
+        gaussian.radius = std::ceil(3.0 / std::sqrt(
+            std::min(firstEigenvalue, secondEigenvalue)));
+        cases.push_back(gaussian);
+    }
+
+    for (const ConicGaussian2D& gaussian : cases) {
+        const auto scanline = acceptedTilesScanline(gaussian, width, height);
+        const auto rectangle = acceptedTilesOptimized(gaussian, width, height);
+        if (scanline != rectangle) {
+            std::cerr << "scanline mismatch center=(" << gaussian.centerX << ", "
+                      << gaussian.centerY << ") conic=(" << gaussian.a << ", "
+                      << gaussian.b << ", " << gaussian.c << ") opacity="
+                      << gaussian.opacity << " radius=" << gaussian.radius << "\n";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool useDirectPixelTo2DGS(const std::vector<uint32_t>& processedCounts,
                           uint32_t laneCount,
                           double minimumSubgroupUtilization) {
@@ -672,7 +932,25 @@ bool testLearningRateAndAdamSteps() {
     double firstMoment = 0.0;
     double secondMoment = 0.0;
     const double firstUpdate = adamUpdate(firstMoment, secondMoment, 2.0, 1u, 0.1);
-    return approximatelyEqual(firstUpdate, 0.1, 1e-12);
+    if (!approximatelyEqual(firstUpdate, 0.1, 1e-12)) {
+        return false;
+    }
+
+    // The fused path must still run Adam with a zero gradient for an
+    // invisible Gaussian so that existing moments decay exactly as in the
+    // staged clear -> projection-backward -> optimizer path.
+    double stagedFirstMoment = 0.4;
+    double stagedSecondMoment = 0.2;
+    double fusedFirstMoment = stagedFirstMoment;
+    double fusedSecondMoment = stagedSecondMoment;
+    const double stagedUpdate = adamUpdate(
+        stagedFirstMoment, stagedSecondMoment, 0.0, 17u, 0.01);
+    const double fusedUpdate = adamUpdate(
+        fusedFirstMoment, fusedSecondMoment, 0.0, 17u, 0.01);
+    return approximatelyEqual(stagedUpdate, fusedUpdate, 1e-12) &&
+           approximatelyEqual(stagedFirstMoment, fusedFirstMoment, 1e-12) &&
+           approximatelyEqual(stagedSecondMoment, fusedSecondMoment, 1e-12) &&
+           std::abs(fusedUpdate) > 0.0;
 }
 
 bool testDensificationDenominator() {
@@ -761,6 +1039,18 @@ int main() {
     }
     if (!testOptimizedEllipseTileCullingMatchesLegacy()) {
         std::cerr << "optimized ellipse/tile culling equivalence test failed\n";
+        return 1;
+    }
+    if (!testScanlineEllipseTileCullingMatchesRectanglePredicate()) {
+        std::cerr << "scanline ellipse/tile culling equivalence test failed\n";
+        return 1;
+    }
+    if (!testTileLocalSubgroupReduction()) {
+        std::cerr << "tile-local subgroup reduction test failed\n";
+        return 1;
+    }
+    if (!testVkSplatTraversalOrder()) {
+        std::cerr << "VkSplat traversal-order test failed\n";
         return 1;
     }
     if (!testAdaptivePixelTo2DGSSelection()) {

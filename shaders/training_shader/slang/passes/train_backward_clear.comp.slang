@@ -16,10 +16,12 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         gaussianGrad.positionOpacity = float4(0.0);
         gaussianGrad.scale = float4(0.0);
         gaussianGrad.rotation = float4(0.0);
-        for (uint i = 0; i < 16; ++i) {
+        for (uint i = 0; i < 12; ++i) {
             gaussianGrad.sh[i] = float4(0.0);
         }
-        gaussianGrads[index] = gaussianGrad;
+        if (params.clearGaussianGrads != 0u) {
+            gaussianGrads[index] = gaussianGrad;
+        }
         projectedGrads[index] = makeZeroProjectedGaussianGrad();
     }
 }

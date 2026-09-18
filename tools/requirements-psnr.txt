@@ -1,0 +1,7 @@
+numpy>=1.24
+opencv-python>=4.8
+torch>=2.0
+torchmetrics>=1.0.1
+gsplat>=1.5
+plyfile>=1.0
+pycolmap>=3.10

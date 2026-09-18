@@ -43,7 +43,7 @@ struct TrainingPushConstants {
     uint32_t optimizerEnabled = 1;
     uint32_t validationUsesDensifiedGaussians = 0;
     float pixelTo2DGSMinSubgroupUtilization = 0.5f;
-    uint32_t padding0 = 0;
+    uint32_t clearGaussianGrads = 1;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };
@@ -73,6 +73,9 @@ enum class TrainingPixelTo2DGSMode : uint32_t {
     Direct = 1,
     WorkgroupShared = 2,
     Subgroup = 3,
+    TileGaussianAtomic = 4,
+    VkSplatPerSplat = 5,
+    VkSplatTensor = 6,
 };
 
 enum class TrainingForwardCompositeMode : uint32_t {
@@ -241,7 +244,9 @@ enum class TrainingGpuProfileStage : uint32_t {
     BackwardClear,
     LossToPixel,
     PixelTo2DGS,
+    TileLocalBackward,
     TwoDGSTo3DGS,
+    FusedProjectionOptimizer,
     Optimizer,
     Validation,
     Densification,
@@ -315,8 +320,27 @@ struct alignas(16) GaussianTrainParam {
     glm::vec4 positionOpacity{};
     glm::vec4 scale{};
     glm::vec4 rotation{};
-    glm::vec4 sh[16]{};
+    glm::vec4 sh[12]{};
 };
+
+inline glm::vec3 trainingSHCoefficient(const GaussianTrainParam& gaussian,
+                                       uint32_t coefficient) {
+    const uint32_t block = coefficient / 4u;
+    const uint32_t lane = coefficient % 4u;
+    return glm::vec3(gaussian.sh[block][lane],
+                     gaussian.sh[4u + block][lane],
+                     gaussian.sh[8u + block][lane]);
+}
+
+inline void setTrainingSHCoefficient(GaussianTrainParam& gaussian,
+                                     uint32_t coefficient,
+                                     const glm::vec3& value) {
+    const uint32_t block = coefficient / 4u;
+    const uint32_t lane = coefficient % 4u;
+    gaussian.sh[block][lane] = value.x;
+    gaussian.sh[4u + block][lane] = value.y;
+    gaussian.sh[8u + block][lane] = value.z;
+}
 
 struct alignas(16) ProjectedGaussian {
     glm::vec4 centerRadius{};
@@ -352,7 +376,7 @@ struct alignas(16) GaussianGrad {
     glm::vec4 positionOpacity{};
     glm::vec4 scale{};
     glm::vec4 rotation{};
-    glm::vec4 sh[16]{};
+    glm::vec4 sh[12]{};
 };
 
 struct alignas(16) TrainingForwardCamera {
@@ -369,14 +393,14 @@ struct alignas(16) AdamState {
     GaussianGrad secondMoment{};
 };
 
-static_assert(sizeof(GaussianTrainParam) == sizeof(glm::vec4) * 19);
+static_assert(sizeof(GaussianTrainParam) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(ProjectedGaussian) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(PixelGrad) == sizeof(glm::vec4));
 static_assert(sizeof(SsimBackwardState) == sizeof(glm::vec4) * 3);
 static_assert(sizeof(PixelBlendState) == sizeof(glm::vec4));
 static_assert(sizeof(GaussianDensificationState) == sizeof(glm::vec4));
 static_assert(sizeof(ProjectedGaussianGrad) == sizeof(glm::vec4) * 3);
-static_assert(sizeof(GaussianGrad) == sizeof(glm::vec4) * 19);
+static_assert(sizeof(GaussianGrad) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(TrainingForwardCamera) == sizeof(glm::vec4) * 15);
 static_assert(sizeof(AdamState) == sizeof(GaussianGrad) * 2);
 static_assert(sizeof(TrainingDensificationPushConstants) == sizeof(glm::vec4) * 4);

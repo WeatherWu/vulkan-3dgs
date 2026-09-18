@@ -68,6 +68,9 @@ public:
     }
     void setForwardCompositeMode(TrainingForwardCompositeMode mode);
     bool subgroupPixelTo2DGSSupported() const;
+    bool tileGaussianPixelTo2DGSSupported() const;
+    bool vkSplatPerSplatSupported() const;
+    bool vkSplatTensorSupported() const;
     TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
     void setValidationInterval(uint32_t interval) { validationInterval_ = interval; }
     uint32_t validationInterval() const { return validationInterval_; }

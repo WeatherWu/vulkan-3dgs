@@ -60,6 +60,8 @@ GaussianRenderer::~GaussianRenderer() {
 
 void GaussianRenderer::initialize(GLFWwindow* window) {
     LOG_INFO("Starting GaussianRenderer initialization");
+    window_ = window;
+    swapchainRecreationPending_ = false;
     
     auto& context = Context::Instance();
     auto device = getDevice();
@@ -77,6 +79,10 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     // 1. 获取窗口尺寸
     int width, height;
     glfwGetFramebufferSize(window, &width, &height);
+    while (width <= 0 || height <= 0) {
+        glfwWaitEvents();
+        glfwGetFramebufferSize(window, &width, &height);
+    }
     
     // 2. 创建 Swapchain（只创建图像和ImageView）
     swapchain_ = std::make_unique<Swapchain>(surface);
@@ -142,6 +148,10 @@ void GaussianRenderer::cleanup() {
     inFlightFences_.clear();
     ubo_.clear();
     frameResourceCount_ = 0;
+    currentFrame_ = 0;
+    imageReadyForPresent_ = false;
+    presentWaitSemaphoreConsumed_ = false;
+    swapchainRecreationPending_ = false;
     
     // 2. 清理Descriptor Pool（会自动销毁所有Descriptor Sets）
     destroyDescriptorPool();
@@ -171,6 +181,7 @@ void GaussianRenderer::cleanup() {
     // 6. 清理RenderPass和Swapchain
     renderPass_.reset();
     swapchain_.reset();
+    window_ = nullptr;
     
 }
 
@@ -294,6 +305,12 @@ void GaussianRenderer::renderToImage() {
     auto device = getDevice();
     record_sort_this_frame_ = false;
     sort_point_count_this_frame_ = 0;
+    imageReadyForPresent_ = false;
+    presentWaitSemaphoreConsumed_ = false;
+
+    if (!ensureSwapchainReadyForFrame()) {
+        return;
+    }
     
     // 1. 等待上一帧完成
     vk::Result waitResult = device.waitForFences(1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
@@ -304,18 +321,27 @@ void GaussianRenderer::renderToImage() {
     
     // 2. 获取下一张交换链图像
     uint32_t imageIndex;
-    vk::Result result = device.acquireNextImageKHR(swapchain_->getSwapchain(), UINT64_MAX, 
-                                                   imageAvailableSemaphores_[currentFrame_], nullptr, &imageIndex);
+    vk::Result result = vk::Result::eSuccess;
+    try {
+        result = device.acquireNextImageKHR(swapchain_->getSwapchain(), UINT64_MAX,
+                                            imageAvailableSemaphores_[currentFrame_],
+                                            nullptr,
+                                            &imageIndex);
+    } catch (const vk::OutOfDateKHRError&) {
+        result = vk::Result::eErrorOutOfDateKHR;
+    }
     if (result != vk::Result::eSuccess){
         if (result == vk::Result::eErrorOutOfDateKHR) {
             LOG_WARN("Swapchain out of date, recreating");
-            recreateSwapchain(swapchain_->getExtent().width, swapchain_->getExtent().height);
+            swapchainRecreationPending_ = true;
+            (void)ensureSwapchainReadyForFrame();
             return;
         } else if (result != vk::Result::eSuboptimalKHR) {
             LOG_ERROR("acquireNextImageKHR failed: %s", to_string(result));
             throw std::runtime_error("Failed to acquire swap chain image!");
         } else {
-            LOG_INFO("Suboptimal swapchain detected, consider recreating");
+            LOG_INFO("Suboptimal swapchain detected during acquire");
+            swapchainRecreationPending_ = true;
         }
     }
     prepareFrameData(swapchain_->getExtent());
@@ -368,19 +394,39 @@ void GaussianRenderer::presentImage() {
                .setPSwapchains(swapchains);
     presentInfo.setPImageIndices(&acquiredImageIndex_);
     
-    vk::Result presentResult = context.getDevice().getPresentQueue().presentKHR(presentInfo);
+    vk::Result presentResult = vk::Result::eSuccess;
+    bool recreateAfterPresent = swapchainRecreationPending_;
+    try {
+        presentResult = context.getDevice().getPresentQueue().presentKHR(presentInfo);
+    } catch (const vk::OutOfDateKHRError&) {
+        presentResult = vk::Result::eErrorOutOfDateKHR;
+    } catch (...) {
+        imageReadyForPresent_ = false;
+        presentWaitSemaphoreConsumed_ = false;
+        throw;
+    }
     if (presentResult == vk::Result::eErrorOutOfDateKHR) {
-        LOG_WARN("Swapchain out of date during present, recreating");
-        recreateSwapchain(swapchain_->getExtent().width, swapchain_->getExtent().height);
+        LOG_WARN("Swapchain out of date during present");
+        recreateAfterPresent = true;
     } else if (presentResult == vk::Result::eSuboptimalKHR) {
         LOG_INFO("Suboptimal swapchain detected during present");
+        recreateAfterPresent = true;
     } else if (presentResult != vk::Result::eSuccess) {
-        LOG_ERROR("Failed to present image: {}", vk::to_string(presentResult));
+        imageReadyForPresent_ = false;
+        presentWaitSemaphoreConsumed_ = false;
+        throw std::runtime_error(
+            "Failed to present image: " + vk::to_string(presentResult));
     }
     
     imageReadyForPresent_ = false;
     presentWaitSemaphoreConsumed_ = false;
-    currentFrame_ = (currentFrame_ + 1) % frameResourceCount_;
+    if (frameResourceCount_ > 0u) {
+        currentFrame_ = (currentFrame_ + 1) % frameResourceCount_;
+    }
+    if (recreateAfterPresent) {
+        swapchainRecreationPending_ = true;
+        (void)ensureSwapchainReadyForFrame();
+    }
 }
 
 void GaussianRenderer::renderToBuffer() {
@@ -388,11 +434,9 @@ void GaussianRenderer::renderToBuffer() {
 }
 
 void GaussianRenderer::onResize(uint32_t width, uint32_t height) {
-    auto currentExtent = swapchain_->getExtent();
-    if (currentExtent.width == width && currentExtent.height == height) {
-        return;
-    }
-    recreateSwapchain(width, height);
+    (void)width;
+    (void)height;
+    swapchainRecreationPending_ = true;
 }
 
 void GaussianRenderer::setPresentModePreference(PresentModePreference preference) {
@@ -406,11 +450,37 @@ void GaussianRenderer::setPresentModePreference(PresentModePreference preference
     }
 
     swapchain_->setPresentModePreference(preference);
-    auto extent = swapchain_->getExtent();
-    recreateSwapchain(extent.width, extent.height);
+    swapchainRecreationPending_ = true;
+}
+
+bool GaussianRenderer::ensureSwapchainReadyForFrame() {
+    if (!window_ || !swapchain_) {
+        return false;
+    }
+
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    glfwGetFramebufferSize(window_, &framebufferWidth, &framebufferHeight);
+    if (framebufferWidth <= 0 || framebufferHeight <= 0) {
+        swapchainRecreationPending_ = true;
+        imageReadyForPresent_ = false;
+        return false;
+    }
+
+    const auto extent = swapchain_->getExtent();
+    const uint32_t width = static_cast<uint32_t>(framebufferWidth);
+    const uint32_t height = static_cast<uint32_t>(framebufferHeight);
+    if (swapchainRecreationPending_ || extent.width != width || extent.height != height) {
+        recreateSwapchain(width, height);
+    }
+    return true;
 }
 
 void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
+    if (width == 0u || height == 0u) {
+        swapchainRecreationPending_ = true;
+        return;
+    }
     LOG_INFO("Recreating swapchain: {}x{}", width, height);
     
     auto device = getDevice();
@@ -437,6 +507,9 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
     }
 
     swapchain_->createFramebuffers(device, renderPass_->getRenderPass(), RenderPass::DepthFormat);
+    imageReadyForPresent_ = false;
+    presentWaitSemaphoreConsumed_ = false;
+    swapchainRecreationPending_ = false;
 }
 
 void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vulkan3DGS::Camera& camera, const glm::mat4& modelMatrix) {
@@ -548,10 +621,6 @@ void GaussianRenderer::createSyncObjects() {
 void GaussianRenderer::recreateRenderFinishedSemaphores() {
     auto device = getDevice();
     uint32_t newImageCount = swapchain_->getImageCount();
-    if (swapchainImageCount_ == newImageCount &&
-        renderFinishedSemaphores_.size() == newImageCount) {
-        return;
-    }
 
     for (vk::Semaphore semaphore : renderFinishedSemaphores_) {
         if (semaphore) {
