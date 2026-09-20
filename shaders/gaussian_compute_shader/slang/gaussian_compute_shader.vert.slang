@@ -19,6 +19,7 @@ struct VertexOutput {
     float3 color : TEXCOORD0;
     float alpha : TEXCOORD1;
     float2 gaussianUV : TEXCOORD2;
+    float compatibleProfile : TEXCOORD3;
 };
 
 float3x3 mat3FromMat4(float4x4 value) {
@@ -42,6 +43,7 @@ VertexOutput cullOutput() {
     output.color = float3(0.0, 0.0, 0.0);
     output.alpha = 0.0;
     output.gaussianUV = float2(0.0, 0.0);
+    output.compatibleProfile = 0.0;
     return output;
 }
 
@@ -133,9 +135,14 @@ VertexOutput main(VertexInput input) {
         return cullOutput();
     }
 
-    static const float CONFIDENCE_RADIUS = 3.0;
-    float2 gaussianUV = input.quadVertex * CONFIDENCE_RADIUS;
-    float2 ndcOffset = mul(rotScale, input.quadVertex) * CONFIDENCE_RADIUS;
+    bool compatibleProfile = ubo.renderSettings.x != 0u;
+    static const float LEGACY_RADIUS = 3.0;
+    static const float COMPATIBLE_RADIUS = 2.8284271247461903;
+    float radius = compatibleProfile ? COMPATIBLE_RADIUS : LEGACY_RADIUS;
+    float2 gaussianUV = compatibleProfile
+        ? input.quadVertex
+        : input.quadVertex * LEGACY_RADIUS;
+    float2 ndcOffset = mul(rotScale, input.quadVertex) * radius;
 
     VertexOutput output;
     output.position = float4(ndcCenter3 + float3(ndcOffset, 0.0), 1.0);
@@ -145,8 +152,9 @@ VertexOutput main(VertexInput input) {
     float3 viewVector = instance.position.xyz - cameraModelPosition;
     float3 viewDirection = dot(viewVector, viewVector) > 1e-12 ? normalize(viewVector) : float3(0.0, 0.0, 0.0);
 
-    output.color = evaluateSH(instance, viewDirection);
+    output.color = evaluateSH(instance, viewDirection, min(ubo.renderSettings.y, 3u));
     output.alpha = alpha;
     output.gaussianUV = gaussianUV;
+    output.compatibleProfile = compatibleProfile ? 1.0 : 0.0;
     return output;
 }

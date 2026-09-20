@@ -70,6 +70,19 @@ cmake --build build
 ./build/bin/Release/vulkan-3dgs
 ```
 
+## 查看器相机
+
+`Camera` 面板提供 `Legacy` 和 `SuperSplat Compatible` 两种渲染配置，两者使用同一个相机控制器。Legacy 保留原来的 3σ Gaussian 核和非预乘 Alpha 混合；兼容配置使用有限归一化核和预乘 source-over 混合。SH 阶数可在 0～3 之间选择。
+
+- 左键拖动：Orbit；Fly 模式下用于转向
+- 右键拖动：平移
+- 滚轮：Dolly 缩放
+- `V`：切换 Orbit/Fly
+- `F`：聚焦已加载模型；`Shift+F`：重置视角
+- Fly 模式：`W/A/S/D`、`Q/E`，`Shift` 为 10 倍速度，`Alt` 为 0.1 倍速度
+
+共用相机采用无滚转焦点模型、阻尼、长边 FOV 和按场景包围范围拟合的 near/far。相机设置和所选配置会随现有应用设置一起保存。
+
 ## 训练数据集
 
 训练使用 MipNeRF360/COLMAP 风格场景，需要相机信息和源图片，并可选使用 `points3D.bin` 初始化 Gaussian。

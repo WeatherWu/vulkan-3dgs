@@ -70,6 +70,19 @@ cmake --build build
 ./build/bin/Release/vulkan-3dgs
 ```
 
+## Viewer Camera
+
+The `Camera` panel provides `Legacy` and `SuperSplat Compatible` rendering profiles. Both profiles use the same camera controller. Legacy retains the original 3-sigma Gaussian kernel and straight-alpha blend, while the compatible profile uses a finite normalized kernel and premultiplied source-over blending. SH bands can be selected from 0 through 3.
+
+- Left drag: orbit, or look around in Fly mode
+- Right drag: pan
+- Mouse wheel: dolly
+- `V`: toggle Orbit/Fly
+- `F`: focus the loaded model; `Shift+F`: reset the view
+- Fly mode: `W/A/S/D`, `Q/E`, with `Shift` for 10x and `Alt` for 0.1x speed
+
+The shared camera uses a roll-free focal-point representation, damping, larger-axis FOV, and scene-fitted near/far clipping planes. Camera settings and the selected profile are saved with the existing application settings.
+
 ## Training Dataset
 
 Training expects a MipNeRF360/COLMAP-style scene containing camera metadata, source images, and optionally `points3D.bin` for Gaussian initialization.

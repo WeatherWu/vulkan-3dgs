@@ -64,6 +64,17 @@ tests/                                 CPU 和缓存测试
 
 加载时会恢复 scale 和 opacity 的参数化值，并根据 scale 和 quaternion rotation 生成 covariance。
 
+### 查看器相机与渲染配置
+
+普通 PLY 渲染提供 `Legacy` 和 `SuperSplat Compatible` 两种配置。两者共用无滚转的 `CameraController`，支持 Orbit/Fly、阻尼、长边 FOV 和按包围范围拟合的裁剪面。两种配置只在 graphics 渲染语义上不同：
+
+- Legacy 使用原来的 3σ 指数核和非预乘 Alpha 管线。
+- SuperSplat Compatible 使用半径为 `sqrt(8)` 的有限归一化核、预乘 RGB、source-over Alpha 累积以及 `1/255` 片元贡献阈值。
+
+两个 graphics pipeline 提供 Vulkan 所需的不同静态混合状态。Profile 标志与所选 SH 阶数通过 `UniformBufferObject::renderSettings` 传入；修改时必须同步 graphics C++ UBO 和 `gaussian_common.slang` 布局。这条路径与所有训练 shader 相互独立。
+
+相机 Reset 和 Focus 根据当前 framebuffer 比例下更受限的水平/垂直半 FOV 计算距离，并保留少量构图边距，不再使用固定世界空间最小距离。加载模型或重置相机时会回到 Orbit。`GaussianModel` 维护两套额外范围：按分位数裁除离群点并过滤不可见 opacity 的 focus bounds，用于稳定构图；以及按每个 Gaussian 的 3σ scale 扩展的保守完整 bounds，用于 near/far 拟合。原有仅基于中心的 bounds 继续用于模型变换。
+
 ## 数据集加载
 
 训练 loader 支持 MipNeRF360/COLMAP 风格结构：

@@ -11,7 +11,10 @@ public:
     Pipeline();
     ~Pipeline();
     
-    void initialize(vk::Device device, vk::RenderPass render_pass, vk::Extent2D extent);
+    void initialize(vk::Device device,
+                    vk::RenderPass render_pass,
+                    vk::Extent2D extent,
+                    bool premultipliedAlpha = false);
     void cleanup();
     
     vk::Pipeline getPipeline() const { return pipeline_; }

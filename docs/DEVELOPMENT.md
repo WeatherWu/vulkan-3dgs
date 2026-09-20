@@ -64,6 +64,17 @@ The normal renderer supports binary little-endian 3DGS-style PLY properties:
 
 Scale and opacity are restored from their stored parameterization, and covariance is generated from scale and quaternion rotation.
 
+### Viewer camera and render profiles
+
+Normal PLY rendering exposes `Legacy` and `SuperSplat Compatible` profiles. Both use the shared roll-free `CameraController` with Orbit/Fly, damping, larger-axis FOV, and bounds-fitted clipping planes. Profiles differ only in graphics rendering:
+
+- Legacy uses the original 3-sigma exponential kernel and straight-alpha pipeline.
+- SuperSplat Compatible uses a finite normalized kernel with radius `sqrt(8)`, premultiplied RGB, source-over alpha accumulation, and a `1/255` fragment contribution cutoff.
+
+Two graphics pipelines provide the required static Vulkan blend states. A profile flag and selected SH band count are passed in `UniformBufferObject::renderSettings`; the graphics UBO and `gaussian_common.slang` layout must remain synchronized. This path is independent of all training shaders.
+
+Camera reset and focus derive distance from the limiting horizontal/vertical half-FOV at the current framebuffer aspect ratio, with a small framing margin; they do not use a fixed world-space minimum distance. Loading a model or resetting the camera returns to Orbit mode. `GaussianModel` keeps separate bounds: percentile-trimmed, opacity-visible focus bounds for stable framing, and conservative full bounds expanded by each Gaussian's 3-sigma scale for near/far fitting. The original center-only bounds remain available for model transforms.
+
 ## Dataset Loading
 
 The training loader accepts MipNeRF360/COLMAP-like layouts with:

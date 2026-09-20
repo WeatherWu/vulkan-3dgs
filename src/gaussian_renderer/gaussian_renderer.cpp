@@ -102,6 +102,9 @@ void GaussianRenderer::initialize(GLFWwindow* window) {
     // 5. 创建 Pipeline
     pipeline_ = std::make_unique<Pipeline>();
     pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
+    compatiblePipeline_ = std::make_unique<Pipeline>();
+    compatiblePipeline_->initialize(
+        device, renderPass_->getRenderPass(), swapchain_->getExtent(), true);
     
     // 6. 创建 Compute Pipeline
     createComputePipeline();
@@ -167,6 +170,7 @@ void GaussianRenderer::cleanup() {
     sortBufferCapacity_ = 0;
     
     // 4. 清理Pipelines
+    compatiblePipeline_.reset();
     pipeline_.reset();
     radixKeygenPipeline_.reset();
     if (radixSorter_) {
@@ -501,6 +505,9 @@ void GaussianRenderer::recreateSwapchain(uint32_t width, uint32_t height) {
 
         pipeline_->cleanup();
         pipeline_->initialize(device, renderPass_->getRenderPass(), swapchain_->getExtent());
+        compatiblePipeline_->cleanup();
+        compatiblePipeline_->initialize(
+            device, renderPass_->getRenderPass(), swapchain_->getExtent(), true);
 
         createDescriptorSets();
         updateDescriptorSets();
@@ -1112,6 +1119,11 @@ void GaussianRenderer::updateUniformBuffer(const glm::mat4& view, const glm::mat
         static_cast<float>(extent.width),
         static_cast<float>(extent.height)
     );
+    ubo_[currentFrame_].renderSettings = glm::uvec4(
+        renderProfile_ == GaussianRenderProfile::SuperSplatCompatible ? 1u : 0u,
+        std::min(shBands_, 3u),
+        0u,
+        0u);
     
     std::ostringstream fx;
     std::ostringstream fy;
@@ -1143,11 +1155,15 @@ void GaussianRenderer::recordCommandBuffer(uint32_t image_index) {
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
     commandBuffer.begin(beginInfo);
+    Pipeline& activePipeline =
+        renderProfile_ == GaussianRenderProfile::SuperSplatCompatible
+            ? *compatiblePipeline_
+            : *pipeline_;
     recordRenderCommands(commandBuffer,
                          renderPass_->getRenderPass(),
                          swapchain_->getFramebuffer(image_index),
                          swapchain_->getExtent(),
-                         *pipeline_,
+                         activePipeline,
                          true);
     commandBuffer.end();
 }

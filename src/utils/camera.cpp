@@ -79,10 +79,9 @@ glm::mat4 Camera::get_view_matrix() const {
     return glm::lookAt(position_, position_ + front_, up_);
 }
 
-glm::mat4 Camera::get_projection_matrix(float aspect_ratio, float fov, 
-                                       float near_plane, float far_plane) {
-    fov_ = fov;
-    glm::mat4 projection = glm::perspective(glm::radians(fov_), aspect_ratio, near_plane, far_plane);
+glm::mat4 Camera::get_projection_matrix(float aspect_ratio, float vertical_fov,
+                                       float near_plane, float far_plane) const {
+    glm::mat4 projection = glm::perspective(glm::radians(vertical_fov), aspect_ratio, near_plane, far_plane);
     projection[1][1] *= -1.0f; // Vulkan framebuffer coordinates have inverted Y relative to GLM's OpenGL projection.
     return projection;
 }

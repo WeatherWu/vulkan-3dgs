@@ -34,8 +34,8 @@ public:
     
     // 获取矩阵
     glm::mat4 get_view_matrix() const;
-    glm::mat4 get_projection_matrix(float aspect_ratio, float fov, 
-                                   float near_plane = 0.1f, float far_plane = 100.0f);
+    glm::mat4 get_projection_matrix(float aspect_ratio, float vertical_fov,
+                                   float near_plane = 0.1f, float far_plane = 100.0f) const;
     
     // 获取属性
     const glm::vec3& get_position() const { return position_; }
@@ -45,6 +45,7 @@ public:
     float get_yaw() const { return yaw_; }
     float get_pitch() const { return pitch_; }
     float get_fov() const { return fov_; }
+    void set_fov(float fov) { fov_ = fov; }
     
 private:
     void update_vectors();

@@ -168,6 +168,7 @@ Application::Application(const std::string& title,
     // 使用工厂方法创建具体的渲染器实例
     renderer_ = createRenderer(current_mode_);
     renderer_->initialize(window_->get_handle());
+    applyRenderProfile();
     renderer_->setImGuiDrawCallback([this]() {
         drawImGuiControls();
     });
@@ -200,9 +201,7 @@ Application::Application(const std::string& title,
         }
 
         if (has_true_camera_) {
-            float aspect = static_cast<float>(width) / static_cast<float>(height);
-            view_matrix_ = camera_.get_view_matrix();
-            projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
+            updateCameraMatrices(width, height);
         }
     });
 
@@ -290,6 +289,8 @@ void Application::switchRenderMode(RenderMode mode) {
         renderer_->initialize(window_->get_handle());
         if (auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get())) {
             gsRenderer->setPresentModePreference(present_mode_preference_);
+            gsRenderer->setRenderProfile(gaussian_render_profile_);
+            gsRenderer->setSHBands(gaussian_sh_bands_);
         }
         renderer_->setImGuiDrawCallback([this]() {
             drawImGuiControls();
@@ -321,7 +322,7 @@ void Application::initialize() {
 }
 
 void Application::update(float delta_time) {
-    updateOrbitCamera(delta_time);
+    updateSuperSplatCamera(delta_time);
 
     if (training_running_ && !training_async_active_) {
         try {
@@ -346,9 +347,7 @@ void Application::render() {
             int framebufferHeight = 0;
             glfwGetFramebufferSize(window_->get_handle(), &framebufferWidth, &framebufferHeight);
             if (framebufferWidth > 0 && framebufferHeight > 0) {
-                float aspect = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
-                view_matrix_ = camera_.get_view_matrix();
-                projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
+                updateCameraMatrices(framebufferWidth, framebufferHeight);
             }
         }
         
@@ -378,7 +377,7 @@ void Application::render() {
 void Application::setModel(const GaussianModel* model) {
     owned_model_.reset();
     current_model_ = model;
-    resetOrbitFromModel();
+    resetCameraFromModel();
 }
 
 bool Application::loadModelFromFile(const std::string& filename) {
@@ -391,7 +390,7 @@ bool Application::loadModelFromFile(const std::string& filename) {
     owned_model_ = std::move(model);
     owned_model_path_ = filename;
     current_model_ = owned_model_.get();
-    resetOrbitFromModel();
+    resetCameraFromModel();
     updateModelMatrix();
 
     LOG_INFO("Loaded model from dropped file: {}", filename);
@@ -406,19 +405,14 @@ void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) 
 void Application::setTrueCamera(const vulkan3DGS::Camera& camera) {
     camera_ = camera;
     has_true_camera_ = true;
-
-    glm::vec3 offset = camera_.get_position() - orbit_center_;
-    float horizontalDistance = std::sqrt(offset.x * offset.x + offset.z * offset.z);
-    float distance = glm::length(offset);
-    if (distance > 0.001f) {
-        orbit_offset_ = offset;
-        orbit_up_ = camera_.get_up();
-        orbit_radius_ = distance;
-        orbit_angle_ = std::atan2(offset.z, offset.x);
-        orbit_pitch_ = std::asin(std::clamp(offset.y / distance, -1.0f, 1.0f));
-    } else if (horizontalDistance > 0.001f) {
-        orbit_angle_ = std::atan2(offset.z, offset.x);
-    }
+    const glm::vec3 focalPoint = current_model_
+        ? current_model_->get_focus_center()
+        : camera_.get_position() + camera_.get_front() * 5.0f;
+    const float sceneRadius = current_model_
+        ? current_model_->get_focus_radius()
+        : 2.0f;
+    supersplat_camera_controller_.syncFromCamera(
+        camera_, focalPoint, sceneRadius);
 }
 
 void Application::cleanup() {
@@ -438,147 +432,194 @@ void Application::cleanup() {
     // 注意：vulkan_context_是单例，不需要在这里清理
 }
 
-void Application::resetOrbitFromModel() {
+void Application::resetCameraFromModel() {
+    int framebufferWidth = 1;
+    int framebufferHeight = 1;
+    if (window_) {
+        glfwGetFramebufferSize(
+            window_->get_handle(), &framebufferWidth, &framebufferHeight);
+    }
     if (!current_model_ || current_model_->isEmpty()) {
-        orbit_center_ = glm::vec3(0.0f);
-        orbit_radius_ = 5.0f;
-        orbit_angle_ = 0.0f;
-        orbit_pitch_ = 0.0f;
-        orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
-        orbit_up_ = glm::vec3(0.0f, 1.0f, 0.0f);
+        supersplat_camera_controller_.reset(
+            glm::vec3(0.0f), 1.0f,
+            static_cast<float>(std::max(framebufferWidth, 1)),
+            static_cast<float>(std::max(framebufferHeight, 1)));
         return;
     }
-
-    orbit_center_ = current_model_->get_center();
-    orbit_radius_ = std::max(current_model_->get_radius() * 2.5f, 1.0f);
-    orbit_angle_ = 0.0f;
-    orbit_pitch_ = 0.0f;
-    orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
-    orbit_up_ = glm::vec3(0.0f, 1.0f, 0.0f);
+    supersplat_camera_controller_.reset(
+        current_model_->get_focus_center(), current_model_->get_focus_radius(),
+        static_cast<float>(std::max(framebufferWidth, 1)),
+        static_cast<float>(std::max(framebufferHeight, 1)));
 }
 
-void Application::updateOrbitCamera(float delta_time) {
-    if (!orbit_camera_enabled_ || !current_model_) {
+void Application::focusCameraOnModel() {
+    if (!current_model_ || current_model_->isEmpty()) {
+        return;
+    }
+    int framebufferWidth = 1;
+    int framebufferHeight = 1;
+    if (window_) {
+        glfwGetFramebufferSize(
+            window_->get_handle(), &framebufferWidth, &framebufferHeight);
+    }
+    supersplat_camera_controller_.focus(
+        current_model_->get_focus_center(), current_model_->get_focus_radius(),
+        static_cast<float>(std::max(framebufferWidth, 1)),
+        static_cast<float>(std::max(framebufferHeight, 1)));
+}
+
+void Application::updateSuperSplatCamera(float deltaTime) {
+    if (!current_model_ || current_model_->isEmpty()) {
         return;
     }
 
-    updateOrbitInput(delta_time);
-
-    float offsetLength = glm::length(orbit_offset_);
-    if (offsetLength <= 1e-5f) {
-        orbit_offset_ = glm::vec3(orbit_radius_, 0.0f, 0.0f);
-    } else {
-        orbit_offset_ = glm::normalize(orbit_offset_) * orbit_radius_;
-    }
-
-    camera_.set_position(orbit_center_ + orbit_offset_);
-    camera_.look_at(orbit_center_, orbit_up_);
+    updateSuperSplatInput(deltaTime);
+    supersplat_camera_controller_.update(deltaTime, camera_);
     has_true_camera_ = true;
 
     if (!window_) {
         return;
     }
-
     int framebufferWidth = 0;
     int framebufferHeight = 0;
     glfwGetFramebufferSize(window_->get_handle(), &framebufferWidth, &framebufferHeight);
-    if (framebufferWidth <= 0 || framebufferHeight <= 0) {
-        return;
+    if (framebufferWidth > 0 && framebufferHeight > 0) {
+        updateCameraMatrices(framebufferWidth, framebufferHeight);
     }
-
-    float aspect = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
-    view_matrix_ = camera_.get_view_matrix();
-    projection_matrix_ = camera_.get_projection_matrix(aspect, camera_.get_fov());
-    syncOrbitAnglesFromOffset();
 }
 
-void Application::updateOrbitInput(float delta_time) {
-    (void)delta_time;
-
+void Application::updateSuperSplatInput(float deltaTime) {
     if (!window_) {
         return;
     }
 
-    bool imguiCapturingMouse = false;
-    if (ImGui::GetCurrentContext()) {
-        imguiCapturingMouse = ImGui::GetIO().WantCaptureMouse;
-    }
+    GLFWwindow* handle = window_->get_handle();
+    const ImGuiIO* io = ImGui::GetCurrentContext() ? &ImGui::GetIO() : nullptr;
+    const bool captureMouse = io && io->WantCaptureMouse;
+    const bool captureKeyboard = io && io->WantCaptureKeyboard;
 
-    bool leftDown = glfwGetMouseButton(window_->get_handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     double mouseX = 0.0;
     double mouseY = 0.0;
-    glfwGetCursorPos(window_->get_handle(), &mouseX, &mouseY);
+    glfwGetCursorPos(handle, &mouseX, &mouseY);
+    const bool leftDown =
+        glfwGetMouseButton(handle, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    const bool rightDown =
+        glfwGetMouseButton(handle, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    const int activeButton = rightDown
+        ? GLFW_MOUSE_BUTTON_RIGHT
+        : (leftDown ? GLFW_MOUSE_BUTTON_LEFT : -1);
 
-    if (!leftDown || imguiCapturingMouse) {
-        orbit_dragging_ = false;
+    if (captureMouse || activeButton < 0) {
+        supersplat_dragging_ = false;
+        supersplat_drag_button_ = -1;
         last_mouse_x_ = mouseX;
         last_mouse_y_ = mouseY;
-        return;
-    }
-
-    if (!orbit_dragging_) {
-        orbit_dragging_ = true;
+    } else if (!supersplat_dragging_ || supersplat_drag_button_ != activeButton) {
+        supersplat_dragging_ = true;
+        supersplat_drag_button_ = activeButton;
         last_mouse_x_ = mouseX;
         last_mouse_y_ = mouseY;
-        return;
+    } else {
+        const float deltaX = static_cast<float>(mouseX - last_mouse_x_);
+        const float deltaY = static_cast<float>(mouseY - last_mouse_y_);
+        last_mouse_x_ = mouseX;
+        last_mouse_y_ = mouseY;
+
+        if (activeButton == GLFW_MOUSE_BUTTON_RIGHT) {
+            int framebufferWidth = 0;
+            int framebufferHeight = 0;
+            glfwGetFramebufferSize(handle, &framebufferWidth, &framebufferHeight);
+            supersplat_camera_controller_.pan(
+                deltaX, deltaY,
+                static_cast<float>(framebufferWidth),
+                static_cast<float>(framebufferHeight));
+        } else if (supersplat_camera_controller_.mode() == CameraControlMode::Fly) {
+            supersplat_camera_controller_.look(deltaX, deltaY);
+        } else {
+            supersplat_camera_controller_.orbit(deltaX, deltaY);
+        }
     }
 
-    double deltaX = mouseX - last_mouse_x_;
-    double deltaY = mouseY - last_mouse_y_;
-    last_mouse_x_ = mouseX;
-    last_mouse_y_ = mouseY;
-
-    glm::vec2 drag(static_cast<float>(deltaX), static_cast<float>(deltaY));
-    float dragLength = glm::length(drag);
-    if (dragLength <= 1e-5f) {
-        return;
+    const bool toggleDown =
+        glfwGetKey(handle, GLFW_KEY_V) == GLFW_PRESS;
+    if (!captureKeyboard && toggleDown && !supersplat_toggle_key_down_) {
+        supersplat_camera_controller_.toggleMode();
     }
+    supersplat_toggle_key_down_ = toggleDown;
 
-    glm::vec3 viewDirection = glm::normalize(orbit_center_ - camera_.get_position());
-    glm::vec3 cameraUp = glm::normalize(orbit_up_);
-    glm::vec3 cameraRight = glm::cross(viewDirection, cameraUp);
-    if (glm::length(cameraRight) <= 1e-5f) {
-        cameraRight = camera_.get_right();
+    const bool focusDown =
+        glfwGetKey(handle, GLFW_KEY_F) == GLFW_PRESS;
+    if (!captureKeyboard && focusDown && !supersplat_focus_key_down_) {
+        const bool resetAngles =
+            glfwGetKey(handle, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+            glfwGetKey(handle, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+        if (resetAngles) {
+            resetCameraFromModel();
+        } else {
+            focusCameraOnModel();
+        }
     }
-    cameraRight = glm::normalize(cameraRight);
-    cameraUp = glm::normalize(glm::cross(cameraRight, viewDirection));
+    supersplat_focus_key_down_ = focusDown;
 
-    glm::vec3 axisWorld = drag.y * cameraRight + drag.x * cameraUp;
-    float axisLength = glm::length(axisWorld);
-    if (axisLength <= 1e-5f) {
-        return;
+    if (!captureKeyboard &&
+        supersplat_camera_controller_.mode() == CameraControlMode::Fly) {
+        glm::vec3 localMotion(0.0f);
+        if (glfwGetKey(handle, GLFW_KEY_D) == GLFW_PRESS) localMotion.x += 1.0f;
+        if (glfwGetKey(handle, GLFW_KEY_A) == GLFW_PRESS) localMotion.x -= 1.0f;
+        if (glfwGetKey(handle, GLFW_KEY_E) == GLFW_PRESS) localMotion.y += 1.0f;
+        if (glfwGetKey(handle, GLFW_KEY_Q) == GLFW_PRESS) localMotion.y -= 1.0f;
+        if (glfwGetKey(handle, GLFW_KEY_W) == GLFW_PRESS) localMotion.z += 1.0f;
+        if (glfwGetKey(handle, GLFW_KEY_S) == GLFW_PRESS) localMotion.z -= 1.0f;
+
+        float speedMultiplier = 1.0f;
+        if (glfwGetKey(handle, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+            glfwGetKey(handle, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
+            speedMultiplier *= 10.0f;
+        }
+        if (glfwGetKey(handle, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+            glfwGetKey(handle, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS) {
+            speedMultiplier *= 0.1f;
+        }
+        supersplat_camera_controller_.fly(
+            localMotion, deltaTime, speedMultiplier);
     }
-    axisWorld /= axisLength;
-
-    // Move the camera in the inverse direction so the object appears to rotate
-    // with the mouse, matching a direct model-rotation trackball.
-    float angle = -dragLength * orbit_mouse_sensitivity_;
-    glm::quat deltaRotation = glm::angleAxis(angle, axisWorld);
-    orbit_offset_ = deltaRotation * orbit_offset_;
-    orbit_up_ = glm::normalize(deltaRotation * cameraUp);
-    orbit_radius_ = std::max(glm::length(orbit_offset_), 0.05f);
-    syncOrbitAnglesFromOffset();
 }
 
-void Application::syncOrbitAnglesFromOffset() {
-    float distance = glm::length(orbit_offset_);
-    if (distance <= 1e-5f) {
-        orbit_angle_ = 0.0f;
-        orbit_pitch_ = 0.0f;
+void Application::updateCameraMatrices(int framebufferWidth,
+                                       int framebufferHeight) {
+    if (framebufferWidth <= 0 || framebufferHeight <= 0) {
         return;
     }
 
-    orbit_angle_ = std::atan2(orbit_offset_.z, orbit_offset_.x);
-    orbit_pitch_ = std::asin(std::clamp(orbit_offset_.y / distance, -1.0f, 1.0f));
+    camera_near_plane_ = 0.1f;
+    camera_far_plane_ = 100.0f;
+    if (current_model_ && !current_model_->isEmpty()) {
+        const auto clipping = supersplat_camera_controller_.fitClippingPlanes(
+            camera_, current_model_->get_clip_center(), current_model_->get_clip_radius());
+        camera_near_plane_ = clipping.first;
+        camera_far_plane_ = clipping.second;
+    }
+
+    const float aspect = static_cast<float>(framebufferWidth) /
+                         static_cast<float>(framebufferHeight);
+    float verticalFov = camera_.get_fov();
+    if (aspect > 1.0f) {
+        verticalFov = glm::degrees(
+            2.0f * std::atan(
+                std::tan(glm::radians(camera_.get_fov()) * 0.5f) / aspect));
+    }
+    view_matrix_ = camera_.get_view_matrix();
+    projection_matrix_ = camera_.get_projection_matrix(
+        aspect, verticalFov, camera_near_plane_, camera_far_plane_);
 }
 
-void Application::rebuildOrbitOffsetFromAngles() {
-    float cosPitch = std::cos(orbit_pitch_);
-    orbit_offset_ = glm::vec3(
-        std::cos(orbit_angle_) * cosPitch * orbit_radius_,
-        std::sin(orbit_pitch_) * orbit_radius_,
-        std::sin(orbit_angle_) * cosPitch * orbit_radius_
-    );
+void Application::applyRenderProfile() {
+    if (auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get())) {
+        gsRenderer->setRenderProfile(gaussian_render_profile_);
+        gsRenderer->setSHBands(gaussian_sh_bands_);
+    }
+    camera_.set_fov(supersplat_camera_controller_.fovDegrees());
+    supersplat_dragging_ = false;
 }
 
 void Application::drawImGuiControls() {
@@ -588,6 +629,28 @@ void Application::drawImGuiControls() {
     ImGui::Text("FPS %.1f", io.Framerate);
     if (io.Framerate > 0.0f) {
         ImGui::Text("Frame %.2f ms", 1000.0f / io.Framerate);
+    }
+    ImGui::Separator();
+
+    int renderProfileIndex = static_cast<int>(gaussian_render_profile_);
+    const char* renderProfileLabels[] = {
+        "Legacy",
+        "SuperSplat Compatible",
+    };
+    if (ImGui::Combo("Render Profile", &renderProfileIndex,
+                     renderProfileLabels, IM_ARRAYSIZE(renderProfileLabels))) {
+        gaussian_render_profile_ = static_cast<GaussianRenderProfile>(
+            std::clamp(renderProfileIndex, 0, 1));
+        applyRenderProfile();
+        saveTrainingSettings();
+    }
+    ImGui::TextDisabled("Both profiles share the same camera controls.");
+    int shBands = static_cast<int>(gaussian_sh_bands_);
+    if (ImGui::SliderInt("SH Bands", &shBands, 0, 3)) {
+        gaussian_sh_bands_ = static_cast<uint32_t>(std::clamp(shBands, 0, 3));
+        if (auto* gsRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get())) {
+            gsRenderer->setSHBands(gaussian_sh_bands_);
+        }
     }
     ImGui::Separator();
 
@@ -615,22 +678,77 @@ void Application::drawImGuiControls() {
         updateModelMatrix();
     }
 
-    ImGui::Checkbox("Orbit", &orbit_camera_enabled_);
-    ImGui::SliderFloat("Sensitivity", &orbit_mouse_sensitivity_, 0.001f, 0.02f, "%.3f");
-    ImGui::SliderFloat("Dolly Speed", &orbit_zoom_sensitivity_, 0.02f, 0.5f, "%.2f");
-
-    float radiusLimit = std::max(orbit_radius_ * 3.0f, 20.0f);
-    ImGui::SliderFloat("Distance", &orbit_radius_, 0.1f, radiusLimit, "%.2f");
-
-    float pitchDegrees = glm::degrees(orbit_pitch_);
-    if (ImGui::SliderFloat("Pitch", &pitchDegrees, -89.0f, 89.0f, "%.1f deg")) {
-        orbit_pitch_ = glm::radians(pitchDegrees);
-        rebuildOrbitOffsetFromAngles();
+    int cameraMode = static_cast<int>(supersplat_camera_controller_.mode());
+    const char* cameraModes[] = {"Orbit", "Fly"};
+    if (ImGui::Combo("Camera Mode", &cameraMode,
+                     cameraModes, IM_ARRAYSIZE(cameraModes))) {
+        supersplat_camera_controller_.setMode(
+            static_cast<CameraControlMode>(std::clamp(cameraMode, 0, 1)));
     }
 
+    float fov = supersplat_camera_controller_.fovDegrees();
+    if (ImGui::SliderFloat("Field of View (larger axis)", &fov,
+                           10.0f, 120.0f, "%.1f deg")) {
+        supersplat_camera_controller_.setFovDegrees(fov);
+    }
+    float damping = supersplat_camera_controller_.dampingSeconds();
+    if (ImGui::SliderFloat("Damping", &damping, 0.0f, 0.5f, "%.3f s")) {
+        supersplat_camera_controller_.setDampingSeconds(damping);
+    }
+    float orbitSensitivity = supersplat_camera_controller_.orbitSensitivity();
+    if (ImGui::SliderFloat("Orbit Sensitivity", &orbitSensitivity,
+                           0.001f, 0.02f, "%.3f")) {
+        supersplat_camera_controller_.setOrbitSensitivity(orbitSensitivity);
+    }
+    float panSensitivity = supersplat_camera_controller_.panSensitivity();
+    if (ImGui::SliderFloat("Pan Sensitivity", &panSensitivity,
+                           0.1f, 3.0f, "%.2f")) {
+        supersplat_camera_controller_.setPanSensitivity(panSensitivity);
+    }
+    float zoomSensitivity = supersplat_camera_controller_.zoomSensitivity();
+    if (ImGui::SliderFloat("Dolly Speed", &zoomSensitivity,
+                           0.02f, 0.5f, "%.2f")) {
+        supersplat_camera_controller_.setZoomSensitivity(zoomSensitivity);
+    }
+    float flySpeed = supersplat_camera_controller_.flySpeed();
+    if (ImGui::SliderFloat("Fly Speed", &flySpeed,
+                           0.1f, 10.0f, "%.2f")) {
+        supersplat_camera_controller_.setFlySpeed(flySpeed);
+    }
+
+    float distance = supersplat_camera_controller_.distance();
+    const float distanceLimit = std::max(distance * 3.0f, 20.0f);
+    if (ImGui::SliderFloat("Distance", &distance, 0.01f,
+                           distanceLimit, "%.3f")) {
+        supersplat_camera_controller_.setDistance(distance);
+    }
+    float azimuth = supersplat_camera_controller_.azimuthDegrees();
+    if (ImGui::SliderFloat("Azimuth", &azimuth, -180.0f, 180.0f, "%.1f deg")) {
+        supersplat_camera_controller_.setAzimuthDegrees(azimuth);
+    }
+    float elevation = supersplat_camera_controller_.elevationDegrees();
+    if (ImGui::SliderFloat("Elevation", &elevation, -89.0f, 89.0f, "%.1f deg")) {
+        supersplat_camera_controller_.setElevationDegrees(elevation);
+    }
+
+    if (ImGui::Button("Focus")) {
+        focusCameraOnModel();
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Reset")) {
-        resetOrbitFromModel();
+        resetCameraFromModel();
     }
+
+    const glm::vec3& target = supersplat_camera_controller_.focalPoint();
+    ImGui::Text("Target %.3f %.3f %.3f", target.x, target.y, target.z);
+    ImGui::Text("Clip %.6g .. %.6g", camera_near_plane_, camera_far_plane_);
+    if (current_model_ && !current_model_->isEmpty()) {
+        ImGui::Text("Bounds focus %.4g, clip %.4g",
+                    current_model_->get_focus_radius(),
+                    current_model_->get_clip_radius());
+    }
+    ImGui::TextDisabled("LMB orbit/look, RMB pan, wheel dolly, V mode, F focus");
+    ImGui::TextDisabled("Fly: WASDQE, Shift 10x, Alt 0.1x; Shift+F resets view");
 
     const glm::vec3& position = camera_.get_position();
     ImGui::Text("Position %.2f %.2f %.2f", position.x, position.y, position.z);
@@ -770,24 +888,7 @@ void Application::handleScroll(double xoffset, double yoffset) {
         return;
     }
 
-    float zoomFactor = 1.0f - static_cast<float>(yoffset) * orbit_zoom_sensitivity_;
-    zoomFactor = std::clamp(zoomFactor, 0.1f, 4.0f);
-    orbit_radius_ = std::max(0.05f, orbit_radius_ * zoomFactor);
-    if (glm::length(orbit_offset_) > 1e-5f) {
-        orbit_offset_ = glm::normalize(orbit_offset_) * orbit_radius_;
-    }
-
-    if (!orbit_camera_enabled_ && has_true_camera_) {
-        glm::vec3 toCenter = orbit_center_ - camera_.get_position();
-        float currentDistance = glm::length(toCenter);
-        if (currentDistance > 1e-4f) {
-            camera_.set_position(orbit_center_ - glm::normalize(toCenter) * orbit_radius_);
-            camera_.look_at(orbit_center_, orbit_up_);
-            orbit_offset_ = camera_.get_position() - orbit_center_;
-            syncOrbitAnglesFromOffset();
-            view_matrix_ = camera_.get_view_matrix();
-        }
-    }
+    supersplat_camera_controller_.dolly(static_cast<float>(yoffset));
 }
 
 void Application::updateModelMatrix() {
@@ -1950,6 +2051,38 @@ void Application::loadTrainingSettings() {
             if (row >> std::quoted(value)) copyToInputBuffer(training_output_name_, value);
         } else if (key == "gpu_selector") {
             row >> std::quoted(persisted_training_gpu_selector_);
+        } else if (key == "render_profile") {
+            int value = 0;
+            if (row >> value) {
+                gaussian_render_profile_ = static_cast<GaussianRenderProfile>(
+                    std::clamp(value, 0, 1));
+            }
+        } else if (key == "gaussian_sh_bands") {
+            row >> gaussian_sh_bands_;
+        } else if (key == "camera_mode" || key == "supersplat_camera_mode") {
+            int value = 0;
+            if (row >> value) {
+                supersplat_camera_controller_.setMode(
+                    static_cast<CameraControlMode>(std::clamp(value, 0, 1)));
+            }
+        } else if (key == "camera_fov" || key == "supersplat_camera_fov") {
+            float value = 75.0f;
+            if (row >> value) supersplat_camera_controller_.setFovDegrees(value);
+        } else if (key == "camera_damping" || key == "supersplat_camera_damping") {
+            float value = 0.12f;
+            if (row >> value) supersplat_camera_controller_.setDampingSeconds(value);
+        } else if (key == "camera_orbit_sensitivity" || key == "supersplat_orbit_sensitivity") {
+            float value = 0.005f;
+            if (row >> value) supersplat_camera_controller_.setOrbitSensitivity(value);
+        } else if (key == "camera_pan_sensitivity" || key == "supersplat_pan_sensitivity") {
+            float value = 1.0f;
+            if (row >> value) supersplat_camera_controller_.setPanSensitivity(value);
+        } else if (key == "camera_zoom_sensitivity" || key == "supersplat_zoom_sensitivity") {
+            float value = 0.12f;
+            if (row >> value) supersplat_camera_controller_.setZoomSensitivity(value);
+        } else if (key == "camera_fly_speed" || key == "supersplat_fly_speed") {
+            float value = 1.0f;
+            if (row >> value) supersplat_camera_controller_.setFlySpeed(value);
         } else if (key == "downscale") row >> training_downscale_;
         else if (key == "initial_gaussians") row >> training_initial_gaussians_;
         else if (key == "random_seed") row >> training_random_seed_;
@@ -2002,6 +2135,7 @@ void Application::loadTrainingSettings() {
     }
 
     training_downscale_ = std::clamp(training_downscale_, 1, 16);
+    gaussian_sh_bands_ = std::min(gaussian_sh_bands_, 3u);
     training_mode_ = std::clamp(training_mode_, 0, 1);
     training_pixel_to_2dgs_mode_ = std::clamp(training_pixel_to_2dgs_mode_, 0, 6);
     training_pixel_to_2dgs_min_subgroup_utilization_ = std::clamp(
@@ -2040,6 +2174,22 @@ void Application::saveTrainingSettings() const {
         output << "output_dir " << std::quoted(inputBufferString(training_output_dir_)) << '\n';
         output << "output_name " << std::quoted(inputBufferString(training_output_name_)) << '\n';
         output << "gpu_selector " << std::quoted(gpuSelector) << '\n';
+        output << "render_profile " << static_cast<int>(gaussian_render_profile_) << '\n';
+        output << "gaussian_sh_bands " << gaussian_sh_bands_ << '\n';
+        output << "camera_mode "
+               << static_cast<int>(supersplat_camera_controller_.mode()) << '\n';
+        output << "camera_fov "
+               << supersplat_camera_controller_.fovDegrees() << '\n';
+        output << "camera_damping "
+               << supersplat_camera_controller_.dampingSeconds() << '\n';
+        output << "camera_orbit_sensitivity "
+               << supersplat_camera_controller_.orbitSensitivity() << '\n';
+        output << "camera_pan_sensitivity "
+               << supersplat_camera_controller_.panSensitivity() << '\n';
+        output << "camera_zoom_sensitivity "
+               << supersplat_camera_controller_.zoomSensitivity() << '\n';
+        output << "camera_fly_speed "
+               << supersplat_camera_controller_.flySpeed() << '\n';
         output << "downscale " << training_downscale_ << '\n';
         output << "initial_gaussians " << training_initial_gaussians_ << '\n';
         output << "random_seed " << training_random_seed_ << '\n';

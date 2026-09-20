@@ -61,6 +61,7 @@ add_library(vulkan_3dgs_core STATIC
 
     # 工具模块
     utils/camera.cpp
+    utils/camera_controller.cpp
     utils/system_memory.cpp
     utils/stb_image_impl.cpp
     ${IMGUI_FILE_DIALOG_DIR}/ImGuiFileDialog.cpp

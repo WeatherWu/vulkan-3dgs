@@ -14,7 +14,9 @@
 #include <glm/glm.hpp>
 
 #include "gaussian_training/gaussian_training.hpp"
+#include "gaussian_renderer/render_profile.hpp"
 #include "utils/camera.hpp"
+#include "utils/camera_controller.hpp"
 #include "vulkan/swapchain.hpp"
 
 namespace vulkan3DGS {
@@ -122,11 +124,12 @@ private:
     void drawTrainingGpuControl();
     void applyPendingTrainingGpuSelection();
     void syncTrainingGpuSelection();
-    void resetOrbitFromModel();
-    void updateOrbitCamera(float delta_time);
-    void updateOrbitInput(float delta_time);
-    void syncOrbitAnglesFromOffset();
-    void rebuildOrbitOffsetFromAngles();
+    void resetCameraFromModel();
+    void focusCameraOnModel();
+    void updateSuperSplatCamera(float deltaTime);
+    void updateSuperSplatInput(float deltaTime);
+    void updateCameraMatrices(int framebufferWidth, int framebufferHeight);
+    void applyRenderProfile();
     void handleScroll(double xoffset, double yoffset);
     void handleDroppedFiles(const std::vector<std::string>& paths);
     void updateModelMatrix();
@@ -170,19 +173,18 @@ private:
     bool flip_model_z_ = false;
     glm::mat4 model_matrix_ = glm::mat4(1.0f);
 
-    bool orbit_camera_enabled_ = true;
-    float orbit_mouse_sensitivity_ = 0.005f;
-    float orbit_zoom_sensitivity_ = 0.12f;
-    float orbit_radius_ = 5.0f;
-    float orbit_angle_ = 0.0f;
-    float orbit_pitch_ = 0.0f;
-    glm::vec3 orbit_center_ = glm::vec3(0.0f);
-    glm::vec3 orbit_offset_ = glm::vec3(5.0f, 0.0f, 0.0f);
-    glm::vec3 orbit_up_ = glm::vec3(0.0f, 1.0f, 0.0f);
-
-    bool orbit_dragging_ = false;
     double last_mouse_x_ = 0.0;
     double last_mouse_y_ = 0.0;
+
+    GaussianRenderProfile gaussian_render_profile_ = GaussianRenderProfile::Legacy;
+    CameraController supersplat_camera_controller_;
+    bool supersplat_dragging_ = false;
+    int supersplat_drag_button_ = -1;
+    bool supersplat_toggle_key_down_ = false;
+    bool supersplat_focus_key_down_ = false;
+    float camera_near_plane_ = 0.1f;
+    float camera_far_plane_ = 100.0f;
+    uint32_t gaussian_sh_bands_ = 3;
 
     bool has_last_tick_time_ = false;
     double last_tick_time_ = 0.0;

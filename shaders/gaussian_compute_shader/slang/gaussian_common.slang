@@ -4,6 +4,7 @@ struct UniformBufferObject {
     float4x4 model;
     float4 cameraPosition_time;
     float4 focal;
+    uint4 renderSettings; // x: profile (0 legacy, 1 compatible), y: SH bands
 };
 
 struct GaussianInstance {
@@ -74,7 +75,7 @@ float3x3 quatToMat3(float4 q) {
     );
 }
 
-float3 evaluateSH(GaussianInstance instance, float3 viewDirection) {
+float3 evaluateSH(GaussianInstance instance, float3 viewDirection, uint shBands) {
     static const float SH_C0 = 0.28209479177387814;
     static const float SH_C1 = 0.4886025119029199;
     static const float SH_C2[5] = {
@@ -95,7 +96,8 @@ float3 evaluateSH(GaussianInstance instance, float3 viewDirection) {
     };
 
     float3 result = unpackSH(instance.sh0) * SH_C0;
-    if (viewDirection.x == 0.0 && viewDirection.y == 0.0 && viewDirection.z == 0.0) {
+    if (shBands == 0u ||
+        (viewDirection.x == 0.0 && viewDirection.y == 0.0 && viewDirection.z == 0.0)) {
         return restore3DGSColor(result);
     }
 
@@ -104,6 +106,9 @@ float3 evaluateSH(GaussianInstance instance, float3 viewDirection) {
     float z = viewDirection.z;
 
     result += SH_C1 * (-y * unpackSH(instance.sh1[0]) + z * unpackSH(instance.sh1[1]) - x * unpackSH(instance.sh1[2]));
+    if (shBands == 1u) {
+        return restore3DGSColor(result);
+    }
 
     float xx = x * x;
     float yy = y * y;
@@ -117,6 +122,9 @@ float3 evaluateSH(GaussianInstance instance, float3 viewDirection) {
         SH_C2[2] * (2.0 * zz - xx - yy) * unpackSH(instance.sh2[2]) +
         SH_C2[3] * xz * unpackSH(instance.sh2[3]) +
         SH_C2[4] * (xx - yy) * unpackSH(instance.sh2[4]);
+    if (shBands == 2u) {
+        return restore3DGSColor(result);
+    }
 
     result +=
         SH_C3[0] * y * (3.0 * xx - yy) * unpackSH(instance.sh3[0]) +

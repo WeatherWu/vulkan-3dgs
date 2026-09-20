@@ -72,6 +72,10 @@ private:
     glm::vec3 bounding_box_max_;                 // 包围盒最大值
     glm::vec3 center_;                           // 模型中心
     float radius_;                               // 包围球半径
+    glm::vec3 focus_center_;                     // 抗离群的相机聚焦中心
+    float focus_radius_;                         // 抗离群的相机聚焦半径
+    glm::vec3 clip_center_;                      // 包含 Gaussian 尺度的裁剪中心
+    float clip_radius_;                          // 包含 Gaussian 尺度的裁剪半径
     
     // 优化状态
     bool needs_update_ = true;                   // 是否需要更新
@@ -80,13 +84,23 @@ private:
 public:
     GaussianModel() 
         : bounding_box_min_(0.0f), bounding_box_max_(0.0f), 
-          center_(0.0f), radius_(0.0f) {}
+          center_(0.0f), radius_(0.0f),
+          focus_center_(0.0f), focus_radius_(0.0f),
+          clip_center_(0.0f), clip_radius_(0.0f) {}
     
     ~GaussianModel() = default;
     
     void clear() {
         points_.clear();
         active_indices_.clear();
+        bounding_box_min_ = glm::vec3(0.0f);
+        bounding_box_max_ = glm::vec3(0.0f);
+        center_ = glm::vec3(0.0f);
+        radius_ = 0.0f;
+        focus_center_ = glm::vec3(0.0f);
+        focus_radius_ = 0.0f;
+        clip_center_ = glm::vec3(0.0f);
+        clip_radius_ = 0.0f;
         needs_update_ = true;
     }
     
@@ -105,6 +119,10 @@ public:
     // === 统计分析 ===
     glm::vec3 get_center() const { return center_; }
     float get_radius() const { return radius_; }
+    glm::vec3 get_focus_center() const { return focus_center_; }
+    float get_focus_radius() const { return focus_radius_; }
+    glm::vec3 get_clip_center() const { return clip_center_; }
+    float get_clip_radius() const { return clip_radius_; }
     glm::vec3 get_bounding_box_min() const { return bounding_box_min_; }
     glm::vec3 get_bounding_box_max() const { return bounding_box_max_; }
     

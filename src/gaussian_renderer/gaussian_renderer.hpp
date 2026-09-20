@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 #include <glm/glm.hpp>
@@ -8,6 +9,7 @@
 #include "renderpass.hpp"
 #include "pipeline.hpp"
 #include "gaussian_model.hpp"
+#include "render_profile.hpp"
 #include "vulkan/buffer.hpp"
 #include "vulkan/command_pool.hpp"
 #include "vulkan/compute_pipeline.hpp"
@@ -36,6 +38,10 @@ public:
     // ---- 原有公开接口 ----
     void setPresentModePreference(PresentModePreference preference);
     PresentModePreference getPresentModePreference() const { return presentModePreference_; }
+    void setRenderProfile(GaussianRenderProfile profile) { renderProfile_ = profile; }
+    GaussianRenderProfile getRenderProfile() const { return renderProfile_; }
+    void setSHBands(uint32_t bands) { shBands_ = std::min(bands, 3u); }
+    uint32_t getSHBands() const { return shBands_; }
 
     void setRenderData(const GaussianModel* model, const glm::mat4& view, const glm::mat4& projection, const vulkan3DGS::Camera& camera, const glm::mat4& modelMatrix);
 
@@ -78,6 +84,7 @@ private:
     std::unique_ptr<Swapchain> swapchain_;
     std::unique_ptr<RenderPass> renderPass_;
     std::unique_ptr<Pipeline> pipeline_;
+    std::unique_ptr<Pipeline> compatiblePipeline_;
     std::unique_ptr<ComputePipeline> radixKeygenPipeline_;
     VrdxSorter radixSorter_ = VK_NULL_HANDLE;
 
@@ -116,6 +123,7 @@ private:
         alignas(16) glm::mat4 model;
         alignas(16) glm::vec4 cameraPositionTime;
         alignas(16) glm::vec4 focal;
+        alignas(16) glm::uvec4 renderSettings;
     };
     std::vector<UniformBufferObject> ubo_;
 
@@ -125,6 +133,8 @@ private:
 
     bool imguiInitialized_ = false;
     PresentModePreference presentModePreference_ = PresentModePreference::MaxFps;
+    GaussianRenderProfile renderProfile_ = GaussianRenderProfile::Legacy;
+    uint32_t shBands_ = 3;
 
     // ---- GPU 排序缓存 ----
     bool gpu_sort_completed_ = false;

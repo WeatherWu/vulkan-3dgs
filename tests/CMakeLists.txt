@@ -40,6 +40,13 @@ configure_vulkan_3dgs_test(training_validation_tests)
 add_executable(training_math_tests training_math_tests.cpp)
 configure_vulkan_3dgs_test(training_math_tests)
 
+add_executable(camera_controller_tests camera_controller_tests.cpp)
+target_link_libraries(camera_controller_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(camera_controller_tests)
+
+add_executable(gaussian_render_profile_tests gaussian_render_profile_tests.cpp)
+configure_vulkan_3dgs_test(gaussian_render_profile_tests)
+
 add_executable(gpu_selection_tests
     gpu_selection_tests.cpp
     ../src/context/device_selection.cpp

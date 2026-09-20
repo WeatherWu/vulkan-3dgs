@@ -515,22 +515,110 @@ void GaussianModel::updateBoundingBoxVolume() {
         bounding_box_max_ = glm::vec3(0.0f);
         center_ = glm::vec3(0.0f);
         radius_ = 0.0f;
+        focus_center_ = glm::vec3(0.0f);
+        focus_radius_ = 0.0f;
+        clip_center_ = glm::vec3(0.0f);
+        clip_radius_ = 0.0f;
         return;
     }
-    
-    // 初始化包围盒
-    bounding_box_min_ = points_[0].position;
-    bounding_box_max_ = points_[0].position;
-    
-    // 遍历所有点找到最小和最大值
-    for (const auto& point : points_) {
-        bounding_box_min_ = glm::min(bounding_box_min_, point.position);
-        bounding_box_max_ = glm::max(bounding_box_max_, point.position);
+
+    bool hasFinitePoint = false;
+    glm::vec3 clipMinimum(0.0f);
+    glm::vec3 clipMaximum(0.0f);
+    std::vector<float> focusCoordinates[3];
+    std::vector<float> focusExtents;
+    for (auto& coordinates : focusCoordinates) {
+        coordinates.reserve(points_.size());
     }
-    
-    // 计算中心和半径
+    focusExtents.reserve(points_.size());
+
+    for (const auto& point : points_) {
+        const bool finitePosition =
+            std::isfinite(point.position.x) &&
+            std::isfinite(point.position.y) &&
+            std::isfinite(point.position.z);
+        if (!finitePosition) {
+            continue;
+        }
+
+        const float maximumScale = std::max({
+            std::abs(point.scale.x),
+            std::abs(point.scale.y),
+            std::abs(point.scale.z)});
+        const float extent = std::isfinite(maximumScale)
+            ? 3.0f * maximumScale
+            : 0.0f;
+        const glm::vec3 gaussianExtent(extent);
+
+        if (!hasFinitePoint) {
+            bounding_box_min_ = point.position;
+            bounding_box_max_ = point.position;
+            clipMinimum = point.position - gaussianExtent;
+            clipMaximum = point.position + gaussianExtent;
+            hasFinitePoint = true;
+        } else {
+            bounding_box_min_ = glm::min(bounding_box_min_, point.position);
+            bounding_box_max_ = glm::max(bounding_box_max_, point.position);
+            clipMinimum = glm::min(clipMinimum, point.position - gaussianExtent);
+            clipMaximum = glm::max(clipMaximum, point.position + gaussianExtent);
+        }
+
+        if (point.active && point.alpha >= 1.0f / 255.0f &&
+            std::isfinite(point.alpha)) {
+            focusCoordinates[0].push_back(point.position.x);
+            focusCoordinates[1].push_back(point.position.y);
+            focusCoordinates[2].push_back(point.position.z);
+            focusExtents.push_back(extent);
+        }
+    }
+
+    if (!hasFinitePoint) {
+        bounding_box_min_ = glm::vec3(0.0f);
+        bounding_box_max_ = glm::vec3(0.0f);
+        center_ = glm::vec3(0.0f);
+        radius_ = 0.0f;
+        focus_center_ = glm::vec3(0.0f);
+        focus_radius_ = 0.0f;
+        clip_center_ = glm::vec3(0.0f);
+        clip_radius_ = 0.0f;
+        return;
+    }
+
     center_ = (bounding_box_min_ + bounding_box_max_) * 0.5f;
     radius_ = glm::length(bounding_box_max_ - bounding_box_min_) * 0.5f;
+
+    clip_center_ = (clipMinimum + clipMaximum) * 0.5f;
+    clip_radius_ = glm::length(clipMaximum - clipMinimum) * 0.5f;
+
+    const size_t focusCount = focusCoordinates[0].size();
+    if (focusCount == 0u) {
+        focus_center_ = center_;
+        focus_radius_ = radius_;
+        return;
+    }
+
+    const float lowerQuantile = focusCount >= 200u ? 0.005f : 0.0f;
+    const float upperQuantile = focusCount >= 200u ? 0.995f : 1.0f;
+    auto percentile = [](std::vector<float>& values, float quantile) {
+        const size_t index = static_cast<size_t>(std::round(
+            quantile * static_cast<float>(values.size() - 1u)));
+        std::nth_element(values.begin(), values.begin() + index, values.end());
+        return values[index];
+    };
+
+    glm::vec3 focusMinimum(0.0f);
+    glm::vec3 focusMaximum(0.0f);
+    for (int axis = 0; axis < 3; ++axis) {
+        focusMinimum[axis] = percentile(focusCoordinates[axis], lowerQuantile);
+        focusMaximum[axis] = percentile(focusCoordinates[axis], upperQuantile);
+    }
+    const float representativeExtent = percentile(focusExtents, upperQuantile);
+    focusMinimum -= glm::vec3(representativeExtent);
+    focusMaximum += glm::vec3(representativeExtent);
+    focus_center_ = (focusMinimum + focusMaximum) * 0.5f;
+    focus_radius_ = std::max(
+        glm::length(focusMaximum - focusMinimum) * 0.5f,
+        0.001f);
 }
 
 void GaussianModel::buildSpatialIndex() {

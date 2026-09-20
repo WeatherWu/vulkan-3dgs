@@ -13,7 +13,10 @@ Pipeline::~Pipeline() {
     cleanup();
 }
 
-void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Extent2D extent) {
+void Pipeline::initialize(vk::Device device,
+                          vk::RenderPass render_pass,
+                          vk::Extent2D extent,
+                          bool premultipliedAlpha) {
     device_ = device;
     
     // 创建四边形顶点缓冲区（4个顶点：-1,-1 / 1,-1 / -1,1 / 1,1）
@@ -173,7 +176,8 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
                  .setDepthWriteEnable(vk::False)
                  .setDepthCompareOp(vk::CompareOp::eLess);
     
-    // 颜色混合状态（vkgs-style non-premultiplied alpha blending）
+    // Legacy uses straight alpha. The SuperSplat-compatible pipeline uses
+    // premultiplied RGB and standard source-over alpha accumulation.
     vk::PipelineColorBlendAttachmentState color_blend_attachment{};
     color_blend_attachment.setColorWriteMask(
         vk::ColorComponentFlagBits::eR |
@@ -182,10 +186,14 @@ void Pipeline::initialize(vk::Device device, vk::RenderPass render_pass, vk::Ext
         vk::ColorComponentFlagBits::eA
     );
     color_blend_attachment.setBlendEnable(vk::True);
-    color_blend_attachment.setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha);
+    color_blend_attachment.setSrcColorBlendFactor(
+        premultipliedAlpha ? vk::BlendFactor::eOne
+                           : vk::BlendFactor::eSrcAlpha);
     color_blend_attachment.setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha);
     color_blend_attachment.setColorBlendOp(vk::BlendOp::eAdd);
-    color_blend_attachment.setSrcAlphaBlendFactor(vk::BlendFactor::eSrcAlpha);
+    color_blend_attachment.setSrcAlphaBlendFactor(
+        premultipliedAlpha ? vk::BlendFactor::eOne
+                           : vk::BlendFactor::eSrcAlpha);
     color_blend_attachment.setDstAlphaBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha);
     color_blend_attachment.setAlphaBlendOp(vk::BlendOp::eAdd);
     
