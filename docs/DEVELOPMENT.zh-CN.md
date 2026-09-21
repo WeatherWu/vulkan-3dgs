@@ -52,6 +52,8 @@ tests/                                 CPU 和缓存测试
 
 全局 Vulkan-Hpp dispatcher 只由 presentation device 初始化。Training device 不重新初始化 dispatcher，否则其未启用的 swapchain 函数可能覆盖显示路径的 device-level 函数指针。
 
+普通训练由 `std::jthread` 执行，worker 独占对 `GaussianTraining` 的调用；ImGui 只读取 mutex 保护的 `TrainingUiSnapshot`。非 Pure 模式每 32 步发布一次快照；Pure Training 不刷新中间详细数据、降低 presentation 频率、记录 wall time，并在完成后自动导出配置的 PLY。GPU 内部每步仍在 prepare/main fence 边界同步。
+
 ## Gaussian PLY 数据
 
 普通渲染器支持 binary little-endian 3DGS 风格 PLY 属性：
@@ -143,7 +145,7 @@ UI 会显示主存、active/history 磁盘缓存、显存 resident/slot/total、
 
 该图由 Graphviz 根据本地且被忽略的 `docs/training-flow.dot` 生成。SVG 作为可缩放源图保留，文档使用 PNG 以兼容更多 Markdown 预览器。修改 DOT 后需要同时更新 `docs/assets` 下的 SVG 和 PNG。
 
-粗黑实线是连续的训练逻辑通路：顶部左侧 CPU input 的箭头指入单次迭代，前向 pass 从上到下执行，在底部计算唯一一次 `Loss + SSIM`，随后直接进入 `Loss-to-pixel`，再从下到上依次执行 Pixel-to-2DGS、2DGS-to-3DGS 和 optimizer/densification，最后向上指入顶部右侧的 CPU output。蓝色虚线是数据通路：箭头方向从数据产生者或保留状态指向消费者，箭头文字列出该依赖实际携带的 buffer 或持久状态。同列虚线放在相邻 pass 框之间，表示局部数据交接；横向虚线表示反向传播复用的前向中间量。
+粗黑实线是连续的训练逻辑通路：顶部左侧 CPU input 的箭头指入单次迭代，前向 pass 从上到下执行，在底部计算唯一一次 `Loss + SSIM`，随后直接进入 `Loss-to-pixel`，再从下到上依次执行 Pixel-to-2DGS、2DGS-to-3DGS 和 optimizer/densification，最后向上指入顶部右侧的 CPU output。普通 optimizer step 中，图里的 2DGS-to-3DGS 与 Adam 逻辑阶段实际由一个 fused dispatch 完成。蓝色虚线是数据通路：箭头方向从数据产生者或保留状态指向消费者，箭头文字列出该依赖实际携带的 buffer 或持久状态。
 
 在 CPU 边界，传入虚线携带 selected frame index、packed target RGBA8、camera uniform 和 iteration constants；传出虚线携带紧凑的 validation/profiling 统计、densification counters 和 output Gaussian count，并不表示把完整 Gaussian 参数下载到 CPU。迭代内部，前向投影写出 `ProjectedGaussian`：一条虚线把它传给 tile 构建，另一条横向虚线把保留的投影状态传给 2DGS-to-3DGS。Graphviz 使用显式 rank 固定左右两列，前向链负责垂直层级，反向逻辑边不参与 rank 计算，因此右列节点保持 `B4` 在上、`B1` 在下，而真实箭头仍从 `B1` 连续向上指向 `B4`。
 
@@ -166,9 +168,9 @@ UI 会显示主存、active/history 磁盘缓存、显存 resident/slot/total、
 
 | 结构 | 布局和大小 | 用途 |
 | --- | --- | --- |
-| `GaussianTrainParam` | `positionOpacity: vec4`、`scale: vec4`、`rotation: vec4`、`sh[16]: vec4`，共 19 个 `vec4`，304 B | 当前 Gaussian 的可训练参数 |
-| `GaussianGrad` | 与 `GaussianTrainParam` 相同，304 B | 由反向传播累积的梯度 |
-| `AdamState` | `firstMoment + secondMoment` 两个 `GaussianGrad`，608 B | Adam 的一阶、二阶矩 |
+| `GaussianTrainParam` | `positionOpacity`、`scale`、`rotation` 加 channel-aligned `sh[12]`，共 15 个 `vec4`，240 B | 当前 Gaussian 的可训练参数 |
+| `GaussianGrad` | 与 `GaussianTrainParam` 相同，240 B | 由反向传播累积的梯度 |
+| `AdamState` | `firstMoment + secondMoment` 两个 `GaussianGrad`，480 B | Adam 的一阶、二阶矩 |
 | `ProjectedGaussian` | `centerRadius`、`conicOpacity`、`color`，48 B | 当前相机下的 2D 投影 |
 | `ProjectedGaussianGrad` | 与 `ProjectedGaussian` 相同，48 B | 像素反向累积的 2D 梯度 |
 | `PixelGrad` | 一个 `vec4`，16 B | 每像素 RGB loss 梯度，第四分量为空 |
@@ -457,7 +459,11 @@ main emit 时，每个 Gaussian invocation 独占 `[range.x, range.x + range.y)`
 | `train_backward_clear.comp.slang` | backward fallback | gradient buffers | Gaussian 和 projected gradient 的 compute 清零回退路径 |
 | `train_backward_loss_to_pixel.comp.slang` | backward | rendered、target、SSIM state | 写每 pixel RGB loss gradient |
 | `train_backward_pixel_to_2dgs*.comp.slang` | backward | pixel grad、tile lists、blend | 逆序重放 composite，atomic 累加 2D gradient |
+| `train_backward_tile_gaussian_atomic.comp.slang` | backward 实验 | 同上 | tile/Gaussian work distribution，global atomic 输出 |
+| `train_backward_vksplat_per_splat.comp.slang` | backward 实验 | 同上 | 动态 subgroup-aligned batch 的 Per-Splat wavefront |
+| `train_backward_vksplat_tensor.comp.slang` | backward 实验 | 同上 | 16-Gaussian shared pair derivative 与 per-Gaussian/tile reduction |
 | `train_backward_2dgs_to_3dgs.comp.slang` | backward | parameters、projected gradient | 链式求 position/opacity/scale/rotation/SH gradient |
+| `train_backward_2dgs_to_3dgs_optimizer.comp.slang` | backward 默认 | parameters、projected gradient、Adam | 融合 projection backward、densification state 与 Adam |
 | `train_densify_clear.comp.slang` | densify | counter | 清零 output/统计 counter |
 | `train_densify_prune.comp.slang` 或 `train_densify_prune_uint_radius.comp.slang` | densify | parameters、Adam、state | clone/split/keep/prune，并 append output |
 | `train_densify_dispatch.comp.slang` | densify | output counter | 生成真实 output count 的 indirect dispatch |
@@ -466,7 +472,7 @@ main emit 时，每个 Gaussian invocation 独占 `[range.x, range.x + range.y)`
 | `validation/train_gaussian_validation.comp.slang` | main tail | parameters、可选 densification counter | 分类非有限 Gaussian 字段，每 256 个 Gaussian 写一个 partial |
 | `validation/train_validation_finalize.comp.slang` | main tail | pixel/Gaussian partial | 合并为 112-byte final validation result |
 
-`train_backward_pixel_to_2dgs.comp.slang`、`_workgroup`、`_subgroup` 和 `_adaptive` 是同一数学过程的不同内存协作实现；`train_densify_prune_uint_radius.comp.slang` 是没有 float min/max atomic 时的 radius 表示 fallback，不是另一套稠密化规则。CMake 还会编译 `train_project.comp.slang`、`train_pack_render_buffer.comp.slang` 和 `train_densify_finalize_prune.comp.slang`，它们属于旧的通用/预览或兼容 pipeline；当前 `GaussianTraining::trainStep()` 由专用 renderer 录制的 pass 以上表为准。
+pixel、tile-atomic、Per-Splat 和 Tensor 文件产生相同的 projected-gradient 语义，只是 work distribution 与 reduction 不同；`train_densify_prune_uint_radius.comp.slang` 是没有 float min/max atomic 时的 radius 表示 fallback，不是另一套稠密化规则。CMake 还会编译 `train_project.comp.slang`、`train_pack_render_buffer.comp.slang` 和 `train_densify_finalize_prune.comp.slang`，它们属于旧的通用/预览或兼容 pipeline；当前 `GaussianTraining::trainStep()` 由专用 renderer 录制的 pass 以上表为准。
 
 ## Forward、Backward、Loss 和 Optimizer
 
@@ -548,7 +554,7 @@ dL/dopacity = dL/dalpha * coverage
 
 每个 pixel 对同一个 Gaussian 的梯度通过 float32 atomic add 累加到 `ProjectedGaussianGrad`。原子操作只写九个可微分字段：center XY、conic/opacity XYZW、RGB；depth、整数 radius 和 color.w 不参与优化，也不应被误认为训练丢失了梯度。
 
-实现提供 `Direct`、`Workgroup Shared`、`Subgroup` 三种固定内核和 `Auto (Adaptive)`。设备不支持 compute subgroup BASIC 与 SHUFFLE 时，Auto 和手动 Subgroup 都回退 Direct；支持时，Auto 先求当前 subgroup 的真实最大 `processedCount`。若它不大于原生 subgroup 宽度，各有效 lane 直接运行自己的逆序循环；更长的候选 prefix 还要检查 subgroup 利用率：
+实现提供 `Auto (Adaptive)`、`Direct`、`Workgroup Shared`、`Subgroup`、`Tile Gaussian Atomic`、`VkSplat Per-Splat` 和 `VkSplat Tensor`。不支持的显式模式回退 Direct。Auto 当前只在 Direct 与 subgroup-adaptive 之间选择，不会选择两个 VkSplat 模式。设备不支持 compute subgroup BASIC 与 SHUFFLE 时，Auto 和手动 Subgroup 都回退 Direct；支持时，Auto 先求当前 subgroup 的真实最大 `processedCount`。若它不大于原生 subgroup 宽度，各有效 lane 直接运行自己的逆序循环；更长的候选 prefix 还要检查 subgroup 利用率：
 
 ```text
 有效 lane 的 processedCount 总和 /
@@ -557,11 +563,13 @@ dL/dopacity = dL/dalpha * coverage
 
 UI 中的 `Auto Min Subgroup Utilization` 默认是 `0.5`。长 prefix 的利用率低于该阈值时也使用 Direct，因为 subgroup broadcast 的大部分同步轮次没有实际候选可处理。图像右侧和底部不完整 tile 中超出图像范围的 lane 不计入分母。其余情况下才进入 subgroup broadcast/reduction：同一轮所有 lane 处理同一个 broadcast Gaussian，同时保持各自的 pixel transmittance/suffix 状态。它先归约整数 `contributionCount`；总数为零时跳过九个浮点梯度分量的归约，否则再用 wave shuffle 归约梯度，并由 lane 0 对该 Gaussian 执行一次原子累加。该归约改变浮点求和顺序，但不改变每 pixel 的逆序、阈值和梯度公式。
 
-反向累加前，`GaussianBackwardRenderer` 默认对当前有效 `GaussianGrad` 和 `ProjectedGaussianGrad` 前缀各录制一次 `vkCmdFillBuffer`，随后用 buffer barrier 将 transfer write 对 compute shader read/write 可见。`train_backward_clear.comp.slang` 仍作为 compute fallback 保留；设置 `VULKAN_3DGS_COMPUTE_BACKWARD_CLEAR=1` 可强制使用它。GPU profiling 的 `Backward clear` timestamp 会包围实际启用的路径。
+Per-Splat 每 tile 启动 128 threads，batch 取接近 `sqrt(rangeCount * 256)` 的 subgroup 整数倍并限制到 128。Tensor 使用 16x16 tile、固定 16 Gaussian batch、约 45 KiB shared memory，缓存 Gaussian-pixel pair derivative 后按 Gaussian/tile 归约九个梯度分量。当前没有 Thompson sampling scheduler；测试时必须显式选择，并检查 Active Pixel Backward 是否回退 Direct。
+
+反向累加前，`GaussianBackwardRenderer` 对当前有效 `ProjectedGaussianGrad` 前缀录制 `vkCmdFillBuffer`。只有 optimizer 关闭或强制 separate projection/optimizer 时才同时清零 `GaussianGrad`；普通融合步不清零也不写该数组。随后用 buffer barrier 将 transfer write 对 compute shader read/write 可见。`train_backward_clear.comp.slang` 仍作为 compute fallback 保留；设置 `VULKAN_3DGS_COMPUTE_BACKWARD_CLEAR=1` 可强制使用它。
 
 #### 6.3 2DGS-to-3DGS 链式反向
 
-`train_backward_2dgs_to_3dgs.comp.slang` 每个 Gaussian 读取 `ProjectedGaussianGrad`，按以下链路写入 `GaussianGrad`：
+2DGS-to-3DGS 阶段每个 Gaussian 读取 `ProjectedGaussianGrad`，按以下链路生成梯度：
 
 ```text
 center/depth -> clip/ndc -> camera/object position
@@ -572,7 +580,7 @@ opacity     -> sigmoid(rawOpacity)
 color       -> SH(viewDirection) + 0.5
 ```
 
-协方差逆矩阵使用解析导数，`scale` 梯度再乘 `d exp(rawScale)/d rawScale = exp(rawScale)`；quaternion 梯度包含 rotation matrix 导数和 normalize 的投影导数。SH 只对 `activeSHDegree` 以内的系数写入梯度，并把 view direction 的导数继续传回 Gaussian position。该 pass 同时把 screen-space center gradient 的 magnitude 累加到 `GaussianDensificationState`。
+协方差逆矩阵使用解析导数，`scale` 梯度再乘 `d exp(rawScale)/d rawScale = exp(rawScale)`；quaternion 梯度包含 rotation matrix 导数和 normalize 的投影导数。SH 只对 `activeSHDegree` 以内的系数写入梯度，并把 view direction 的导数继续传回 Gaussian position。普通 optimizer step 默认使用 `train_backward_2dgs_to_3dgs_optimizer.comp.slang`，把 `GaussianGrad` 保持在线程局部并立即执行 Adam；optimizer-disabled/densification step 或 `VULKAN_3DGS_SEPARATE_PROJECTION_OPTIMIZER=1` 使用独立 gradient pass，后者再执行 `train_optimizer.comp.slang`。完整 gradient buffer 仍为这些路径常驻，因此融合尚未消除全部 gradient VRAM。
 
 ### 7. Densification、pruning 和 Adam
 
@@ -616,7 +624,7 @@ position、SH DC、SH rest、opacity、scale、rotation 有独立学习率。CPU
 | validation | `pixelValidationPartials_`、`gaussianValidationPartials_`、`densifiedGaussianValidationPartials_`、`validationFinalResult_` | 周期性 GPU reduction，不下载完整数组 |
 | 辅助 | `counters_`、`previewInstances_`、`camera_` | Gaussian prefix 总数、预览渲染实例、camera uniform |
 
-这些 buffer 的 capacity 与 `gaussianCapacity_`、`gaussianWorkspaceCapacity_`、`densificationCapacity_`、`tileItemCapacity_`、`extent_` 分开管理。Gaussian 参数是 AoS：一个 `GaussianTrainParam` 内连续存放 position/opacity、scale、rotation 和 16 个 SH `vec4`；tile item 则是按 tile 排序后的完整 `uint` Gaussian index，避免复制完整 Gaussian 到每个贡献项。
+这些 buffer 的 capacity 与 `gaussianCapacity_`、`gaussianWorkspaceCapacity_`、`densificationCapacity_`、`tileItemCapacity_`、`extent_` 分开管理。Gaussian 参数是 AoS：一个 `GaussianTrainParam` 连续存放三个基础 `vec4` 和 12 个按颜色通道对齐的 SH `vec4`，共 240 B；`GaussianGrad` 同为 240 B，`AdamState` 为 480 B。tile item 是按 tile 排序的完整 `uint` Gaussian index，避免复制完整 Gaussian 到每个贡献项。
 
 ## Descriptor Binding
 
@@ -673,6 +681,8 @@ CPU record main
 
 prepare/main 使用逐提交 fence，不再调用 queue-wide `waitIdle()`。代价是训练循环仍然是同步迭代，尤其 prepare 必须等待一个小 readback；validation 使用三槽 fence ring，避免非验证迭代下载大 buffer。
 
+应用从后台 `std::jthread` 运行这些同步 GPU iteration，因此 UI 可响应不代表 prepare/main 已流水重叠。Worker 发布不可变 snapshot；Pure Training 省略中间 snapshot 并降低 presentation 频率，完成后自动导出 PLY。切换 GPU、重载数据集、cleanup 和退出前必须先停止并 join worker。
+
 ## CPU/GPU 数据传递
 
 CPU 到 GPU 的热路径只有：camera uniform、push constants、当前 target 的 upload，以及初始化/导出时的 Gaussian 参数传输。每步的 Gaussian 参数、gradient、Adam、projected、tile item、rendered color 和 pixel gradient 都留在 GPU。
@@ -711,7 +721,7 @@ CPU 阶段包括 frame upload、image request、target upload、prepare submit�
 
 Tile item count 只在 `GaussianTraining` 中读取一次。prepare command 将 16 字节 counter 复制到 `TrainingBuffers` 持有的持久映射 host-coherent buffer；prepare fence 完成后，CPU 直接读取映射内存，并将同一个 count 显式传给 emit/sort/render 流程。
 
-GPU timestamp 阶段包括 Gaussian projection、tile coverage count、Gaussian tile prefix、tile emission、sort/ranges、composite、loss、backward clear、loss-to-pixel、pixel-to-2DGS、2DGS-to-3DGS、optimizer、validation 和 densification。UI 标签仍显示 `Tile prefix`，实际测量的是分层 per-Gaussian prefix passes。`Pixel to 2DGS` 从所选 pixel-backward dispatch 前开始，在 projected-gradient compute barrier 后结束；它不包含 tile coverage count、prefix、emit、radix sort、range 构建、forward composite 或 loss-to-pixel。`Optimizer` 现在只包含 Adam dispatch；`Validation` 包含 Gaussian 有限性归约和最终归约。像素 partial 的条件归约仍位于 `Loss` 内，因此 validation 迭代也会让 `Loss` 样本变慢。该拆分只在 validation 迭代增加一个独立 Gaussian-validation dispatch，不改变检查内容或 optimizer 数学。
+GPU timestamp 阶段包括 Gaussian projection、tile coverage count、Gaussian tile prefix、tile emission、sort/ranges、composite、loss、backward clear、loss-to-pixel、pixel-to-2DGS、tile-local backward、2DGS-to-3DGS、fused projection/optimizer、separate optimizer、validation 和 densification。UI 标签仍显示 `Tile prefix`，实际测量的是分层 per-Gaussian prefix passes。`Pixel to 2DGS` 从所选 backward dispatch 前开始，在 projected-gradient compute barrier 后结束；Per-Splat/Tensor 同时在 `Tile-local backward` 记录自身 dispatch。普通 optimizer iteration 使用 `Fused projection/optimizer`；只有强制 separate 路径才会让 `Optimizer` 有样本。像素 partial 的条件归约仍位于 `Loss` 内，因此 validation 迭代也会让 `Loss` 样本变慢。
 
 `Start Fixed Benchmark` 用当前模型提供可重复的 kernel 对比。它固定 `Benchmark Frame`，保持 `trainingIteration`、Gaussian 参数和 Adam state 不变，禁用 optimizer dispatch 和 densification，但仍重复正常的 projection/tile/forward/loss/backward 图。benchmark 开始时会清空 profiling 与 validation history；完成 `Benchmark Warmup` 后再次清空，因此界面 average 只包含 `Benchmark Measured` 步。只有最后一个 benchmark step 启用 validation，从固定 frame 采集一次候选直方图，同时避免每个 measured step 都承担 validation 开销。达到 measured 次数后 UI 自动停止。
 
@@ -778,6 +788,15 @@ C++/Slang 结构布局和 descriptor binding 必须保持同步。
 - 训练循环每次迭代仍会等待 prepare 和 main submission。
 - Gaussian 数量较高时，稠密化存在明显的分配和带宽开销。
 - 训练结果通过 PLY 导出进入普通渲染器，而不是实时共享训练 render path。
+- 与 VkSplat 相比，已有 Per-Splat/Tensor kernel 和融合 projection/Adam，但 kernel 选择仍为手动而非 Thompson sampling，Tensor batch 固定为 16，完整 Gaussian gradient buffer 仍常驻。
+- 与 VkSplat 相比，tile/depth 仍用两次稳定 32-bit sort 表达语义 64-bit key，L1/DSSIM loss 与 loss-to-pixel 也尚未融合成一个 gradient pass。
+- 尚未实现 MCMC densification、distorted/fisheye 训练相机、target alpha mask 和覆盖 NVIDIA/AMD/Intel 的完整性能验证。
+
+## 质量评测工具
+
+`tools/evaluate_psnr.py` 可以通过 gsplat 在 held-out COLMAP 视角渲染标准训练 PLY，或者直接比较两个图片目录。Render 模式当前要求 undistorted PINHOLE/SIMPLE_PINHOLE，相机名排序后默认每 8 张取一张 validation，保存量化 PNG 并写出逐图片 `psnr.json`。报告平均值前必须检查单张异常值；小 validation set 中一个错配相机/参考图就会明显移动均值。
+
+端到端 wall time 使用 Pure Training；Fixed Benchmark 会关闭 optimizer 和 densification，只能用于 kernel A/B，其 total-step average 不是完整训练 step。记录 GPU、scene/downscale、seed、Active Pixel Backward、composite mode、最终 Gaussian 数、VRAM 和质量输出，并对正式计时重复运行。
 
 ## 验证命令
 

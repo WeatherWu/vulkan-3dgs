@@ -7,12 +7,16 @@
 ## Features
 
 - 3DGS PLY rendering with GPU sorting
+- Shared Orbit/Fly camera with Legacy and SuperSplat-compatible render profiles
 - MipNeRF360/COLMAP dataset loading
 - GPU forward and backward training passes
+- Direct/subgroup and experimental VkSplat Per-Splat/Tensor backward modes
+- Fused projection backward and Adam optimizer
 - Adam optimization, densification, and pruning
 - Adaptive image streaming and caching
-- Training validation and performance profiling
+- Asynchronous/Pure training, fixed workload benchmark, validation, and profiling
 - PLY export
+- Held-out COLMAP rendering and PSNR reporting through `tools/evaluate_psnr.py`
 
 ## Requirements
 
@@ -91,9 +95,12 @@ In the application:
 
 1. Select the dataset directory.
 2. Choose the image downscale and training schedule.
-3. Initialize or start training.
-4. Monitor loss, Gaussian count, cache usage, and profiling data.
-5. Export the trained scene as PLY.
+3. Start training; normal runs execute on a worker thread and stop automatically at 30000 iterations in `3DGS Random` mode.
+4. Enable `Pure Training` for wall-time measurement with reduced UI refresh and automatic final PLY export.
+5. Monitor loss, Gaussian count, cache usage, and profiling data in normal mode, or use `Start Fixed Benchmark` for kernel A/B only.
+6. Export the trained scene as PLY when not using automatic Pure export.
+
+Fixed Benchmark freezes the model and iteration state and disables optimizer/densification; its total-step average is not an end-to-end training time. `Auto (Adaptive)` currently selects only Direct/Subgroup behavior, so choose experimental Per-Splat or Tensor modes explicitly and check `Active Pixel Backward` for fallback.
 
 ## Tests
 

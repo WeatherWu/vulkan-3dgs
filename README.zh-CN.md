@@ -7,12 +7,16 @@
 ## 功能
 
 - 使用 GPU 排序的 3DGS PLY 渲染
+- 共用 Orbit/Fly 相机以及 Legacy/SuperSplat-compatible 渲染配置
 - MipNeRF360/COLMAP 数据集加载
 - GPU forward/backward 训练
+- Direct/subgroup 与实验性的 VkSplat Per-Splat/Tensor backward 模式
+- 融合 projection backward 与 Adam optimizer
 - Adam 优化、稠密化和修剪
 - 自适应图片流与缓存
-- 训练验证和性能统计
+- 异步/Pure Training、固定负载 benchmark、训练验证和性能统计
 - PLY 导出
+- `tools/evaluate_psnr.py` 的 held-out COLMAP 渲染与 PSNR 报告
 
 ## 环境要求
 
@@ -91,9 +95,12 @@ cmake --build build
 
 1. 选择数据集目录。
 2. 设置图片缩放和训练调度方式。
-3. 初始化或开始训练。
-4. 查看 loss、Gaussian 数量、缓存占用和性能数据。
-5. 将训练结果导出为 PLY。
+3. 开始训练；普通训练在 worker thread 中运行，`3DGS Random` 默认到 30000 次自动停止。
+4. 测量端到端 wall time 时启用 `Pure Training`，它减少 UI 刷新并在结束时自动导出 PLY。
+5. 普通模式可查看 loss、Gaussian 数量、缓存和 profiling；kernel A/B 使用 `Start Fixed Benchmark`。
+6. 未使用 Pure 自动导出时，手动将训练结果导出为 PLY。
+
+Fixed Benchmark 会冻结模型/迭代并关闭 optimizer 与 densification，其 total-step average 不是端到端训练时间。`Auto (Adaptive)` 当前只选择 Direct/Subgroup 行为；测试 Per-Splat 或 Tensor 时必须显式选择，并检查 `Active Pixel Backward` 是否发生回退。
 
 ## 测试
 
