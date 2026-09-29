@@ -90,13 +90,25 @@ public:
     void tick();
     void shutdown();
 
-    [[nodiscard]] TrainingSettings& editableSettings() noexcept { return settings_; }
-    [[nodiscard]] const TrainingSettings& settings() const noexcept { return settings_; }
-    [[nodiscard]] const TrainingLifecycleState& state() const noexcept { return state_; }
+    [[nodiscard]] TrainingSettings& editableSettings() noexcept {
+        return settings_;
+    }
+    [[nodiscard]] const TrainingSettings& settings() const noexcept {
+        return settings_;
+    }
+    [[nodiscard]] const TrainingLifecycleState& state() const noexcept {
+        return state_;
+    }
     [[nodiscard]] TrainingUiSnapshot snapshotForUi() const;
-    [[nodiscard]] bool isActive() const noexcept { return active_; }
-    [[nodiscard]] bool isStopRequested() const noexcept { return stopRequested_; }
-    [[nodiscard]] bool isTimerRunning() const noexcept { return timerRunning_; }
+    [[nodiscard]] bool isActive() const noexcept {
+        return active_;
+    }
+    [[nodiscard]] bool isStopRequested() const noexcept {
+        return stopRequested_;
+    }
+    [[nodiscard]] bool isTimerRunning() const noexcept {
+        return timerRunning_;
+    }
     [[nodiscard]] double elapsedSeconds() const;
     [[nodiscard]] std::string elapsedText() const;
 
@@ -114,8 +126,12 @@ public:
     void exportModelTo(const std::filesystem::path& path);
     void setOutputDirectory(const std::filesystem::path& path);
     void setOutputPath(const std::filesystem::path& path);
-    void reportError(std::string message) { setError(std::move(message)); }
-    void clearErrorPopup() noexcept { state_.errorPopupPending = false; }
+    void reportError(std::string message) {
+        setError(std::move(message));
+    }
+    void clearErrorPopup() noexcept {
+        state_.errorPopupPending = false;
+    }
     void saveSettings();
 
 private:
@@ -142,7 +158,7 @@ private:
 
     [[nodiscard]] TrainingUiSnapshot captureSnapshot() const;
     void publishSnapshot();
-    void workerMain(std::stop_token stopToken, bool pure);
+    void workerMain(std::stop_token stopToken, bool pure) noexcept;
 
     TrainingSettings settings_{};
     std::unique_ptr<const TrainingRunConfig> activeRunConfig_;

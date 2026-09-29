@@ -45,20 +45,17 @@ struct TrainingStepExecutionResult {
 class TrainingStepExecutor {
 public:
     TrainingStepExecutor() = default;
-    ~TrainingStepExecutor();
+    ~TrainingStepExecutor() noexcept;
 
     TrainingStepExecutor(const TrainingStepExecutor&) = delete;
     TrainingStepExecutor& operator=(const TrainingStepExecutor&) = delete;
 
-    void initialize(vk::Device device,
-                    vk::Queue computeQueue,
-                    uint32_t computeQueueFamilyIndex);
+    void initialize(vk::Device device, vk::Queue computeQueue, uint32_t computeQueueFamilyIndex);
     void cleanup();
     [[nodiscard]] bool initialized() const noexcept {
         return prepareCommandBuffer_ && mainCommandBuffer_;
     }
-    [[nodiscard]] TrainingStepExecutionResult execute(
-        TrainingStepExecutionRequest request);
+    [[nodiscard]] TrainingStepExecutionResult execute(TrainingStepExecutionRequest request);
 
 private:
     vk::Device device_ = nullptr;

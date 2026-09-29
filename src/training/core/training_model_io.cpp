@@ -33,11 +33,8 @@ struct KdNode {
 };
 
 int buildKdTreeRecursive(const std::vector<TrainingSparsePoint>& points,
-                         std::vector<uint32_t>& indices,
-                         std::vector<KdNode>& nodes,
-                         size_t begin,
-                         size_t end,
-                         int depth) {
+                         std::vector<uint32_t>& indices, std::vector<KdNode>& nodes, size_t begin,
+                         size_t end, int depth) {
     if (begin >= end) return -1;
     const int axis = depth % 3;
     const size_t middle = begin + (end - begin) / 2u;
@@ -45,33 +42,28 @@ int buildKdTreeRecursive(const std::vector<TrainingSparsePoint>& points,
                      indices.begin() + static_cast<std::ptrdiff_t>(middle),
                      indices.begin() + static_cast<std::ptrdiff_t>(end),
                      [&](uint32_t lhs, uint32_t rhs) {
-                         return points[lhs].position[axis] <
-                                points[rhs].position[axis];
+                         return points[lhs].position[axis] < points[rhs].position[axis];
                      });
     const int nodeIndex = static_cast<int>(nodes.size());
     nodes.push_back(KdNode{indices[middle], axis, -1, -1});
-    nodes[nodeIndex].left = buildKdTreeRecursive(
-        points, indices, nodes, begin, middle, depth + 1);
-    nodes[nodeIndex].right = buildKdTreeRecursive(
-        points, indices, nodes, middle + 1u, end, depth + 1);
+    nodes[nodeIndex].left = buildKdTreeRecursive(points, indices, nodes, begin, middle, depth + 1);
+    nodes[nodeIndex].right =
+        buildKdTreeRecursive(points, indices, nodes, middle + 1u, end, depth + 1);
     return nodeIndex;
 }
 
-void queryNearestSquaredDistances(
-    const std::vector<TrainingSparsePoint>& points,
-    const std::vector<KdNode>& nodes,
-    int nodeIndex,
-    uint32_t queryIndex,
-    std::priority_queue<float>& nearestSquaredDistances,
-    uint32_t neighborCount) {
+void queryNearestSquaredDistances(const std::vector<TrainingSparsePoint>& points,
+                                  const std::vector<KdNode>& nodes, int nodeIndex,
+                                  uint32_t queryIndex,
+                                  std::priority_queue<float>& nearestSquaredDistances,
+                                  uint32_t neighborCount) {
     if (nodeIndex < 0) return;
 
     const KdNode& node = nodes[static_cast<size_t>(nodeIndex)];
     const glm::vec3 query = points[queryIndex].position;
     const glm::vec3 candidate = points[node.pointIndex].position;
     if (node.pointIndex != queryIndex) {
-        const float distanceSquared = glm::dot(query - candidate,
-                                                query - candidate);
+        const float distanceSquared = glm::dot(query - candidate, query - candidate);
         if (nearestSquaredDistances.size() < neighborCount) {
             nearestSquaredDistances.push(distanceSquared);
         } else if (distanceSquared < nearestSquaredDistances.top()) {
@@ -83,22 +75,21 @@ void queryNearestSquaredDistances(
     const float axisDelta = query[node.axis] - candidate[node.axis];
     const int nearChild = axisDelta <= 0.0f ? node.left : node.right;
     const int farChild = axisDelta <= 0.0f ? node.right : node.left;
-    queryNearestSquaredDistances(points, nodes, nearChild, queryIndex,
-                                 nearestSquaredDistances, neighborCount);
+    queryNearestSquaredDistances(points, nodes, nearChild, queryIndex, nearestSquaredDistances,
+                                 neighborCount);
 
     const float worstDistanceSquared = nearestSquaredDistances.empty()
-        ? std::numeric_limits<float>::infinity()
-        : nearestSquaredDistances.top();
+                                           ? std::numeric_limits<float>::infinity()
+                                           : nearestSquaredDistances.top();
     if (nearestSquaredDistances.size() < neighborCount ||
         axisDelta * axisDelta < worstDistanceSquared) {
-        queryNearestSquaredDistances(points, nodes, farChild, queryIndex,
-                                     nearestSquaredDistances, neighborCount);
+        queryNearestSquaredDistances(points, nodes, farChild, queryIndex, nearestSquaredDistances,
+                                     neighborCount);
     }
 }
 
-std::vector<float> estimateSparsePointScaleDistances(
-    const std::vector<TrainingSparsePoint>& points,
-    float fallbackScale) {
+std::vector<float> estimateSparsePointScaleDistances(const std::vector<TrainingSparsePoint>& points,
+                                                     float fallbackScale) {
     std::vector<float> scales(points.size(), fallbackScale);
     if (points.size() < 2u) return scales;
 
@@ -106,15 +97,13 @@ std::vector<float> estimateSparsePointScaleDistances(
     std::iota(indices.begin(), indices.end(), 0u);
     std::vector<KdNode> nodes;
     nodes.reserve(points.size());
-    const int root = buildKdTreeRecursive(
-        points, indices, nodes, 0u, indices.size(), 0);
-    const uint32_t neighborCount = std::min<uint32_t>(
-        3u, static_cast<uint32_t>(points.size() - 1u));
+    const int root = buildKdTreeRecursive(points, indices, nodes, 0u, indices.size(), 0);
+    const uint32_t neighborCount =
+        std::min<uint32_t>(3u, static_cast<uint32_t>(points.size() - 1u));
 
     for (uint32_t index = 0; index < points.size(); ++index) {
         std::priority_queue<float> nearestDistances;
-        queryNearestSquaredDistances(points, nodes, root, index,
-                                     nearestDistances, neighborCount);
+        queryNearestSquaredDistances(points, nodes, root, index, nearestDistances, neighborCount);
         if (nearestDistances.empty()) continue;
 
         float sum = 0.0f;
@@ -124,29 +113,26 @@ std::vector<float> estimateSparsePointScaleDistances(
             nearestDistances.pop();
             ++count;
         }
-        scales[index] = std::sqrt(std::max(
-            sum / static_cast<float>(std::max(count, 1u)), 1e-7f));
+        scales[index] = std::sqrt(std::max(sum / static_cast<float>(std::max(count, 1u)), 1e-7f));
     }
     return scales;
 }
 
 } // namespace
 
-TrainingModelInitialization TrainingModelIO::initialize(
-    const TrainingDataset& dataset,
-    const TrainingInitializationConfig& config) {
+TrainingModelInitialization
+TrainingModelIO::initialize(const TrainingDataset& dataset,
+                            const TrainingInitializationConfig& config) {
     TrainingModelInitialization result{};
     result.usedRandomFallback = dataset.sparsePoints.empty();
-    result.parameters = result.usedRandomFallback
-        ? createRandomInitialGaussians(dataset, config)
-        : createSparsePointInitialGaussians(dataset);
+    result.parameters = result.usedRandomFallback ? createRandomInitialGaussians(dataset, config)
+                                                  : createSparsePointInitialGaussians(dataset);
     result.sceneExtent = estimateSceneExtent(dataset);
     return result;
 }
 
 std::vector<GaussianTrainParam>
-TrainingModelIO::createSparsePointInitialGaussians(
-    const TrainingDataset& dataset) {
+TrainingModelIO::createSparsePointInitialGaussians(const TrainingDataset& dataset) {
     std::vector<GaussianTrainParam> parameters;
     parameters.reserve(dataset.sparsePoints.size());
 
@@ -156,14 +142,11 @@ TrainingModelIO::createSparsePointInitialGaussians(
         minimum = glm::min(minimum, point.position);
         maximum = glm::max(maximum, point.position);
     }
-    const float radius = std::max(
-        glm::length(maximum - minimum) * 0.5f, 1.0f);
-    const float count = std::max(
-        static_cast<float>(dataset.sparsePoints.size()), 1.0f);
-    const float fallbackScale = std::clamp(
-        radius / std::cbrt(count), 1e-4f, radius * 0.05f);
-    const std::vector<float> scales = estimateSparsePointScaleDistances(
-        dataset.sparsePoints, fallbackScale);
+    const float radius = std::max(glm::length(maximum - minimum) * 0.5f, 1.0f);
+    const float count = std::max(static_cast<float>(dataset.sparsePoints.size()), 1.0f);
+    const float fallbackScale = std::clamp(radius / std::cbrt(count), 1e-4f, radius * 0.05f);
+    const std::vector<float> scales =
+        estimateSparsePointScaleDistances(dataset.sparsePoints, fallbackScale);
     constexpr float initialOpacity = 0.1f;
     const float rawOpacity = logit(initialOpacity);
 
@@ -181,9 +164,8 @@ TrainingModelIO::createSparsePointInitialGaussians(
 }
 
 std::vector<GaussianTrainParam>
-TrainingModelIO::createRandomInitialGaussians(
-    const TrainingDataset& dataset,
-    const TrainingInitializationConfig& config) {
+TrainingModelIO::createRandomInitialGaussians(const TrainingDataset& dataset,
+                                              const TrainingInitializationConfig& config) {
     if (!config.allowRandomFallback) {
         throw std::runtime_error(
             "Dataset has no COLMAP sparse points3D.bin for Gaussian initialization");
@@ -203,13 +185,11 @@ TrainingModelIO::createRandomInitialGaussians(
     }
     center /= std::max(static_cast<float>(dataset.frames.size()), 1.0f);
 
-    const float cameraRadius = std::max(
-        glm::length(maximum - minimum) * 0.5f, 1.0f);
-    const float sceneRadius = std::max(
-        cameraRadius * std::max(config.sceneRadiusScale, 0.01f), 1.0f);
+    const float cameraRadius = std::max(glm::length(maximum - minimum) * 0.5f, 1.0f);
+    const float sceneRadius =
+        std::max(cameraRadius * std::max(config.sceneRadiusScale, 0.01f), 1.0f);
     const float initialScale = std::clamp(
-        sceneRadius / std::cbrt(static_cast<float>(gaussianCount)),
-        1e-4f, sceneRadius * 0.05f);
+        sceneRadius / std::cbrt(static_cast<float>(gaussianCount)), 1e-4f, sceneRadius * 0.05f);
     const float rawOpacity = logit(config.initialOpacity);
     const float rawScale = std::log(std::max(initialScale, 1e-6f));
 
@@ -219,14 +199,11 @@ TrainingModelIO::createRandomInitialGaussians(
     for (uint32_t index = 0; index < gaussianCount; ++index) {
         GaussianTrainParam parameter{};
         const glm::vec3 offset(unit(rng), unit(rng), unit(rng));
-        parameter.positionOpacity =
-            glm::vec4(center + offset * sceneRadius, rawOpacity);
+        parameter.positionOpacity = glm::vec4(center + offset * sceneRadius, rawOpacity);
         parameter.scale = glm::vec4(glm::vec3(rawScale), 0.0f);
         parameter.rotation = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         const glm::vec3 color = glm::clamp(
-            glm::vec3(0.5f + colorJitter(rng),
-                      0.5f + colorJitter(rng),
-                      0.5f + colorJitter(rng)),
+            glm::vec3(0.5f + colorJitter(rng), 0.5f + colorJitter(rng), 0.5f + colorJitter(rng)),
             glm::vec3(0.0f), glm::vec3(1.0f));
         setTrainingSHCoefficient(parameter, 0u, colorToSH0(color));
         parameters.push_back(parameter);
@@ -244,8 +221,7 @@ float TrainingModelIO::estimateSceneExtent(const TrainingDataset& dataset) {
 
         float diagonal = 0.0f;
         for (const TrainingCameraFrame& frame : dataset.frames) {
-            diagonal = std::max(
-                diagonal, glm::length(frame.position - center));
+            diagonal = std::max(diagonal, glm::length(frame.position - center));
         }
         return std::max(diagonal * 1.1f, 1e-6f);
     }
@@ -262,9 +238,8 @@ float TrainingModelIO::estimateSceneExtent(const TrainingDataset& dataset) {
     return 1.0f;
 }
 
-bool TrainingModelIO::writePly(
-    const std::filesystem::path& requestedPath,
-    std::span<const GaussianTrainParam> parameters) {
+bool TrainingModelIO::writePly(const std::filesystem::path& requestedPath,
+                               std::span<const GaussianTrainParam> parameters) {
     std::filesystem::path outputPath = requestedPath;
     if (outputPath.extension().empty()) outputPath += ".ply";
     if (outputPath.has_parent_path()) {
@@ -312,32 +287,26 @@ bool TrainingModelIO::writePly(
         int outputIndex = 0;
         for (int channel = 0; channel < 3; ++channel) {
             for (int basis = 1; basis < 16; ++basis) {
-                fRest[outputIndex++] = trainingSHCoefficient(
-                    gaussian, static_cast<uint32_t>(basis))[channel];
+                fRest[outputIndex++] =
+                    trainingSHCoefficient(gaussian, static_cast<uint32_t>(basis))[channel];
             }
         }
         file.write(reinterpret_cast<const char*>(fRest), sizeof(fRest));
-        file.write(reinterpret_cast<const char*>(&gaussian.positionOpacity.w),
-                   sizeof(float));
-        const float logScale[3] = {
-            gaussian.scale.x, gaussian.scale.y, gaussian.scale.z};
+        file.write(reinterpret_cast<const char*>(&gaussian.positionOpacity.w), sizeof(float));
+        const float logScale[3] = {gaussian.scale.x, gaussian.scale.y, gaussian.scale.z};
         file.write(reinterpret_cast<const char*>(logScale), sizeof(logScale));
-        file.write(reinterpret_cast<const char*>(&gaussian.rotation.w),
-                   sizeof(float));
-        file.write(reinterpret_cast<const char*>(&gaussian.rotation.x),
-                   sizeof(float));
-        file.write(reinterpret_cast<const char*>(&gaussian.rotation.y),
-                   sizeof(float));
-        file.write(reinterpret_cast<const char*>(&gaussian.rotation.z),
-                   sizeof(float));
+        file.write(reinterpret_cast<const char*>(&gaussian.rotation.w), sizeof(float));
+        file.write(reinterpret_cast<const char*>(&gaussian.rotation.x), sizeof(float));
+        file.write(reinterpret_cast<const char*>(&gaussian.rotation.y), sizeof(float));
+        file.write(reinterpret_cast<const char*>(&gaussian.rotation.z), sizeof(float));
     }
 
     if (!file.good()) {
         LOG_ERROR("Failed while writing training PLY file: {}", outputPath.string());
         return false;
     }
-    LOG_INFO("Exported trained Gaussian model to {} ({} points)",
-             outputPath.string(), parameters.size());
+    LOG_INFO("Exported trained Gaussian model to {} ({} points)", outputPath.string(),
+             parameters.size());
     return true;
 }
 

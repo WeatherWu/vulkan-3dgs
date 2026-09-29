@@ -8,8 +8,7 @@ GraphicsPipelineSet::~GraphicsPipelineSet() {
     cleanup();
 }
 
-void GraphicsPipelineSet::initialize(vk::Format imageFormat,
-                                     vk::Extent2D extent) {
+void GraphicsPipelineSet::initialize(vk::Format imageFormat, vk::Extent2D extent) {
     cleanup();
     renderPass_.initialize(imageFormat);
     const vk::Device device = Context::Instance().getDevice().getDevice();
@@ -17,8 +16,7 @@ void GraphicsPipelineSet::initialize(vk::Format imageFormat,
     compatible_.initialize(device, renderPass_.getRenderPass(), extent, true);
 }
 
-void GraphicsPipelineSet::recreate(vk::Format imageFormat,
-                                   vk::Extent2D extent) {
+void GraphicsPipelineSet::recreate(vk::Format imageFormat, vk::Extent2D extent) {
     cleanup();
     initialize(imageFormat, extent);
 }
@@ -30,9 +28,7 @@ void GraphicsPipelineSet::cleanup() {
 }
 
 Pipeline& GraphicsPipelineSet::active(GaussianRenderProfile profile) {
-    return profile == GaussianRenderProfile::SuperSplatCompatible
-               ? compatible_
-               : legacy_;
+    return profile == GaussianRenderProfile::SuperSplatCompatible ? compatible_ : legacy_;
 }
 
 } // namespace vulkan3DGS

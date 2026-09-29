@@ -145,6 +145,10 @@ if(MSVC)
     set_source_files_properties(${IMGUI_FILE_DIALOG_DIR}/ImGuiFileDialog.cpp PROPERTIES COMPILE_OPTIONS "/W0")
 endif()
 
+# Opt-in quality gates for modules introduced by the staged architecture work.
+# These targets are intentionally separate from normal Debug/Release builds.
+include("${CMAKE_SOURCE_DIR}/cmake/CodeQuality.cmake")
+
 # 安装配置
 install(TARGETS vulkan_3dgs_core
     ARCHIVE DESTINATION lib

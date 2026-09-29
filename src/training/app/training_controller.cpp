@@ -4,12 +4,19 @@
 #include "utils/logger.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 
 namespace vulkan3DGS {
+
+namespace {
+
+constexpr uint32_t kTrainingSnapshotPublishInterval = 100u;
+
+} // namespace
 
 TrainingController::TrainingController() {
     setTextBuffer(settings_.paths.dataset, "data/mipnerf360/bicycle");
@@ -23,8 +30,7 @@ TrainingController::~TrainingController() {
     cleanupTrainingResources();
 }
 
-void TrainingController::initializeDevice(
-    std::optional<std::string> commandLineSelector) {
+void TrainingController::initializeDevice(std::optional<std::string> commandLineSelector) {
     const bool usePersisted = !commandLineSelector && !settings_.gpuSelector.empty();
     std::optional<std::string> selector = commandLineSelector;
     if (usePersisted) selector = settings_.gpuSelector;
@@ -32,8 +38,7 @@ void TrainingController::initializeDevice(
         createTrainingDevice(std::move(selector));
     } catch (const std::exception& error) {
         if (!usePersisted) throw;
-        LOG_WARN("Saved training GPU is unavailable ({}); selecting the default GPU",
-                 error.what());
+        LOG_WARN("Saved training GPU is unavailable ({}); selecting the default GPU", error.what());
         createTrainingDevice(std::nullopt);
     }
 }
@@ -43,9 +48,7 @@ void TrainingController::tick() {
     if (!state_.running || active_) return;
 
     try {
-        const TrainingRunSettings& run = activeRunConfig_
-            ? activeRunConfig_->run
-            : settings_.run;
+        const TrainingRunSettings& run = activeRunConfig_ ? activeRunConfig_->run : settings_.run;
         const uint32_t budget = std::max(run.benchmarkStepsPerFrame, 1u);
         for (uint32_t step = 0; state_.running && step < budget; ++step) {
             runSynchronousStep();
@@ -70,21 +73,19 @@ void TrainingController::shutdown() {
     state_.initialized = false;
 }
 
-void TrainingController::createTrainingDevice(
-    std::optional<std::string> selector) {
+void TrainingController::createTrainingDevice(std::optional<std::string> selector) {
     if (trainingDevice_) {
         throw std::runtime_error("Training device is already initialized");
     }
-    auto device = std::make_unique<Device>(
-        vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training);
+    auto device =
+        std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training);
     device->createDevice();
     trainingDevice_ = std::move(device);
 }
 
-void TrainingController::replaceTrainingDevice(
-    std::optional<std::string> selector) {
-    auto replacement = std::make_unique<Device>(
-        vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training);
+void TrainingController::replaceTrainingDevice(std::optional<std::string> selector) {
+    auto replacement =
+        std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training);
     replacement->createDevice();
     stopAndJoin();
     training_.cleanup();
@@ -125,12 +126,10 @@ void TrainingController::selectGpu(const std::string& selector) {
         state_.datasetLoaded = false;
         state_.stepsDone = 0;
         const auto& gpu = trainingDevice_->getSelectedPhysicalDeviceInfo();
-        settings_.gpuSelector = gpu.uuid.empty()
-            ? std::to_string(gpu.vulkanIndex)
-            : gpu.uuid;
+        settings_.gpuSelector = gpu.uuid.empty() ? std::to_string(gpu.vulkanIndex) : gpu.uuid;
         saveSettings();
-        setStatus("Training GPU selected: [" + std::to_string(gpu.vulkanIndex) +
-                  "] " + gpu.name + ". Dataset must be loaded again.");
+        setStatus("Training GPU selected: [" + std::to_string(gpu.vulkanIndex) + "] " + gpu.name +
+                  ". Dataset must be loaded again.");
     } catch (const std::exception& error) {
         setError(std::string("Failed to switch training GPU: ") + error.what());
     }
@@ -150,8 +149,7 @@ void TrainingController::invalidateDataset(std::string message) {
     setStatus(std::move(message));
 }
 
-void TrainingController::setDatasetPath(const std::filesystem::path& path,
-                                        bool validateNow) {
+void TrainingController::setDatasetPath(const std::filesystem::path& path, bool validateNow) {
     if (state_.running || active_) {
         setError("Pause training before changing the dataset.");
         return;
@@ -183,9 +181,8 @@ void TrainingController::validateDataset() {
             return;
         }
         syncDefaultOutputName();
-        setStatus("Dataset valid: " + std::to_string(validation.frameCount) +
-                  " frames, " + std::to_string(validation.width) + "x" +
-                  std::to_string(validation.height));
+        setStatus("Dataset valid: " + std::to_string(validation.frameCount) + " frames, " +
+                  std::to_string(validation.width) + "x" + std::to_string(validation.height));
     } catch (const std::exception& error) {
         invalidateDataset("Dataset validation failed.");
         setError(error.what());
@@ -211,18 +208,17 @@ void TrainingController::loadDataset() {
         state_.stepsDone = 0;
         training_.cleanup();
         auto& device = *trainingDevice_;
-        const uint32_t compute = device.getQueueFamilyIndices().computeIndex.value();
-        const uint32_t transfer =
-            device.getQueueFamilyIndices().transferIndex.value_or(compute);
+        const auto computeIndex = device.getQueueFamilyIndices().computeIndex;
+        if (!computeIndex) throw std::runtime_error("Training compute queue family is unavailable");
+        const uint32_t compute = *computeIndex;
+        const uint32_t transfer = device.getQueueFamilyIndices().transferIndex.value_or(compute);
         training_.initialize(device.getDevice(), device.getPhysicalDevice(),
                              device.getTransferQueue(), transfer, compute);
-        training_.loadMipNeRF360Dataset(
-            textBufferString(settings_.paths.dataset),
-            static_cast<uint32_t>(settings_.initialization.downscale));
+        training_.loadMipNeRF360Dataset(textBufferString(settings_.paths.dataset),
+                                        static_cast<uint32_t>(settings_.initialization.downscale));
         state_.datasetLoaded = true;
-        setStatus("Dataset loaded: " + std::to_string(state_.frameCount) +
-                  " frames, " + std::to_string(state_.imageWidth) + "x" +
-                  std::to_string(state_.imageHeight) +
+        setStatus("Dataset loaded: " + std::to_string(state_.frameCount) + " frames, " +
+                  std::to_string(state_.imageWidth) + "x" + std::to_string(state_.imageHeight) +
                   ". Press Start Training to initialize and train.");
     } catch (const std::exception& error) {
         setError(error.what());
@@ -231,10 +227,9 @@ void TrainingController::loadDataset() {
 
 void TrainingController::applyLiveSettings() {
     if (active_ || state_.running) return;
-    training_.setPixelTo2DGSMode(static_cast<TrainingPixelTo2DGSMode>(
-        std::clamp(settings_.run.pixelTo2DGSMode, 0, 6)));
-    training_.setPixelTo2DGSMinSubgroupUtilization(
-        settings_.run.pixelTo2DGSMinSubgroupUtilization);
+    training_.setPixelTo2DGSMode(
+        static_cast<TrainingPixelTo2DGSMode>(std::clamp(settings_.run.pixelTo2DGSMode, 0, 6)));
+    training_.setPixelTo2DGSMinSubgroupUtilization(settings_.run.pixelTo2DGSMinSubgroupUtilization);
     training_.setForwardCompositeMode(static_cast<TrainingForwardCompositeMode>(
         std::clamp(settings_.run.forwardCompositeMode, 0, 1)));
     training_.setValidationInterval(settings_.schedule.validationInterval);
@@ -251,16 +246,14 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
 
     TrainingScheduleConfig schedule{};
     schedule.imageSelectionMode = scheduleSettings.imageSelectionMode == 1
-        ? TrainingImageSelectionMode::Random
-        : TrainingImageSelectionMode::Sequential;
-    schedule.totalIterations =
-        scheduleSettings.imageSelectionMode == 1 ? 30000u : 0u;
+                                      ? TrainingImageSelectionMode::Random
+                                      : TrainingImageSelectionMode::Sequential;
+    schedule.totalIterations = scheduleSettings.imageSelectionMode == 1 ? 30000u : 0u;
     schedule.randomSeed = initSettings.randomSeed;
     training_.setScheduleConfig(schedule);
-    training_.setPixelTo2DGSMode(static_cast<TrainingPixelTo2DGSMode>(
-        std::clamp(config.run.pixelTo2DGSMode, 0, 6)));
-    training_.setPixelTo2DGSMinSubgroupUtilization(
-        config.run.pixelTo2DGSMinSubgroupUtilization);
+    training_.setPixelTo2DGSMode(
+        static_cast<TrainingPixelTo2DGSMode>(std::clamp(config.run.pixelTo2DGSMode, 0, 6)));
+    training_.setPixelTo2DGSMinSubgroupUtilization(config.run.pixelTo2DGSMinSubgroupUtilization);
     training_.setForwardCompositeMode(static_cast<TrainingForwardCompositeMode>(
         std::clamp(config.run.forwardCompositeMode, 0, 1)));
     training_.setValidationInterval(config.schedule.validationInterval);
@@ -281,12 +274,9 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     TrainingOptimizerConfig optimizer{};
     optimizer.positionLearningRate = optimizerSettings.positionLearningRate;
     optimizer.positionLearningRateFinal = optimizerSettings.positionLearningRateFinal;
-    optimizer.positionLearningRateDelayMult =
-        optimizerSettings.positionLearningRateDelayMult;
-    optimizer.positionLearningRateDelaySteps =
-        optimizerSettings.positionLearningRateDelaySteps;
-    optimizer.positionLearningRateMaxSteps =
-        optimizerSettings.positionLearningRateMaxSteps;
+    optimizer.positionLearningRateDelayMult = optimizerSettings.positionLearningRateDelayMult;
+    optimizer.positionLearningRateDelaySteps = optimizerSettings.positionLearningRateDelaySteps;
+    optimizer.positionLearningRateMaxSteps = optimizerSettings.positionLearningRateMaxSteps;
     optimizer.featureLearningRate = optimizerSettings.featureLearningRate;
     optimizer.featureRestLearningRate = optimizerSettings.featureRestLearningRate;
     optimizer.opacityLearningRate = optimizerSettings.opacityLearningRate;
@@ -307,23 +297,20 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     densify.densifyUntilIteration =
         std::max(densifySettings.untilIteration, densifySettings.fromIteration);
     densify.densificationInterval = std::max(densifySettings.interval, 1u);
-    densify.opacityResetInterval =
-        std::max(densifySettings.opacityResetInterval, 1u);
+    densify.opacityResetInterval = std::max(densifySettings.opacityResetInterval, 1u);
     densify.maxGaussianCount = std::max(densifySettings.maxGaussians, 1u);
     densify.splitChildren = std::clamp(densifySettings.splitChildren, 2u, 8u);
     densify.densifyGradThreshold = std::max(densifySettings.gradientThreshold, 0.0f);
     densify.minOpacity = std::clamp(densifySettings.minOpacity, 0.0f, 0.99f);
     densify.percentDense = std::clamp(densifySettings.percentDense, 0.0f, 1.0f);
-    densify.screenSizePruneThreshold =
-        std::max(densifySettings.screenPruneSize, 0.0f);
-    densify.worldSizePruneThreshold =
-        std::max(densifySettings.worldPruneSize, 0.0f);
+    densify.screenSizePruneThreshold = std::max(densifySettings.screenPruneSize, 0.0f);
+    densify.worldSizePruneThreshold = std::max(densifySettings.worldPruneSize, 0.0f);
     training_.setDensificationConfig(densify);
 
     if (initializedModel) {
         state_.initialized = false;
-        setStatus("Training initialized with " +
-                  std::to_string(training_.gaussianCount()) + " gaussians from " +
+        setStatus("Training initialized with " + std::to_string(training_.gaussianCount()) +
+                  " gaussians from " +
                   (usedRandomInitialization ? "random fallback" : "COLMAP sparse points"));
     }
 }
@@ -334,17 +321,16 @@ void TrainingController::initializeTrainingIfNeeded() {
         throw std::runtime_error("Training GPU is not initialized");
     }
     auto& device = *trainingDevice_;
-    const uint32_t compute = device.getQueueFamilyIndices().computeIndex.value();
-    const uint32_t transfer =
-        device.getQueueFamilyIndices().transferIndex.value_or(compute);
-    training_.initialize(device.getDevice(), device.getPhysicalDevice(),
-                         device.getTransferQueue(), transfer, compute);
+    const auto computeIndex = device.getQueueFamilyIndices().computeIndex;
+    if (!computeIndex) throw std::runtime_error("Training compute queue family is unavailable");
+    const uint32_t compute = *computeIndex;
+    const uint32_t transfer = device.getQueueFamilyIndices().transferIndex.value_or(compute);
+    training_.initialize(device.getDevice(), device.getPhysicalDevice(), device.getTransferQueue(),
+                         transfer, compute);
     training_.initializeTrainingRenderers(
-        device.getDevice(), device.getPhysicalDevice(),
-        device.getComputeQueue(), compute,
+        device.getDevice(), device.getPhysicalDevice(), device.getComputeQueue(), compute,
         std::max(training_.gaussianCount(), 1u),
-        TrainingExtent{std::max(state_.imageWidth, 1u),
-                       std::max(state_.imageHeight, 1u)});
+        TrainingExtent{std::max(state_.imageWidth, 1u), std::max(state_.imageHeight, 1u)});
     state_.initialized = true;
 }
 
@@ -374,17 +360,18 @@ void TrainingController::toggleTraining() {
             loadDataset();
             if (!state_.datasetLoaded) return;
         }
-        activeRunConfig_ = std::make_unique<const TrainingRunConfig>(
-            makeTrainingRunConfig(settings_));
+        activeRunConfig_ =
+            std::make_unique<const TrainingRunConfig>(makeTrainingRunConfig(settings_));
         applyConfiguration(*activeRunConfig_);
         initializeTrainingIfNeeded();
         if (snapshotForUi().trainingIteration == 0u) resetTimer();
         startTimer();
         saveSettings();
         startWorker();
-        setStatus(activeRunConfig_->run.pureTraining
-            ? "Pure asynchronous training started; only elapsed time updates until completion."
-            : "Asynchronous training started.");
+        setStatus(
+            activeRunConfig_->run.pureTraining
+                ? "Pure asynchronous training started; only elapsed time updates until completion."
+                : "Asynchronous training started.");
     } catch (const std::exception& error) {
         stopAndJoin();
         stopTimer();
@@ -400,8 +387,8 @@ void TrainingController::startFixedBenchmark() {
             loadDataset();
             if (!state_.datasetLoaded) return;
         }
-        activeRunConfig_ = std::make_unique<const TrainingRunConfig>(
-            makeTrainingRunConfig(settings_));
+        activeRunConfig_ =
+            std::make_unique<const TrainingRunConfig>(makeTrainingRunConfig(settings_));
         applyConfiguration(*activeRunConfig_);
         initializeTrainingIfNeeded();
         TrainingFixedBenchmarkConfig config{};
@@ -436,8 +423,7 @@ void TrainingController::runSynchronousStep() {
         state_.running = false;
         activeRunConfig_.reset();
         setStatus("Fixed workload benchmark completed: " +
-                  std::to_string(after.fixedBenchmark.measuredSteps) +
-                  " measured steps.");
+                  std::to_string(after.fixedBenchmark.measuredSteps) + " measured steps.");
     } else if (after.trainingComplete) {
         finishTrainingRun();
     }
@@ -455,9 +441,8 @@ void TrainingController::startWorker() {
     state_.running = true;
     state_.pureActive = pure;
     publishSnapshot();
-    worker_ = std::jthread([this, pure](std::stop_token stopToken) {
-        workerMain(stopToken, pure);
-    });
+    worker_ =
+        std::jthread([this, pure](std::stop_token stopToken) { workerMain(stopToken, pure); });
 }
 
 void TrainingController::requestStop() {
@@ -510,24 +495,21 @@ void TrainingController::consumeWorkerResult() {
     } else {
         state_.pureActive = false;
         activeRunConfig_.reset();
-        setStatus("Training paused at " +
-                  std::to_string(snapshot.trainingIteration) +
+        setStatus("Training paused at " + std::to_string(snapshot.trainingIteration) +
                   " iterations after " + elapsedText() + ".");
     }
 }
 
 void TrainingController::finishTrainingRun() {
     const bool completedPure = state_.pureActive;
-    const std::filesystem::path runOutputPath = activeRunConfig_
-        ? activeRunConfig_->outputPath
-        : outputPlyPath();
+    const std::filesystem::path runOutputPath =
+        activeRunConfig_ ? activeRunConfig_->outputPath : outputPlyPath();
     state_.running = false;
     state_.pureActive = false;
     stopTimer();
     const auto snapshot = snapshotForUi();
-    std::string status = "Training completed at " +
-        std::to_string(snapshot.trainingIteration) +
-        " iterations in " + elapsedText() + ".";
+    std::string status = "Training completed at " + std::to_string(snapshot.trainingIteration) +
+                         " iterations in " + elapsedText() + ".";
     if (completedPure) {
         const std::filesystem::path path = runOutputPath;
         if (!training_.exportToPLY(path)) {
@@ -571,9 +553,7 @@ void TrainingController::setOutputPath(const std::filesystem::path& path) {
 void TrainingController::saveSettings() {
     if (trainingDevice_) {
         const auto& gpu = trainingDevice_->getSelectedPhysicalDeviceInfo();
-        settings_.gpuSelector = gpu.uuid.empty()
-            ? std::to_string(gpu.vulkanIndex)
-            : gpu.uuid;
+        settings_.gpuSelector = gpu.uuid.empty() ? std::to_string(gpu.vulkanIndex) : gpu.uuid;
     }
     TrainingSettingsStore::save(TrainingSettingsStore::defaultPath(), settings_);
 }
@@ -588,12 +568,10 @@ void TrainingController::stopTimer() {
     stopTimerAt(std::chrono::steady_clock::now());
 }
 
-void TrainingController::stopTimerAt(
-    std::chrono::steady_clock::time_point endTime) {
+void TrainingController::stopTimerAt(std::chrono::steady_clock::time_point endTime) {
     if (!timerRunning_) return;
     if (endTime > timerStartedAt_) {
-        elapsedSeconds_ +=
-            std::chrono::duration<double>(endTime - timerStartedAt_).count();
+        elapsedSeconds_ += std::chrono::duration<double>(endTime - timerStartedAt_).count();
     }
     timerRunning_ = false;
 }
@@ -606,13 +584,14 @@ void TrainingController::resetTimer() {
 
 double TrainingController::elapsedSeconds() const {
     if (!timerRunning_) return elapsedSeconds_;
-    return elapsedSeconds_ + std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - timerStartedAt_).count();
+    return elapsedSeconds_ +
+           std::chrono::duration<double>(std::chrono::steady_clock::now() - timerStartedAt_)
+               .count();
 }
 
 std::string TrainingController::elapsedText() const {
-    const uint64_t totalMilliseconds = static_cast<uint64_t>(
-        std::max(elapsedSeconds(), 0.0) * 1000.0);
+    const uint64_t totalMilliseconds =
+        static_cast<uint64_t>(std::max(elapsedSeconds(), 0.0) * 1000.0);
     const uint64_t milliseconds = totalMilliseconds % 1000u;
     const uint64_t totalSeconds = totalMilliseconds / 1000u;
     const uint64_t seconds = totalSeconds % 60u;
@@ -620,9 +599,8 @@ std::string TrainingController::elapsedText() const {
     const uint64_t minutes = totalMinutes % 60u;
     const uint64_t hours = totalMinutes / 60u;
     std::ostringstream stream;
-    stream << std::setfill('0') << std::setw(2) << hours << ':'
-           << std::setw(2) << minutes << ':' << std::setw(2) << seconds << '.'
-           << std::setw(3) << milliseconds;
+    stream << std::setfill('0') << std::setw(2) << hours << ':' << std::setw(2) << minutes << ':'
+           << std::setw(2) << seconds << '.' << std::setw(3) << milliseconds;
     return stream.str();
 }
 
@@ -639,18 +617,15 @@ void TrainingController::setError(std::string message) {
 }
 
 void TrainingController::syncDefaultOutputName() {
-    const std::filesystem::path datasetPath(
-        textBufferString(settings_.paths.dataset));
+    const std::filesystem::path datasetPath(textBufferString(settings_.paths.dataset));
     std::string name = datasetPath.filename().string();
     if (name.empty()) name = "trained";
     setTextBuffer(settings_.paths.outputName, name + ".ply");
 }
 
 std::filesystem::path TrainingController::outputPlyPath() const {
-    std::filesystem::path outputDir(
-        textBufferString(settings_.paths.outputDirectory));
-    std::filesystem::path outputName(
-        textBufferString(settings_.paths.outputName));
+    std::filesystem::path outputDir(textBufferString(settings_.paths.outputDirectory));
+    std::filesystem::path outputName(textBufferString(settings_.paths.outputName));
     if (outputName.extension().empty()) outputName += ".ply";
     return outputDir / outputName;
 }
@@ -678,8 +653,7 @@ TrainingUiSnapshot TrainingController::captureSnapshot() const {
     snapshot.trainingIteration = training_.trainingIteration();
     snapshot.totalIterations = training_.totalIterations();
     snapshot.densificationIteration = training_.densificationStatsIteration();
-    snapshot.currentFrameIndex =
-        snapshot.hasDataset ? training_.currentFrameIndex() : 0u;
+    snapshot.currentFrameIndex = snapshot.hasDataset ? training_.currentFrameIndex() : 0u;
     snapshot.fixedBenchmark = training_.fixedWorkloadBenchmarkStats();
     snapshot.validation = training_.validationStats();
     snapshot.candidateProfile = training_.candidateProfileStats();
@@ -697,38 +671,44 @@ void TrainingController::publishSnapshot() {
     snapshotValid_ = true;
 }
 
-void TrainingController::workerMain(std::stop_token stopToken, bool pure) {
-    TrainingWorkerResult result{};
-    result.pure = pure;
+void TrainingController::workerMain(std::stop_token stopToken, bool pure) noexcept {
     try {
-        uint32_t stepsSinceSnapshot = 0u;
-        while (!stopToken.stop_requested() && !training_.isTrainingComplete()) {
-            training_.trainStep();
-            if (!pure && ++stepsSinceSnapshot >= 32u) {
-                publishSnapshot();
-                stepsSinceSnapshot = 0u;
+        TrainingWorkerResult result{};
+        result.pure = pure;
+        try {
+            uint32_t stepsSinceSnapshot = 0u;
+            while (!stopToken.stop_requested() && !training_.isTrainingComplete()) {
+                training_.trainStep();
+                if (!pure && ++stepsSinceSnapshot >= kTrainingSnapshotPublishInterval) {
+                    publishSnapshot();
+                    stepsSinceSnapshot = 0u;
+                }
+            }
+            result.completed = training_.isTrainingComplete();
+        } catch (const std::exception& error) {
+            result.error = error.what();
+        } catch (...) {
+            result.error = "Unknown exception in asynchronous training worker";
+        }
+        result.finishedAt = std::chrono::steady_clock::now();
+        try {
+            publishSnapshot();
+        } catch (const std::exception& error) {
+            if (result.error.empty()) {
+                result.error =
+                    std::string("Failed to publish final training snapshot: ") + error.what();
             }
         }
-        result.completed = training_.isTrainingComplete();
-    } catch (const std::exception& error) {
-        result.error = error.what();
-    } catch (...) {
-        result.error = "Unknown exception in asynchronous training worker";
-    }
-    result.finishedAt = std::chrono::steady_clock::now();
-    try {
-        publishSnapshot();
-    } catch (const std::exception& error) {
-        if (result.error.empty()) {
-            result.error = std::string("Failed to publish final training snapshot: ") +
-                           error.what();
+        {
+            std::lock_guard lock(resultMutex_);
+            result_ = std::move(result);
         }
+        resultReady_.store(true, std::memory_order_release);
+    } catch (...) {
+        // A failure while allocating the string-based error result cannot be
+        // reported safely across the worker boundary.
+        std::terminate();
     }
-    {
-        std::lock_guard lock(resultMutex_);
-        result_ = std::move(result);
-    }
-    resultReady_.store(true, std::memory_order_release);
 }
 
 } // namespace vulkan3DGS

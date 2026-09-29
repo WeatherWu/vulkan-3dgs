@@ -11,6 +11,12 @@
 
 namespace vulkan3DGS {
 
+struct TrainingValidationReadbackMetadata {
+    uint32_t iteration = 0;
+    uint32_t tileItemCount = 0;
+    uint32_t gaussianCount = 0;
+};
+
 class TrainingValidationService {
 public:
     struct ReadbackTicket {
@@ -18,7 +24,7 @@ public:
     };
 
     TrainingValidationService() = default;
-    ~TrainingValidationService();
+    ~TrainingValidationService() noexcept;
 
     TrainingValidationService(const TrainingValidationService&) = delete;
     TrainingValidationService& operator=(const TrainingValidationService&) = delete;
@@ -26,21 +32,15 @@ public:
     void initialize(vk::Device device, vk::PhysicalDevice physicalDevice);
     void cleanup();
 
-    [[nodiscard]] std::optional<ReadbackTicket> acquire(
-        uint32_t iteration,
-        uint32_t tileItemCount,
-        uint32_t gaussianCount);
-    void recordCopy(vk::CommandBuffer commandBuffer,
-                    vk::Buffer sourceBuffer,
+    [[nodiscard]] std::optional<ReadbackTicket>
+    acquire(TrainingValidationReadbackMetadata metadata);
+    void recordCopy(vk::CommandBuffer commandBuffer, vk::Buffer sourceBuffer,
                     ReadbackTicket ticket) const;
     [[nodiscard]] vk::Fence submissionFence(ReadbackTicket ticket) const;
     void markSubmitted(ReadbackTicket ticket);
     void collect(TrainingExtent extent, uint32_t gaussianCapacity);
-    void consumeResult(const TrainingValidationGpuResult& result,
-                       uint32_t tileItemCount,
-                       uint32_t gaussianCount,
-                       TrainingExtent extent,
-                       uint32_t gaussianCapacity);
+    void consumeResult(const TrainingValidationGpuResult& result, uint32_t tileItemCount,
+                       uint32_t gaussianCount, TrainingExtent extent, uint32_t gaussianCapacity);
 
     void resetStats();
     void resetCandidateProfileStats();

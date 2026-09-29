@@ -90,7 +90,9 @@ struct TrainingSettingsValidation {
     bool valid = true;
     std::string message;
 
-    explicit operator bool() const noexcept { return valid; }
+    explicit operator bool() const noexcept {
+        return valid;
+    }
 };
 
 // Immutable-by-ownership snapshot created when a run starts. TrainingController
@@ -107,17 +109,14 @@ struct TrainingRunConfig {
     TrainingRunSettings run{};
 };
 
-[[nodiscard]] TrainingRunConfig makeTrainingRunConfig(
-    const TrainingSettings& settings);
+[[nodiscard]] TrainingRunConfig makeTrainingRunConfig(const TrainingSettings& settings);
 
-template <size_t N>
-void setTextBuffer(std::array<char, N>& buffer, const std::string& value) {
+template <size_t N> void setTextBuffer(std::array<char, N>& buffer, const std::string& value) {
     buffer.fill('\0');
     value.copy(buffer.data(), N - 1u);
 }
 
-template <size_t N>
-std::string textBufferString(const std::array<char, N>& buffer) {
+template <size_t N> std::string textBufferString(const std::array<char, N>& buffer) {
     return std::string(buffer.data());
 }
 
@@ -126,8 +125,7 @@ public:
     static std::filesystem::path defaultPath();
     static void load(const std::filesystem::path& path, TrainingSettings& settings);
     static void save(const std::filesystem::path& path, const TrainingSettings& settings);
-    [[nodiscard]] static TrainingSettingsValidation validate(
-        const TrainingSettings& settings);
+    [[nodiscard]] static TrainingSettingsValidation validate(const TrainingSettings& settings);
 
 private:
     static void write(std::ostream& output, const TrainingSettings& settings);

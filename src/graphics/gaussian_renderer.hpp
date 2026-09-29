@@ -22,7 +22,7 @@ class GaussianModel;
 class GaussianRenderer : public Renderer {
 public:
     GaussianRenderer();
-    ~GaussianRenderer() override;
+    ~GaussianRenderer() noexcept override;
 
     void initialize(GLFWwindow* window) override;
     void cleanup() override;
@@ -39,14 +39,18 @@ public:
     void setRenderProfile(GaussianRenderProfile profile) {
         renderProfile_ = profile;
     }
-    GaussianRenderProfile getRenderProfile() const { return renderProfile_; }
-    void setSHBands(uint32_t bands) { shBands_ = std::min(bands, 3u); }
-    uint32_t getSHBands() const { return shBands_; }
+    GaussianRenderProfile getRenderProfile() const {
+        return renderProfile_;
+    }
+    void setSHBands(uint32_t bands) {
+        shBands_ = std::min(bands, 3u);
+    }
+    uint32_t getSHBands() const {
+        return shBands_;
+    }
 
-    void setRenderData(const GaussianModel* model,
-                       const glm::mat4& view,
-                       const glm::mat4& projection,
-                       const Camera& camera,
+    void setRenderData(const GaussianModel* model, const glm::mat4& view,
+                       const glm::mat4& projection, const Camera& camera,
                        const glm::mat4& modelMatrix);
 
 private:
@@ -54,8 +58,7 @@ private:
     void shutdownImGui();
     void beginImGuiFrame();
     void prepareFrameData();
-    vk::RenderPass rebuildFormatDependentResources(vk::Format imageFormat,
-                                                    vk::Extent2D extent);
+    vk::RenderPass rebuildFormatDependentResources(vk::Format imageFormat, vk::Extent2D extent);
 
     GraphicsFrameRuntime frameRuntime_;
     GraphicsPipelineSet pipelineSet_;

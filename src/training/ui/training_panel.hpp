@@ -18,8 +18,7 @@ public:
 
 private:
     void drawGpuControl(TrainingController& controller);
-    void dispatch(TrainingController& controller,
-                  const TrainingCommandPanelActions& actions,
+    void dispatch(TrainingController& controller, const TrainingCommandPanelActions& actions,
                   const TrainingUiSnapshot& snapshot);
     void drawFileDialogs(TrainingController& controller);
 

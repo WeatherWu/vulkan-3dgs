@@ -1,0 +1,16 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  modernize-*
+WarningsAsErrors: 'bugprone-*'
+HeaderFilterRegex: '.*[\\/]src[\\/](app[\\/]application|viewer[\\/]viewer_(controller|panel|settings)|graphics[\\/](gaussian_renderer|graphics_)|training[\\/](app|ui)[\\/]|training[\\/]core[\\/]training_(frame_scheduler|image_runtime|model_io|profiling_service|step_executor|validation_service)).*'
+SystemHeaders: false
+FormatStyle: file
+CheckOptions:
+  bugprone-easily-swappable-parameters.MinimumLength: '3'
+  modernize-loop-convert.MinConfidence: reasonable
+  modernize-use-nullptr.NullMacros: 'NULL'
+  cppcoreguidelines-narrowing-conversions.WarnOnEquivalentBitWidth: 'false'
+...

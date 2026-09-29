@@ -22,8 +22,12 @@ public:
     [[nodiscard]] std::vector<size_t> upcomingFrames(size_t maximumCount) const;
 
     [[nodiscard]] bool isComplete(uint32_t trainingIteration) const noexcept;
-    [[nodiscard]] size_t currentFrame() const noexcept { return currentFrame_; }
-    [[nodiscard]] size_t frameCount() const noexcept { return frameCount_; }
+    [[nodiscard]] size_t currentFrame() const noexcept {
+        return currentFrame_;
+    }
+    [[nodiscard]] size_t frameCount() const noexcept {
+        return frameCount_;
+    }
     [[nodiscard]] uint32_t totalIterations() const noexcept {
         return config_.totalIterations;
     }

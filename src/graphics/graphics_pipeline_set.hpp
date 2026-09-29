@@ -21,8 +21,12 @@ public:
     void cleanup();
 
     Pipeline& active(GaussianRenderProfile profile);
-    const Pipeline& legacy() const { return legacy_; }
-    vk::RenderPass renderPass() const { return renderPass_.getRenderPass(); }
+    const Pipeline& legacy() const {
+        return legacy_;
+    }
+    vk::RenderPass renderPass() const {
+        return renderPass_.getRenderPass();
+    }
     vk::DescriptorSetLayout descriptorSetLayout() const {
         return legacy_.getDescriptorSetLayout();
     }

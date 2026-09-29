@@ -18,10 +18,9 @@ struct TrainingSettingsPanelActions {
 class TrainingSettingsPanel {
 public:
     static void drawInitialization(TrainingSettings& settings, bool trainingRunning);
-    static TrainingSettingsPanelActions drawTrainingAndDensification(
-        TrainingSettings& settings,
-        const TrainingUiSnapshot& snapshot,
-        bool trainingRunning);
+    static TrainingSettingsPanelActions
+    drawTrainingAndDensification(TrainingSettings& settings, const TrainingUiSnapshot& snapshot,
+                                 bool trainingRunning);
 };
 
 } // namespace vulkan3DGS

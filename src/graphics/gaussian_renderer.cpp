@@ -9,6 +9,7 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
+#include <cstdio>
 #include <filesystem>
 #include <stdexcept>
 
@@ -39,23 +40,25 @@ void loadImGuiFonts() {
 
 GaussianRenderer::GaussianRenderer() = default;
 
-GaussianRenderer::~GaussianRenderer() {
-    cleanup();
+GaussianRenderer::~GaussianRenderer() noexcept {
+    try {
+        cleanup();
+    } catch (...) {
+        std::fputs("GaussianRenderer cleanup failed during destruction\n", stderr);
+    }
 }
 
 void GaussianRenderer::initialize(GLFWwindow* window) {
     LOG_INFO("Starting GaussianRenderer initialization");
     window_ = window;
 
-    frameRuntime_.initialize(
-        window, presentModePreference_, RenderPass::DepthFormat,
-        [this](vk::Format format, vk::Extent2D extent) {
-            pipelineSet_.initialize(format, extent);
-            return pipelineSet_.renderPass();
-        });
+    frameRuntime_.initialize(window, presentModePreference_, RenderPass::DepthFormat,
+                             [this](vk::Format format, vk::Extent2D extent) {
+                                 pipelineSet_.initialize(format, extent);
+                                 return pipelineSet_.renderPass();
+                             });
     sorter_.initialize();
-    resources_.initialize(frameRuntime_.frameCount(),
-                          pipelineSet_.descriptorSetLayout(),
+    resources_.initialize(frameRuntime_.frameCount(), pipelineSet_.descriptorSetLayout(),
                           sorter_.descriptorSetLayout());
     resources_.updateDescriptors(sorter_);
     uniforms_.resize(frameRuntime_.frameCount());
@@ -97,8 +100,9 @@ void GaussianRenderer::initializeImGui(GLFWwindow* window) {
     initInfo.Instance = context.getInstance();
     initInfo.PhysicalDevice = context.PhysicalDevice();
     initInfo.Device = getDevice();
-    initInfo.QueueFamily =
-        context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
+    const auto graphicsIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex;
+    if (!graphicsIndex) throw std::runtime_error("Graphics queue family is unavailable");
+    initInfo.QueueFamily = *graphicsIndex;
     initInfo.Queue = context.getDevice().getGraphicsQueue();
     initInfo.DescriptorPool = VK_NULL_HANDLE;
     initInfo.DescriptorPoolSize = 64;
@@ -144,10 +148,9 @@ void GaussianRenderer::render() {
 }
 
 void GaussianRenderer::renderToImage() {
-    const auto formatHandler =
-        [this](vk::Format format, vk::Extent2D extent) {
-            return rebuildFormatDependentResources(format, extent);
-        };
+    const auto formatHandler = [this](vk::Format format, vk::Extent2D extent) {
+        return rebuildFormatDependentResources(format, extent);
+    };
     const std::optional<uint32_t> imageIndex = frameRuntime_.acquireFrame(
         pipelineSet_.renderPass(), RenderPass::DepthFormat, formatHandler);
     if (!imageIndex) {
@@ -158,12 +161,11 @@ void GaussianRenderer::renderToImage() {
     beginImGuiFrame();
     Pipeline& pipeline = pipelineSet_.active(renderProfile_);
     const uint32_t frameIndex = frameRuntime_.currentFrame();
-    const bool hasModel = currentModel_ && !currentModel_->isEmpty() &&
-                          resources_.instanceBuffer();
-    const uint32_t pointCount = hasModel
-                                    ? static_cast<uint32_t>(std::distance(
-                                          currentModel_->begin(), currentModel_->end()))
-                                    : 0u;
+    const bool hasModel = currentModel_ && !currentModel_->isEmpty() && resources_.instanceBuffer();
+    const uint32_t pointCount =
+        hasModel
+            ? static_cast<uint32_t>(std::distance(currentModel_->begin(), currentModel_->end()))
+            : 0u;
     GraphicsRecordContext recordContext{
         frameRuntime_.commandBuffer(),
         pipelineSet_.renderPass(),
@@ -182,11 +184,10 @@ void GaussianRenderer::renderToImage() {
 }
 
 void GaussianRenderer::presentImage() {
-    frameRuntime_.present(
-        pipelineSet_.renderPass(), RenderPass::DepthFormat,
-        [this](vk::Format format, vk::Extent2D extent) {
-            return rebuildFormatDependentResources(format, extent);
-        });
+    frameRuntime_.present(pipelineSet_.renderPass(), RenderPass::DepthFormat,
+                          [this](vk::Format format, vk::Extent2D extent) {
+                              return rebuildFormatDependentResources(format, extent);
+                          });
 }
 
 void GaussianRenderer::renderToBuffer() {
@@ -200,8 +201,7 @@ void GaussianRenderer::onResize(uint32_t width, uint32_t height) {
     frameRuntime_.requestResize();
 }
 
-void GaussianRenderer::setPresentModePreference(
-    PresentModePreference preference) {
+void GaussianRenderer::setPresentModePreference(PresentModePreference preference) {
     if (presentModePreference_ == preference) {
         return;
     }
@@ -209,10 +209,8 @@ void GaussianRenderer::setPresentModePreference(
     frameRuntime_.setPresentModePreference(preference);
 }
 
-void GaussianRenderer::setRenderData(const GaussianModel* model,
-                                     const glm::mat4& view,
-                                     const glm::mat4& projection,
-                                     const Camera& camera,
+void GaussianRenderer::setRenderData(const GaussianModel* model, const glm::mat4& view,
+                                     const glm::mat4& projection, const Camera& camera,
                                      const glm::mat4& modelMatrix) {
     if (model != currentModel_) {
         const vk::Device device = getDevice();
@@ -230,9 +228,8 @@ void GaussianRenderer::setRenderData(const GaussianModel* model,
         uniform.model = modelMatrix;
         const glm::mat3 rotation(view);
         const glm::vec3 translation(view[3][0], view[3][1], view[3][2]);
-        uniform.cameraPositionTime = glm::vec4(
-            -glm::transpose(rotation) * translation,
-            static_cast<float>(glfwGetTime()));
+        uniform.cameraPositionTime =
+            glm::vec4(-glm::transpose(rotation) * translation, static_cast<float>(glfwGetTime()));
     }
 }
 
@@ -246,37 +243,35 @@ void GaussianRenderer::prepareFrameData() {
     const uint32_t frameIndex = frameRuntime_.currentFrame();
     GraphicsUniformData& uniform = uniforms_[frameIndex];
     const vk::Extent2D extent = frameRuntime_.extent();
-    uniform.cameraPositionTime = glm::vec4(
-        camera_.get_position(), static_cast<float>(glfwGetTime()));
-    uniform.focal = glm::vec4(
-        0.5f * static_cast<float>(extent.width) * uniform.projection[0][0],
-        0.5f * static_cast<float>(extent.height) * uniform.projection[1][1],
-        static_cast<float>(extent.width), static_cast<float>(extent.height));
-    uniform.renderSettings = glm::uvec4(
-        renderProfile_ == GaussianRenderProfile::SuperSplatCompatible ? 1u : 0u,
-        std::min(shBands_, 3u), 0u, 0u);
+    uniform.cameraPositionTime =
+        glm::vec4(camera_.get_position(), static_cast<float>(glfwGetTime()));
+    uniform.focal = glm::vec4(0.5f * static_cast<float>(extent.width) * uniform.projection[0][0],
+                              0.5f * static_cast<float>(extent.height) * uniform.projection[1][1],
+                              static_cast<float>(extent.width), static_cast<float>(extent.height));
+    uniform.renderSettings =
+        glm::uvec4(renderProfile_ == GaussianRenderProfile::SuperSplatCompatible ? 1u : 0u,
+                   std::min(shBands_, 3u), 0u, 0u);
     resources_.updateUniform(uniform, extent);
 
-    const uint32_t pointCount = static_cast<uint32_t>(
-        std::distance(currentModel_->begin(), currentModel_->end()));
-    const bool buffersChanged = sorter_.prepare(
-        pointCount, currentModel_, uniform.view, uniform.projection, uniform.model,
-        frameRuntime_.inFlightFences());
+    const uint32_t pointCount =
+        static_cast<uint32_t>(std::distance(currentModel_->begin(), currentModel_->end()));
+    const bool buffersChanged =
+        sorter_.prepare(pointCount, currentModel_, uniform.view, uniform.projection, uniform.model,
+                        frameRuntime_.inFlightFences());
     if (buffersChanged) {
         resources_.updateDescriptors(sorter_);
     }
 }
 
-vk::RenderPass GaussianRenderer::rebuildFormatDependentResources(
-    vk::Format imageFormat, vk::Extent2D extent) {
+vk::RenderPass GaussianRenderer::rebuildFormatDependentResources(vk::Format imageFormat,
+                                                                 vk::Extent2D extent) {
     const bool rebuildImGui = imguiInitialized_;
     if (rebuildImGui) {
         shutdownImGui();
     }
     resources_.releaseDescriptors();
     pipelineSet_.recreate(imageFormat, extent);
-    resources_.rebuildDescriptors(frameRuntime_.frameCount(),
-                                  pipelineSet_.descriptorSetLayout(),
+    resources_.rebuildDescriptors(frameRuntime_.frameCount(), pipelineSet_.descriptorSetLayout(),
                                   sorter_.descriptorSetLayout(), sorter_);
     if (rebuildImGui) {
         initializeImGui(window_);

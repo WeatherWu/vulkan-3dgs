@@ -4,13 +4,13 @@
 #include "graphics/render_profile.hpp"
 #include "viewer/camera.hpp"
 #include "viewer/camera_controller.hpp"
-#include "vulkan/swapchain.hpp"
 #include "viewer/viewer_settings.hpp"
+#include "vulkan/swapchain.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <string>
-#include <algorithm>
 
 namespace vulkan3DGS {
 struct ViewerRenderData {
@@ -21,14 +21,14 @@ struct ViewerRenderData {
     Camera camera{};
 };
 struct ViewerInputState {
-    double mouseX=0.0, mouseY=0.0;
-    bool orbitButton=false, panButton=false;
-    bool captureMouse=false, captureKeyboard=false;
-    bool toggleMode=false, focus=false, resetFocus=false;
-    bool moveLeft=false, moveRight=false, moveUp=false, moveDown=false;
-    bool moveForward=false, moveBackward=false;
-    float speedMultiplier=1.0f;
-    int framebufferWidth=1, framebufferHeight=1;
+    double mouseX = 0.0, mouseY = 0.0;
+    bool orbitButton = false, panButton = false;
+    bool captureMouse = false, captureKeyboard = false;
+    bool toggleMode = false, focus = false, resetFocus = false;
+    bool moveLeft = false, moveRight = false, moveUp = false, moveDown = false;
+    bool moveForward = false, moveBackward = false;
+    float speedMultiplier = 1.0f;
+    int framebufferWidth = 1, framebufferHeight = 1;
 };
 class ViewerController {
 public:
@@ -38,51 +38,137 @@ public:
     void saveSettings(const std::filesystem::path& path);
     void setExternalModel(const GaussianModel* model);
     bool loadModel(const std::string& path);
-    void setFlipY(bool value); void setFlipZ(bool value);
-    [[nodiscard]] bool flipY() const { return settings_.flipY; }
-    [[nodiscard]] bool flipZ() const { return settings_.flipZ; }
-    void setRenderProfile(GaussianRenderProfile value) { settings_.renderProfile = value; }
-    [[nodiscard]] GaussianRenderProfile renderProfile() const { return settings_.renderProfile; }
-    void setSHBands(uint32_t value) { settings_.shBands = std::min(value, 3u); }
-    [[nodiscard]] uint32_t shBands() const { return settings_.shBands; }
+    void setFlipY(bool value);
+    void setFlipZ(bool value);
+    [[nodiscard]] bool flipY() const {
+        return settings_.flipY;
+    }
+    [[nodiscard]] bool flipZ() const {
+        return settings_.flipZ;
+    }
+    void setRenderProfile(GaussianRenderProfile value) {
+        settings_.renderProfile = value;
+    }
+    [[nodiscard]] GaussianRenderProfile renderProfile() const {
+        return settings_.renderProfile;
+    }
+    void setSHBands(uint32_t value) {
+        settings_.shBands = std::min(value, 3u);
+    }
+    [[nodiscard]] uint32_t shBands() const {
+        return settings_.shBands;
+    }
     void setPresentMode(PresentModePreference value) {
         settings_.presentMode = value;
         presentDirty_ = true;
     }
-    [[nodiscard]] PresentModePreference presentMode() const { return settings_.presentMode; }
-    bool consumePresentDirty() { const bool value=presentDirty_; presentDirty_=false; return value; }
-    [[nodiscard]] const GaussianModel* model() const { return model_; }
-    const glm::mat4& viewMatrix() const { return viewMatrix_; }
-    const glm::mat4& projectionMatrix() const { return projectionMatrix_; }
-    const glm::mat4& modelMatrix() const { return modelMatrix_; }
-    Camera& camera() { return camera_; }
-    const Camera& camera() const { return camera_; }
-    bool hasCamera() const { return hasCamera_; }
-    CameraController& cameraController() { return cameraController_; }
-    const CameraController& cameraController() const { return cameraController_; }
-    float nearPlane() const { return nearPlane_; }
-    float farPlane() const { return farPlane_; }
+    [[nodiscard]] PresentModePreference presentMode() const {
+        return settings_.presentMode;
+    }
+    bool consumePresentDirty() {
+        const bool value = presentDirty_;
+        presentDirty_ = false;
+        return value;
+    }
+    [[nodiscard]] const GaussianModel* model() const {
+        return model_;
+    }
+    const glm::mat4& viewMatrix() const {
+        return viewMatrix_;
+    }
+    const glm::mat4& projectionMatrix() const {
+        return projectionMatrix_;
+    }
+    const glm::mat4& modelMatrix() const {
+        return modelMatrix_;
+    }
+    Camera& camera() {
+        return camera_;
+    }
+    const Camera& camera() const {
+        return camera_;
+    }
+    bool hasCamera() const {
+        return hasCamera_;
+    }
+    CameraController& cameraController() {
+        return cameraController_;
+    }
+    const CameraController& cameraController() const {
+        return cameraController_;
+    }
+    float nearPlane() const {
+        return nearPlane_;
+    }
+    float farPlane() const {
+        return farPlane_;
+    }
     void setCamera(const Camera& camera);
     void syncCameraToModelFocus();
     void resetCamera(float viewportWidth, float viewportHeight);
     void focusCamera(float viewportWidth, float viewportHeight);
-    void dolly(float wheelDelta) { cameraController_.dolly(wheelDelta); }
-    void beginDrag(double x, double y, int button) { dragging_=true; dragButton_=button; lastMouseX_=x; lastMouseY_=y; }
-    void endDrag() { dragging_=false; dragButton_=-1; }
-    [[nodiscard]] bool dragging() const { return dragging_; }
-    void resetDrag() { dragging_=false; dragButton_=-1; }
-    bool updateDrag(double x,double y,int button,float& dx,float& dy) { if(!dragging_||dragButton_!=button){beginDrag(x,y,button);dx=dy=0.0f;return false;} dx=static_cast<float>(x-lastMouseX_);dy=static_cast<float>(y-lastMouseY_);lastMouseX_=x;lastMouseY_=y;return true; }
-    void orbit(float x, float y) { cameraController_.orbit(x, y); }
-    void look(float x, float y) { cameraController_.look(x, y); }
-    void pan(float x, float y, float w, float h) { cameraController_.pan(x, y, w, h); }
-    void fly(const glm::vec3& motion, float dt, float speed) { cameraController_.fly(motion, dt, speed); }
-    void toggleCameraMode() { cameraController_.toggleMode(); }
-    bool toggleKeyPressed(bool down) { const bool pressed=down&&!toggleKeyDown_; toggleKeyDown_=down; return pressed; }
-    bool focusKeyPressed(bool down) { const bool pressed=down&&!focusKeyDown_; focusKeyDown_=down; return pressed; }
+    void dolly(float wheelDelta) {
+        cameraController_.dolly(wheelDelta);
+    }
+    void beginDrag(int button, const glm::dvec2& position) {
+        dragging_ = true;
+        dragButton_ = button;
+        lastMouseX_ = position.x;
+        lastMouseY_ = position.y;
+    }
+    void endDrag() {
+        dragging_ = false;
+        dragButton_ = -1;
+    }
+    [[nodiscard]] bool dragging() const {
+        return dragging_;
+    }
+    void resetDrag() {
+        dragging_ = false;
+        dragButton_ = -1;
+    }
+    bool updateDrag(double x, double y, int button, float& dx, float& dy) {
+        if (!dragging_ || dragButton_ != button) {
+            beginDrag(button, glm::dvec2{x, y});
+            dx = dy = 0.0f;
+            return false;
+        }
+        dx = static_cast<float>(x - lastMouseX_);
+        dy = static_cast<float>(y - lastMouseY_);
+        lastMouseX_ = x;
+        lastMouseY_ = y;
+        return true;
+    }
+    void orbit(float x, float y) {
+        cameraController_.orbit(x, y);
+    }
+    void look(float x, float y) {
+        cameraController_.look(x, y);
+    }
+    void pan(float x, float y, float w, float h) {
+        cameraController_.pan(x, y, w, h);
+    }
+    void fly(const glm::vec3& motion, float dt, float speed) {
+        cameraController_.fly(motion, dt, speed);
+    }
+    void toggleCameraMode() {
+        cameraController_.toggleMode();
+    }
+    bool toggleKeyPressed(bool down) {
+        const bool pressed = down && !toggleKeyDown_;
+        toggleKeyDown_ = down;
+        return pressed;
+    }
+    bool focusKeyPressed(bool down) {
+        const bool pressed = down && !focusKeyDown_;
+        focusKeyDown_ = down;
+        return pressed;
+    }
     void updateCamera(float deltaTime, int framebufferWidth, int framebufferHeight);
     void updateInput(const ViewerInputState& input, float deltaTime);
     void setCameraMatrices(const glm::mat4& view, const glm::mat4& projection);
     [[nodiscard]] ViewerRenderData renderData() const;
+
 private:
     void updateModelMatrix();
     std::unique_ptr<GaussianModel> ownedModel_;

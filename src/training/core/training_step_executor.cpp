@@ -4,18 +4,22 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 
 namespace vulkan3DGS {
 
-TrainingStepExecutor::~TrainingStepExecutor() {
-    cleanup();
+TrainingStepExecutor::~TrainingStepExecutor() noexcept {
+    try {
+        cleanup();
+    } catch (...) {
+        std::fputs("TrainingStepExecutor cleanup failed during destruction\n", stderr);
+    }
 }
 
-void TrainingStepExecutor::initialize(vk::Device device,
-                                      vk::Queue computeQueue,
+void TrainingStepExecutor::initialize(vk::Device device, vk::Queue computeQueue,
                                       uint32_t computeQueueFamilyIndex) {
     if (initialized()) return;
 
@@ -26,10 +30,8 @@ void TrainingStepExecutor::initialize(vk::Device device,
                         vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     prepareCommandBuffer_ = commandPool_.allocateCommandBuffer();
     mainCommandBuffer_ = commandPool_.allocateCommandBuffer();
-    prepareFence_ = device_.createFence(
-        vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
-    mainFence_ = device_.createFence(
-        vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
+    prepareFence_ = device_.createFence(vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
+    mainFence_ = device_.createFence(vk::FenceCreateInfo{vk::FenceCreateFlagBits::eSignaled});
 }
 
 void TrainingStepExecutor::cleanup() {
@@ -57,11 +59,9 @@ void TrainingStepExecutor::cleanup() {
     computeQueueFamilyIndex_ = 0;
 }
 
-TrainingStepExecutionResult TrainingStepExecutor::execute(
-    TrainingStepExecutionRequest request) {
+TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionRequest request) {
     if (!initialized()) {
-        throw std::runtime_error(
-            "Training step executor is not initialized");
+        throw std::runtime_error("Training step executor is not initialized");
     }
 
     using Clock = std::chrono::steady_clock;
@@ -72,19 +72,17 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(
     prepareCommandBuffer_.reset();
     prepareCommandBuffer_.begin(beginInfo);
     if (request.profiling.gpuTimestampsAvailable()) {
-        prepareCommandBuffer_.resetQueryPool(
-            request.profiling.queryPool(), 0,
-            kTrainingGpuTimestampQueryCount);
+        prepareCommandBuffer_.resetQueryPool(request.profiling.queryPool(), 0,
+                                             kTrainingGpuTimestampQueryCount);
     }
     request.forward.setTrainingBuffers(request.buffers, prepareCommandBuffer_,
-                                      request.pushConstants);
+                                       request.pushConstants);
     request.forward.prepareTileItems();
     request.buffers.recordTileItemCountReadback(prepareCommandBuffer_);
     prepareCommandBuffer_.end();
 
     vk::SubmitInfo prepareSubmit{};
-    prepareSubmit.setCommandBufferCount(1)
-                 .setPCommandBuffers(&prepareCommandBuffer_);
+    prepareSubmit.setCommandBufferCount(1).setPCommandBuffers(&prepareCommandBuffer_);
     const auto prepareSubmitStart = Clock::now();
     LOG_DEBUG("Submitting training prepare pass for iteration {}",
               request.pushConstants.trainingIteration);
@@ -95,50 +93,43 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(
               request.pushConstants.trainingIteration);
     request.profiling.recordCpu(
         TrainingCpuProfileStage::PrepareSubmit,
-        std::chrono::duration<float, std::milli>(
-            Clock::now() - prepareSubmitStart).count());
+        std::chrono::duration<float, std::milli>(Clock::now() - prepareSubmitStart).count());
 
     const auto tileReadbackStart = Clock::now();
     result.tileItemCount = request.buffers.requiredTileItemCount();
     request.pushConstants.tileItemCount = result.tileItemCount;
     request.profiling.recordCpu(
         TrainingCpuProfileStage::TileCountReadback,
-        std::chrono::duration<float, std::milli>(
-            Clock::now() - tileReadbackStart).count());
+        std::chrono::duration<float, std::milli>(Clock::now() - tileReadbackStart).count());
     if (result.tileItemCount > request.buffers.tileItemCapacity()) {
         const auto resizeStart = Clock::now();
-        const uint64_t doubled =
-            static_cast<uint64_t>(request.buffers.tileItemCapacity()) * 2ull;
+        const uint64_t doubled = static_cast<uint64_t>(request.buffers.tileItemCapacity()) * 2ull;
         const uint32_t capacity = static_cast<uint32_t>(
-            std::min<uint64_t>(
-                std::max<uint64_t>(result.tileItemCount, doubled),
-                std::numeric_limits<uint32_t>::max()));
+            std::min<uint64_t>(std::max<uint64_t>(result.tileItemCount, doubled),
+                               std::numeric_limits<uint32_t>::max()));
         LOG_INFO("Resizing training tile item buffer from {} to {} entries",
                  request.buffers.tileItemCapacity(), capacity);
         request.buffers.resizeTileItems(capacity);
         request.profiling.recordCpu(
             TrainingCpuProfileStage::TileBufferResize,
-            std::chrono::duration<float, std::milli>(
-                Clock::now() - resizeStart).count());
+            std::chrono::duration<float, std::milli>(Clock::now() - resizeStart).count());
     }
 
     if (request.runDensification) {
-        const uint32_t possibleGrowth = request.trainableGaussianCount *
-            std::max(request.splitChildren, 2u);
+        const uint32_t possibleGrowth =
+            request.trainableGaussianCount * std::max(request.splitChildren, 2u);
         const uint32_t requestedCapacity = std::min(
-            request.maxGaussianCount,
-            std::max(request.trainableGaussianCount, possibleGrowth));
+            request.maxGaussianCount, std::max(request.trainableGaussianCount, possibleGrowth));
         request.buffers.ensureDensificationCapacity(
             std::max(requestedCapacity, request.trainableGaussianCount));
     }
 
     std::optional<TrainingValidationService::ReadbackTicket> validationTicket;
     if (request.pushConstants.validationEnabled != 0u) {
-        request.validation.collect(request.buffers.extent(),
-                                   request.buffers.gaussianCapacity());
-        validationTicket = request.validation.acquire(
-            request.pushConstants.validationIteration,
-            result.tileItemCount, request.trainableGaussianCount);
+        request.validation.collect(request.buffers.extent(), request.buffers.gaussianCapacity());
+        validationTicket = request.validation.acquire(TrainingValidationReadbackMetadata{
+            request.pushConstants.validationIteration, result.tileItemCount,
+            request.trainableGaussianCount});
         if (!validationTicket) {
             LOG_WARN("Training validation readback ring is full at iteration {}",
                      request.pushConstants.validationIteration);
@@ -149,28 +140,23 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(
     const auto mainRecordStart = Clock::now();
     mainCommandBuffer_.reset();
     mainCommandBuffer_.begin(beginInfo);
-    request.forward.setTrainingBuffers(request.buffers, mainCommandBuffer_,
-                                      request.pushConstants);
+    request.forward.setTrainingBuffers(request.buffers, mainCommandBuffer_, request.pushConstants);
     LOG_DEBUG("Recording training main pass for iteration {}",
               request.pushConstants.trainingIteration);
     request.forward.renderPreparedTiles(result.tileItemCount);
-    request.backward.setTrainingBuffers(request.buffers, mainCommandBuffer_,
-                                       request.pushConstants);
+    request.backward.setTrainingBuffers(request.buffers, mainCommandBuffer_, request.pushConstants);
     request.backward.backward();
 
     if (request.runDensification) {
-        request.densification.setTrainingBuffers(
-            request.buffers, mainCommandBuffer_,
-            request.densificationPushConstants);
+        request.densification.setTrainingBuffers(request.buffers, mainCommandBuffer_,
+                                                 request.densificationPushConstants);
         request.densification.densifyAndPrune();
         request.buffers.recordDensificationStatsReadback(mainCommandBuffer_);
         if (request.pushConstants.validationEnabled != 0u) {
             TrainingPushConstants validationPush = request.pushConstants;
-            validationPush.gaussianCount =
-                request.buffers.densificationCapacity();
+            validationPush.gaussianCount = request.buffers.densificationCapacity();
             validationPush.validationUsesDensifiedGaussians = 1u;
-            request.backward.setTrainingBuffers(request.buffers,
-                                                mainCommandBuffer_,
+            request.backward.setTrainingBuffers(request.buffers, mainCommandBuffer_,
                                                 validationPush);
         }
     }
@@ -178,35 +164,29 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(
 
     if (validationTicket) {
         request.validation.recordCopy(
-            mainCommandBuffer_, request.buffers.validationFinalResultBuffer(),
-            *validationTicket);
+            mainCommandBuffer_, request.buffers.validationFinalResultBuffer(), *validationTicket);
     }
     mainCommandBuffer_.end();
     request.profiling.recordCpu(
         TrainingCpuProfileStage::MainRecord,
-        std::chrono::duration<float, std::milli>(
-            Clock::now() - mainRecordStart).count());
+        std::chrono::duration<float, std::milli>(Clock::now() - mainRecordStart).count());
 
     vk::SubmitInfo mainSubmit{};
-    mainSubmit.setCommandBufferCount(1)
-              .setPCommandBuffers(&mainCommandBuffer_);
+    mainSubmit.setCommandBufferCount(1).setPCommandBuffers(&mainCommandBuffer_);
     vk::TimelineSemaphoreSubmitInfo uploadWaitInfo{};
-    vk::PipelineStageFlags uploadWaitStage =
-        vk::PipelineStageFlagBits::eComputeShader;
+    vk::PipelineStageFlags uploadWaitStage = vk::PipelineStageFlagBits::eComputeShader;
     if (request.uploadWaitValue > 0u && request.uploadSemaphore) {
         uploadWaitInfo.setWaitSemaphoreValues(request.uploadWaitValue);
         mainSubmit.setPNext(&uploadWaitInfo)
-                  .setWaitSemaphores(request.uploadSemaphore)
-                  .setWaitDstStageMask(uploadWaitStage);
+            .setWaitSemaphores(request.uploadSemaphore)
+            .setWaitDstStageMask(uploadWaitStage);
     }
 
     const auto mainSubmitStart = Clock::now();
-    LOG_DEBUG(
-        "Submitting training main pass for iteration {} with image upload timeline value {}",
-        request.pushConstants.trainingIteration, request.uploadWaitValue);
+    LOG_DEBUG("Submitting training main pass for iteration {} with image upload timeline value {}",
+              request.pushConstants.trainingIteration, request.uploadWaitValue);
     if (validationTicket) {
-        const vk::Fence validationFence =
-            request.validation.submissionFence(*validationTicket);
+        const vk::Fence validationFence = request.validation.submissionFence(*validationTicket);
         device_.resetFences(validationFence);
         computeQueue_.submit(mainSubmit, validationFence);
         request.validation.markSubmitted(*validationTicket);
@@ -218,31 +198,26 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(
     }
     request.profiling.recordCpu(
         TrainingCpuProfileStage::MainSubmit,
-        std::chrono::duration<float, std::milli>(
-            Clock::now() - mainSubmitStart).count());
+        std::chrono::duration<float, std::milli>(Clock::now() - mainSubmitStart).count());
 
-    const bool gpuProfilingWasAvailable =
-        request.profiling.gpuTimestampsAvailable();
-    result.gpuProfilingDisabled =
-        gpuProfilingWasAvailable && !request.profiling.collectGpu();
+    const bool gpuProfilingWasAvailable = request.profiling.gpuTimestampsAvailable();
+    result.gpuProfilingDisabled = gpuProfilingWasAvailable && !request.profiling.collectGpu();
     result.optimizerUpdated = request.pushConstants.optimizerEnabled != 0u;
 
     if (request.pushConstants.validationEnabled != 0u) {
         const auto validationStart = Clock::now();
-        request.validation.collect(request.buffers.extent(),
-                                   request.buffers.gaussianCapacity());
+        request.validation.collect(request.buffers.extent(), request.buffers.gaussianCapacity());
         request.profiling.recordCpu(
             TrainingCpuProfileStage::Validation,
-            std::chrono::duration<float, std::milli>(
-                Clock::now() - validationStart).count());
+            std::chrono::duration<float, std::milli>(Clock::now() - validationStart).count());
     }
 
     result.gaussianCount = request.trainableGaussianCount;
     if (request.runDensification) {
         const auto adoptStart = Clock::now();
         result.densification = request.buffers.densificationStats();
-        const uint32_t newCount = std::min(
-            result.densification.outputCount, request.maxGaussianCount);
+        const uint32_t newCount =
+            std::min(result.densification.outputCount, request.maxGaussianCount);
         if (newCount > 0u) {
             request.buffers.adoptDensifiedGaussians(newCount);
             result.gaussianCount = newCount;
@@ -250,8 +225,7 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(
         result.densificationRan = true;
         request.profiling.recordCpu(
             TrainingCpuProfileStage::DensificationAdopt,
-            std::chrono::duration<float, std::milli>(
-                Clock::now() - adoptStart).count());
+            std::chrono::duration<float, std::milli>(Clock::now() - adoptStart).count());
     }
     return result;
 }

@@ -18,14 +18,10 @@ uint64_t alignUp(uint64_t value, uint64_t alignment) {
 
 } // namespace
 
-void TrainingImageRuntime::initialize(
-    vk::Device device,
-    vk::PhysicalDevice physicalDevice,
-    vk::Queue transferQueue,
-    uint32_t transferQueueFamilyIndex,
-    uint32_t computeQueueFamilyIndex,
-    const TrainingDataset& dataset,
-    TrainingBuffers& buffers) {
+void TrainingImageRuntime::initialize(vk::Device device, vk::PhysicalDevice physicalDevice,
+                                      vk::Queue transferQueue, uint32_t transferQueueFamilyIndex,
+                                      uint32_t computeQueueFamilyIndex,
+                                      const TrainingDataset& dataset, TrainingBuffers& buffers) {
     cleanup(buffers);
     if (dataset.empty()) return;
 
@@ -44,14 +40,12 @@ void TrainingImageRuntime::initialize(
 
     try {
         auto cache = std::make_unique<DeviceImageCache>();
-        cache->initialize(device_, physicalDevice_, transferQueue_,
-                          transferQueueFamilyIndex_,
-                          computeQueueFamilyIndex_, frameWidth_, frameHeight_,
-                          imageCount_, initialDeviceCacheBudget());
+        cache->initialize(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_,
+                          computeQueueFamilyIndex_, frameWidth_, frameHeight_, imageCount_,
+                          initialDeviceCacheBudget());
         const DeviceImageCacheStats stats = cache->stats();
         LOG_INFO("Initialized device image cache with {} slots ({:.1f} MiB, mode {})",
-                 stats.slotCount,
-                 static_cast<double>(stats.allocatedBytes) / (1024.0 * 1024.0),
+                 stats.slotCount, static_cast<double>(stats.allocatedBytes) / (1024.0 * 1024.0),
                  static_cast<uint32_t>(stats.mode));
         deviceImageCache_ = std::move(cache);
     } catch (const std::exception& error) {
@@ -79,28 +73,26 @@ void TrainingImageRuntime::cleanup(TrainingBuffers& buffers) {
     imageCount_ = 0;
 }
 
-TrainingImageUploadResult TrainingImageRuntime::uploadFrame(
-    size_t frameIndex,
-    const TrainingCameraFrame& frame,
-    const TrainingForwardCamera& camera,
-    TrainingBuffers& buffers) {
+TrainingImageUploadResult TrainingImageRuntime::uploadFrame(size_t frameIndex,
+                                                            const TrainingCameraFrame& frame,
+                                                            const TrainingForwardCamera& camera,
+                                                            TrainingBuffers& buffers) {
     const TrainingExtent extent = buffers.extent();
     if (frame.width != extent.width || frame.height != extent.height) {
-        throw std::runtime_error(
-            "Dataset frame size does not match GaussianTraining extent. Resize training buffers to " +
-            std::to_string(frame.width) + "x" + std::to_string(frame.height) +
-            " before trainStep.");
+        throw std::runtime_error("Dataset frame size does not match GaussianTraining extent. "
+                                 "Resize training buffers to " +
+                                 std::to_string(frame.width) + "x" + std::to_string(frame.height) +
+                                 " before trainStep.");
     }
 
     TrainingImageUploadResult result{};
     const auto requestStart = std::chrono::steady_clock::now();
     if (imageStreamer_) {
-        const ImageHandle handle =
-            imageStreamer_->request(static_cast<ImageId>(frameIndex));
+        const ImageHandle handle = imageStreamer_->request(static_cast<ImageId>(frameIndex));
         const ImageRgba8& image = handle.image();
-        result.imageRequestMilliseconds =
-            std::chrono::duration<float, std::milli>(
-                std::chrono::steady_clock::now() - requestStart).count();
+        result.imageRequestMilliseconds = std::chrono::duration<float, std::milli>(
+                                              std::chrono::steady_clock::now() - requestStart)
+                                              .count();
         if (image.width != frame.width || image.height != frame.height) {
             throw std::runtime_error(
                 "Cached training image dimensions do not match frame metadata");
@@ -109,20 +101,18 @@ TrainingImageUploadResult TrainingImageRuntime::uploadFrame(
         const auto uploadStart = std::chrono::steady_clock::now();
         if (deviceImageCache_ && deviceImageCache_->isInitialized()) {
             const DeviceImageBinding binding =
-                deviceImageCache_->getOrUpload(
-                    static_cast<ImageId>(frameIndex), image);
+                deviceImageCache_->getOrUpload(static_cast<ImageId>(frameIndex), image);
             buffers.setTargetColorDescriptor(binding.descriptor);
             pendingUploadValue_ = binding.readyValue;
         } else {
             buffers.clearTargetColorDescriptor();
             pendingUploadValue_ = 0;
-            buffers.uploadTargetColor(image.pixels.data(), image.width,
-                                      image.height);
+            buffers.uploadTargetColor(image.pixels.data(), image.width, image.height);
         }
         buffers.uploadCamera(camera);
         result.targetUploadMilliseconds =
-            std::chrono::duration<float, std::milli>(
-                std::chrono::steady_clock::now() - uploadStart).count();
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - uploadStart)
+                .count();
         return result;
     }
 
@@ -132,21 +122,20 @@ TrainingImageUploadResult TrainingImageRuntime::uploadFrame(
     source.expectedHeight = frame.height;
     const ImageRgba8 image = ImageDecoder::decodeRgba8(source);
     result.imageRequestMilliseconds =
-        std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - requestStart).count();
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - requestStart)
+            .count();
     const auto uploadStart = std::chrono::steady_clock::now();
     buffers.clearTargetColorDescriptor();
     pendingUploadValue_ = 0;
     buffers.uploadTargetColor(image.pixels.data(), image.width, image.height);
     buffers.uploadCamera(camera);
     result.targetUploadMilliseconds =
-        std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - uploadStart).count();
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - uploadStart)
+            .count();
     return result;
 }
 
-void TrainingImageRuntime::prefetch(
-    std::span<const size_t> frameIndices) {
+void TrainingImageRuntime::prefetch(std::span<const size_t> frameIndices) {
     if (!imageStreamer_ || frameIndices.empty()) return;
     std::vector<ImageId> imageIds;
     imageIds.reserve(frameIndices.size());
@@ -156,16 +145,13 @@ void TrainingImageRuntime::prefetch(
     imageStreamer_->prefetch(imageIds);
 }
 
-void TrainingImageRuntime::reserveForDensification(
-    uint32_t trainingIteration,
-    TrainingBuffers& buffers) {
+void TrainingImageRuntime::reserveForDensification(uint32_t trainingIteration,
+                                                   TrainingBuffers& buffers) {
     deviceCacheGrowthResumeIteration_ = trainingIteration + 33u;
     (void)refreshDeviceCache(true, trainingIteration, buffers);
 }
 
-void TrainingImageRuntime::refreshBudget(
-    uint32_t trainingIteration,
-    TrainingBuffers& buffers) {
+void TrainingImageRuntime::refreshBudget(uint32_t trainingIteration, TrainingBuffers& buffers) {
     (void)refreshDeviceCache(false, trainingIteration, buffers);
 }
 
@@ -174,20 +160,17 @@ ImageStreamerStats TrainingImageRuntime::imageCacheStats() const {
 }
 
 DeviceImageCacheStats TrainingImageRuntime::deviceImageCacheStats() const {
-    return deviceImageCache_ ? deviceImageCache_->stats()
-                             : DeviceImageCacheStats{};
+    return deviceImageCache_ ? deviceImageCache_->stats() : DeviceImageCacheStats{};
 }
 
 vk::Semaphore TrainingImageRuntime::uploadSemaphore() const noexcept {
     return deviceImageCache_ ? deviceImageCache_->uploadSemaphore() : nullptr;
 }
 
-std::vector<ImageSourceDesc> TrainingImageRuntime::makeSources(
-    const TrainingDataset& dataset) {
+std::vector<ImageSourceDesc> TrainingImageRuntime::makeSources(const TrainingDataset& dataset) {
     std::vector<ImageSourceDesc> sources;
     sources.reserve(dataset.frames.size());
-    for (size_t frameIndex = 0; frameIndex < dataset.frames.size();
-         ++frameIndex) {
+    for (size_t frameIndex = 0; frameIndex < dataset.frames.size(); ++frameIndex) {
         const TrainingCameraFrame& frame = dataset.frames[frameIndex];
         ImageSourceDesc source{};
         source.id = static_cast<ImageId>(frameIndex);
@@ -206,18 +189,14 @@ uint64_t TrainingImageRuntime::initialDeviceCacheBudget() const {
 
     const uint64_t imageBytes =
         static_cast<uint64_t>(frameWidth_) * frameHeight_ * sizeof(uint32_t);
-    const vk::PhysicalDeviceLimits limits =
-        physicalDevice_.getProperties().limits;
-    const uint64_t slotStride = alignUp(
-        imageBytes,
-        std::max<uint64_t>(limits.minStorageBufferOffsetAlignment, 1u));
+    const vk::PhysicalDeviceLimits limits = physicalDevice_.getProperties().limits;
+    const uint64_t slotStride =
+        alignUp(imageBytes, std::max<uint64_t>(limits.minStorageBufferOffsetAlignment, 1u));
     const uint64_t fullDatasetBytes = slotStride * imageCount_;
-    const vk::PhysicalDeviceMemoryProperties memory =
-        physicalDevice_.getMemoryProperties();
+    const vk::PhysicalDeviceMemoryProperties memory = physicalDevice_.getMemoryProperties();
     uint64_t largestDeviceLocalHeap = 0;
     uint32_t deviceLocalHeapIndex = 0;
-    for (uint32_t typeIndex = 0; typeIndex < memory.memoryTypeCount;
-         ++typeIndex) {
+    for (uint32_t typeIndex = 0; typeIndex < memory.memoryTypeCount; ++typeIndex) {
         const vk::MemoryType& type = memory.memoryTypes[typeIndex];
         if ((type.propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) ==
                 vk::MemoryPropertyFlagBits::eDeviceLocal &&
@@ -229,58 +208,46 @@ uint64_t TrainingImageRuntime::initialDeviceCacheBudget() const {
 
     const auto extensions = physicalDevice_.enumerateDeviceExtensionProperties();
     const bool hasMemoryBudget = std::any_of(
-        extensions.begin(), extensions.end(),
-        [](const vk::ExtensionProperties& extension) {
-            return std::strcmp(extension.extensionName.data(),
-                               vk::EXTMemoryBudgetExtensionName) == 0;
+        extensions.begin(), extensions.end(), [](const vk::ExtensionProperties& extension) {
+            return std::strcmp(extension.extensionName.data(), vk::EXTMemoryBudgetExtensionName) ==
+                   0;
         });
     if (hasMemoryBudget) {
         vk::PhysicalDeviceMemoryBudgetPropertiesEXT budgetProperties{};
         vk::PhysicalDeviceMemoryProperties2 memoryProperties{};
         memoryProperties.pNext = &budgetProperties;
         physicalDevice_.getMemoryProperties2(&memoryProperties);
-        const uint64_t heapBudget =
-            budgetProperties.heapBudget[deviceLocalHeapIndex];
-        const uint64_t heapUsage =
-            budgetProperties.heapUsage[deviceLocalHeapIndex];
-        const uint64_t freeBytes =
-            heapBudget > heapUsage ? heapBudget - heapUsage : 0u;
-        constexpr uint64_t minimumReserveBytes =
-            uint64_t{512} * 1024u * 1024u;
-        const uint64_t reserveBytes = std::min(
-            heapBudget / 2u,
-            std::max(minimumReserveBytes, heapBudget * 15u / 100u));
+        const uint64_t heapBudget = budgetProperties.heapBudget[deviceLocalHeapIndex];
+        const uint64_t heapUsage = budgetProperties.heapUsage[deviceLocalHeapIndex];
+        const uint64_t freeBytes = heapBudget > heapUsage ? heapBudget - heapUsage : 0u;
+        constexpr uint64_t minimumReserveBytes = uint64_t{512} * 1024u * 1024u;
+        const uint64_t reserveBytes =
+            std::min(heapBudget / 2u, std::max(minimumReserveBytes, heapBudget * 15u / 100u));
         const uint64_t usableBytes =
             freeBytes > reserveBytes ? freeBytes - reserveBytes : imageBytes;
         return std::min(fullDatasetBytes,
-                        std::max(imageBytes,
-                                 std::min(usableBytes, heapBudget / 4u)));
+                        std::max(imageBytes, std::min(usableBytes, heapBudget / 4u)));
     }
     const uint64_t automaticBudget = largestDeviceLocalHeap / 20u;
-    return std::min(fullDatasetBytes,
-                    std::max(imageBytes, automaticBudget));
+    return std::min(fullDatasetBytes, std::max(imageBytes, automaticBudget));
 }
 
-bool TrainingImageRuntime::refreshDeviceCache(
-    bool reserveForDensification,
-    uint32_t trainingIteration,
-    TrainingBuffers& buffers) {
+bool TrainingImageRuntime::refreshDeviceCache(bool reserveForDensification,
+                                              uint32_t trainingIteration,
+                                              TrainingBuffers& buffers) {
     if (!deviceImageCache_ || !deviceImageCache_->isInitialized()) {
         return false;
     }
-    const bool allowGrowth = !reserveForDensification &&
-        trainingIteration >= deviceCacheGrowthResumeIteration_;
-    if (!deviceImageCache_->refreshMemoryBudget(allowGrowth,
-                                                reserveForDensification)) {
+    const bool allowGrowth =
+        !reserveForDensification && trainingIteration >= deviceCacheGrowthResumeIteration_;
+    if (!deviceImageCache_->refreshMemoryBudget(allowGrowth, reserveForDensification)) {
         return false;
     }
     buffers.clearTargetColorDescriptor();
     pendingUploadValue_ = 0;
     const DeviceImageCacheStats stats = deviceImageCache_->stats();
-    LOG_INFO("Resized device image cache to {} slots ({:.1f} MiB){}",
-             stats.slotCount,
-             static_cast<double>(stats.allocatedBytes) /
-                 (1024.0 * 1024.0),
+    LOG_INFO("Resized device image cache to {} slots ({:.1f} MiB){}", stats.slotCount,
+             static_cast<double>(stats.allocatedBytes) / (1024.0 * 1024.0),
              reserveForDensification ? " before densification" : "");
     return true;
 }

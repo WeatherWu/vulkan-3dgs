@@ -16,18 +16,15 @@ namespace {
 
 std::filesystem::path existingDirectoryOrCurrent(const std::string& value) {
     const std::filesystem::path path(value);
-    return std::filesystem::is_directory(path)
-        ? path
-        : std::filesystem::current_path();
+    return std::filesystem::is_directory(path) ? path : std::filesystem::current_path();
 }
 
 std::string gpuLabel(const TrainingGpuInfo& info) {
     constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
     std::ostringstream stream;
-    stream << '[' << info.vulkanIndex << "] " << info.name << " ("
-           << info.typeName << ", " << std::fixed << std::setprecision(1)
-           << static_cast<double>(info.deviceLocalMemoryBytes) / bytesPerGiB
-           << " GiB)";
+    stream << '[' << info.vulkanIndex << "] " << info.name << " (" << info.typeName << ", "
+           << std::fixed << std::setprecision(1)
+           << static_cast<double>(info.deviceLocalMemoryBytes) / bytesPerGiB << " GiB)";
     return stream.str();
 }
 
@@ -40,9 +37,8 @@ void TrainingPanel::draw(TrainingController& controller) {
 
     const TrainingLifecycleState& lifecycle = controller.state();
     TrainingSettings displaySettings = controller.settings();
-    TrainingSettings& settings = lifecycle.running
-        ? displaySettings
-        : controller.editableSettings();
+    TrainingSettings& settings =
+        lifecycle.running ? displaySettings : controller.editableSettings();
     const TrainingUiSnapshot snapshot = controller.snapshotForUi();
     const std::string elapsed = controller.elapsedText();
     const TrainingCommandPanelState state{
@@ -76,9 +72,8 @@ void TrainingPanel::drawGpuControl(TrainingController& controller) {
         ImGui::TextDisabled("Training GPU unavailable");
         return;
     }
-    const auto selected = std::find_if(
-        options.begin(), options.end(),
-        [](const TrainingGpuInfo& info) { return info.selected; });
+    const auto selected = std::find_if(options.begin(), options.end(),
+                                       [](const TrainingGpuInfo& info) { return info.selected; });
     if (selected != options.end()) {
         gpuSelection_ = static_cast<size_t>(std::distance(options.begin(), selected));
     }
@@ -95,8 +90,8 @@ void TrainingPanel::drawGpuControl(TrainingController& controller) {
                 gpuSelection_ = index;
                 if (!options[index].selected) {
                     controller.selectGpu(options[index].uuid.empty()
-                        ? std::to_string(options[index].vulkanIndex)
-                        : options[index].uuid);
+                                             ? std::to_string(options[index].vulkanIndex)
+                                             : options[index].uuid);
                 }
             }
             if (isSelected) ImGui::SetItemDefaultFocus();
@@ -128,29 +123,27 @@ void TrainingPanel::dispatch(TrainingController& controller,
             "Dataset downscale changed. Validate or start training to load it.");
     }
     if (actions.browseDataset) {
-        fileDialogs_.openDatasetFolder(existingDirectoryOrCurrent(
-            textBufferString(settings.paths.dataset)).string());
+        fileDialogs_.openDatasetFolder(
+            existingDirectoryOrCurrent(textBufferString(settings.paths.dataset)).string());
     }
     if (actions.validateDataset) controller.validateDataset();
     if (actions.loadDataset) controller.loadDataset();
 
-    if (actions.settings.pixelBackwardChanged ||
-        actions.settings.subgroupUtilizationChanged ||
-        actions.settings.forwardCompositeChanged ||
-        actions.settings.validationIntervalChanged) {
+    if (actions.settings.pixelBackwardChanged || actions.settings.subgroupUtilizationChanged ||
+        actions.settings.forwardCompositeChanged || actions.settings.validationIntervalChanged) {
         controller.applyLiveSettings();
     }
     if (actions.toggleTraining) controller.toggleTraining();
     if (actions.startFixedBenchmark) controller.startFixedBenchmark();
 
     if (actions.browseOutput) {
-        fileDialogs_.openOutputFolder(existingDirectoryOrCurrent(
-            textBufferString(settings.paths.outputDirectory)).string());
+        fileDialogs_.openOutputFolder(
+            existingDirectoryOrCurrent(textBufferString(settings.paths.outputDirectory)).string());
     }
     if (actions.savePly) controller.exportDefaultModel();
     if (actions.savePlyAs) {
-        fileDialogs_.openSavePly(existingDirectoryOrCurrent(
-            textBufferString(settings.paths.outputDirectory)).string(),
+        fileDialogs_.openSavePly(
+            existingDirectoryOrCurrent(textBufferString(settings.paths.outputDirectory)).string(),
             textBufferString(settings.paths.outputName));
     }
 }

@@ -21,13 +21,10 @@ bool matrixChanged(const glm::mat4& lhs, const glm::mat4& rhs, float epsilon) {
     return false;
 }
 
-vk::DescriptorSetLayoutBinding makeComputeBinding(uint32_t binding,
-                                                   vk::DescriptorType type) {
+vk::DescriptorSetLayoutBinding makeComputeBinding(uint32_t binding, vk::DescriptorType type) {
     vk::DescriptorSetLayoutBinding layoutBinding{};
-    layoutBinding.setBinding(binding)
-        .setDescriptorType(type)
-        .setDescriptorCount(1)
-        .setStageFlags(vk::ShaderStageFlagBits::eCompute);
+    layoutBinding.setBinding(binding).setDescriptorType(type).setDescriptorCount(1).setStageFlags(
+        vk::ShaderStageFlagBits::eCompute);
     return layoutBinding;
 }
 
@@ -87,10 +84,8 @@ void GraphicsSplatSorter::beginFrame() {
     pointCountThisFrame_ = 0;
 }
 
-bool GraphicsSplatSorter::prepare(uint32_t pointCount,
-                                  const void* modelIdentity,
-                                  const glm::mat4& view,
-                                  const glm::mat4& projection,
+bool GraphicsSplatSorter::prepare(uint32_t pointCount, const void* modelIdentity,
+                                  const glm::mat4& view, const glm::mat4& projection,
                                   const glm::mat4& model,
                                   const std::vector<vk::Fence>& inFlightFences) {
     beginFrame();
@@ -99,8 +94,7 @@ bool GraphicsSplatSorter::prepare(uint32_t pointCount,
     }
 
     constexpr float matrixEpsilon = 1e-5f;
-    const bool needsSort = !sortCompleted_ ||
-                           modelIdentity != lastModelIdentity_ ||
+    const bool needsSort = !sortCompleted_ || modelIdentity != lastModelIdentity_ ||
                            pointCount != lastPointCount_ ||
                            matrixChanged(view, lastView_, matrixEpsilon) ||
                            matrixChanged(projection, lastProjection_, matrixEpsilon) ||
@@ -129,16 +123,15 @@ void GraphicsSplatSorter::record(vk::CommandBuffer commandBuffer,
 
     LOG_DEBUG("Sorting {} points", pointCountThisFrame_);
     const uint32_t groupCount = (pointCountThisFrame_ + 255u) / 256u;
-    commandBuffer.fillBuffer(indirectBuffer_.getBuffer(), 0,
-                             sizeof(VkDrawIndexedIndirectCommand), 0);
+    commandBuffer.fillBuffer(indirectBuffer_.getBuffer(), 0, sizeof(VkDrawIndexedIndirectCommand),
+                             0);
 
     vk::MemoryBarrier drawClearBarrier{};
     drawClearBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-        .setDstAccessMask(vk::AccessFlagBits::eShaderRead |
-                          vk::AccessFlagBits::eShaderWrite);
+        .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                  vk::PipelineStageFlagBits::eComputeShader,
-                                  {}, 1, &drawClearBarrier, 0, nullptr, 0, nullptr);
+                                  vk::PipelineStageFlagBits::eComputeShader, {}, 1,
+                                  &drawClearBarrier, 0, nullptr, 0, nullptr);
 
     struct PushConstants {
         uint32_t count;
@@ -149,20 +142,18 @@ void GraphicsSplatSorter::record(vk::CommandBuffer commandBuffer,
     pushConstants.count = pointCountThisFrame_;
     pushConstants.groupCount = groupCount;
 
-    commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute,
-                               keygenPipeline_->getPipeline());
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, keygenPipeline_->getPipeline());
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
                                      keygenPipeline_->getPipelineLayout(), 0, 1,
                                      &keygenDescriptorSet, 0, nullptr);
     commandBuffer.pushConstants(keygenPipeline_->getPipelineLayout(),
-                                vk::ShaderStageFlagBits::eCompute, 0,
-                                sizeof(PushConstants), &pushConstants);
+                                vk::ShaderStageFlagBits::eCompute, 0, sizeof(PushConstants),
+                                &pushConstants);
     commandBuffer.dispatch(groupCount, 1, 1);
 
     vk::MemoryBarrier sortInputBarrier{};
     sortInputBarrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
-        .setDstAccessMask(vk::AccessFlagBits::eShaderRead |
-                          vk::AccessFlagBits::eShaderWrite |
+        .setDstAccessMask(vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
                           vk::AccessFlagBits::eTransferRead);
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
                                   vk::PipelineStageFlagBits::eComputeShader |
@@ -171,10 +162,8 @@ void GraphicsSplatSorter::record(vk::CommandBuffer commandBuffer,
 
     vrdxCmdSortKeyValueIndirect(commandBuffer, radixSorter_, pointCountThisFrame_,
                                 indirectBuffer_.getBuffer(), sizeof(uint32_t),
-                                keyBuffer_.getBuffer(), 0,
-                                indexBuffer_.getBuffer(), 0,
-                                storageBuffer_.getBuffer(), 0,
-                                VK_NULL_HANDLE, 0);
+                                keyBuffer_.getBuffer(), 0, indexBuffer_.getBuffer(), 0,
+                                storageBuffer_.getBuffer(), 0, VK_NULL_HANDLE, 0);
 }
 
 void GraphicsSplatSorter::recordReadBarrier(vk::CommandBuffer commandBuffer) const {
@@ -192,12 +181,11 @@ void GraphicsSplatSorter::recordReadBarrier(vk::CommandBuffer commandBuffer) con
 }
 
 vk::DescriptorSetLayout GraphicsSplatSorter::descriptorSetLayout() const {
-    return keygenPipeline_ ? keygenPipeline_->getDescriptorSetLayout()
-                           : vk::DescriptorSetLayout{};
+    return keygenPipeline_ ? keygenPipeline_->getDescriptorSetLayout() : vk::DescriptorSetLayout{};
 }
 
-bool GraphicsSplatSorter::ensureCapacity(
-    uint32_t pointCount, const std::vector<vk::Fence>& inFlightFences) {
+bool GraphicsSplatSorter::ensureCapacity(uint32_t pointCount,
+                                         const std::vector<vk::Fence>& inFlightFences) {
     if (capacity_ == pointCount) {
         return false;
     }
@@ -218,34 +206,29 @@ bool GraphicsSplatSorter::ensureCapacity(
 
     const vk::PhysicalDevice physicalDevice = context.PhysicalDevice();
     const vk::Queue queue = context.getDevice().getGraphicsQueue();
-    const uint32_t queueFamily =
-        context.getDevice().getQueueFamilyIndices().graphicsIndex.value();
-    const vk::BufferUsageFlags keyValueUsage =
-        vk::BufferUsageFlagBits::eStorageBuffer |
-        vk::BufferUsageFlagBits::eTransferSrc |
-        vk::BufferUsageFlagBits::eTransferDst;
-    const vk::DeviceSize byteSize =
-        static_cast<vk::DeviceSize>(pointCount) * sizeof(uint32_t);
+    const auto graphicsIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex;
+    if (!graphicsIndex) throw std::runtime_error("Graphics queue family is unavailable");
+    const uint32_t queueFamily = *graphicsIndex;
+    const vk::BufferUsageFlags keyValueUsage = vk::BufferUsageFlagBits::eStorageBuffer |
+                                               vk::BufferUsageFlagBits::eTransferSrc |
+                                               vk::BufferUsageFlagBits::eTransferDst;
+    const vk::DeviceSize byteSize = static_cast<vk::DeviceSize>(pointCount) * sizeof(uint32_t);
 
-    indexBuffer_.create(device, physicalDevice, queue, queueFamily, nullptr,
-                        byteSize, keyValueUsage,
-                        vk::MemoryPropertyFlagBits::eDeviceLocal);
-    keyBuffer_.create(device, physicalDevice, queue, queueFamily, nullptr,
-                      byteSize, keyValueUsage,
+    indexBuffer_.create(device, physicalDevice, queue, queueFamily, nullptr, byteSize,
+                        keyValueUsage, vk::MemoryPropertyFlagBits::eDeviceLocal);
+    keyBuffer_.create(device, physicalDevice, queue, queueFamily, nullptr, byteSize, keyValueUsage,
                       vk::MemoryPropertyFlagBits::eDeviceLocal);
 
     VrdxSorterStorageRequirements requirements{};
     vrdxGetSorterKeyValueStorageRequirements(radixSorter_, pointCount, &requirements);
-    storageBuffer_.create(device, physicalDevice, queue, queueFamily, nullptr,
-                          requirements.size, vk::BufferUsageFlags(requirements.usage),
+    storageBuffer_.create(device, physicalDevice, queue, queueFamily, nullptr, requirements.size,
+                          vk::BufferUsageFlags(requirements.usage),
                           vk::MemoryPropertyFlagBits::eDeviceLocal);
-    indirectBuffer_.create(device, physicalDevice, queue, queueFamily, nullptr,
-                           sizeof(VkDrawIndexedIndirectCommand),
-                           vk::BufferUsageFlagBits::eStorageBuffer |
-                               vk::BufferUsageFlagBits::eIndirectBuffer |
-                               vk::BufferUsageFlagBits::eTransferSrc |
-                               vk::BufferUsageFlagBits::eTransferDst,
-                           vk::MemoryPropertyFlagBits::eDeviceLocal);
+    indirectBuffer_.create(
+        device, physicalDevice, queue, queueFamily, nullptr, sizeof(VkDrawIndexedIndirectCommand),
+        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+        vk::MemoryPropertyFlagBits::eDeviceLocal);
     capacity_ = pointCount;
     return true;
 }

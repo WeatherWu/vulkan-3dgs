@@ -3,16 +3,20 @@
 #include "context/context.hpp"
 #include "utils/logger.hpp"
 
+#include <cstdio>
 #include <stdexcept>
 
 namespace vulkan3DGS {
 
-GraphicsFrameRuntime::~GraphicsFrameRuntime() {
-    cleanup();
+GraphicsFrameRuntime::~GraphicsFrameRuntime() noexcept {
+    try {
+        cleanup();
+    } catch (...) {
+        std::fputs("GraphicsFrameRuntime cleanup failed during destruction\n", stderr);
+    }
 }
 
-void GraphicsFrameRuntime::initialize(GLFWwindow* window,
-                                      PresentModePreference preference,
+void GraphicsFrameRuntime::initialize(GLFWwindow* window, PresentModePreference preference,
                                       vk::Format depthFormat,
                                       const FormatChangedHandler& createRenderPass) {
     cleanup();
@@ -29,12 +33,10 @@ void GraphicsFrameRuntime::initialize(GLFWwindow* window,
     auto& context = Context::Instance();
     swapchain_ = std::make_unique<Swapchain>(context.getSurface());
     swapchain_->setPresentModePreference(preference);
-    swapchain_->createSwapchain(static_cast<uint32_t>(width),
-                                static_cast<uint32_t>(height));
+    swapchain_->createSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
     const vk::RenderPass renderPass =
         createRenderPass(swapchain_->getImageFormat(), swapchain_->getExtent());
-    swapchain_->createFramebuffers(context.getDevice().getDevice(), renderPass,
-                                   depthFormat);
+    swapchain_->createFramebuffers(context.getDevice().getDevice(), renderPass, depthFormat);
     createSyncObjects();
 }
 
@@ -77,9 +79,8 @@ void GraphicsFrameRuntime::cleanup() {
     recreationPending_ = false;
 }
 
-bool GraphicsFrameRuntime::ensureReady(
-    vk::RenderPass renderPass, vk::Format depthFormat,
-    const FormatChangedHandler& onFormatChanged) {
+bool GraphicsFrameRuntime::ensureReady(vk::RenderPass renderPass, vk::Format depthFormat,
+                                       const FormatChangedHandler& onFormatChanged) {
     if (!window_ || !swapchain_) {
         return false;
     }
@@ -96,16 +97,15 @@ bool GraphicsFrameRuntime::ensureReady(
     const vk::Extent2D currentExtent = swapchain_->getExtent();
     const uint32_t width = static_cast<uint32_t>(framebufferWidth);
     const uint32_t height = static_cast<uint32_t>(framebufferHeight);
-    if (recreationPending_ || currentExtent.width != width ||
-        currentExtent.height != height) {
+    if (recreationPending_ || currentExtent.width != width || currentExtent.height != height) {
         recreate(width, height, renderPass, depthFormat, onFormatChanged);
     }
     return true;
 }
 
-std::optional<uint32_t> GraphicsFrameRuntime::acquireFrame(
-    vk::RenderPass renderPass, vk::Format depthFormat,
-    const FormatChangedHandler& onFormatChanged) {
+std::optional<uint32_t>
+GraphicsFrameRuntime::acquireFrame(vk::RenderPass renderPass, vk::Format depthFormat,
+                                   const FormatChangedHandler& onFormatChanged) {
     imageReadyForPresent_ = false;
     presentWaitSemaphoreConsumed_ = false;
     if (!ensureReady(renderPass, depthFormat, onFormatChanged)) {
@@ -114,8 +114,7 @@ std::optional<uint32_t> GraphicsFrameRuntime::acquireFrame(
 
     const vk::Device device = Context::Instance().getDevice().getDevice();
     const vk::Result waitResult =
-        device.waitForFences(1, &inFlightFences_[currentFrame_], VK_TRUE,
-                             UINT64_MAX);
+        device.waitForFences(1, &inFlightFences_[currentFrame_], VK_TRUE, UINT64_MAX);
     if (waitResult != vk::Result::eSuccess) {
         throw std::runtime_error("Failed to wait for graphics frame fence");
     }
@@ -123,9 +122,9 @@ std::optional<uint32_t> GraphicsFrameRuntime::acquireFrame(
     uint32_t imageIndex = 0;
     vk::Result result = vk::Result::eSuccess;
     try {
-        result = device.acquireNextImageKHR(
-            swapchain_->getSwapchain(), UINT64_MAX,
-            imageAvailableSemaphores_[currentFrame_], nullptr, &imageIndex);
+        result = device.acquireNextImageKHR(swapchain_->getSwapchain(), UINT64_MAX,
+                                            imageAvailableSemaphores_[currentFrame_], nullptr,
+                                            &imageIndex);
     } catch (const vk::OutOfDateKHRError&) {
         result = vk::Result::eErrorOutOfDateKHR;
     }
@@ -139,8 +138,7 @@ std::optional<uint32_t> GraphicsFrameRuntime::acquireFrame(
         LOG_INFO("Suboptimal swapchain detected during acquire");
         recreationPending_ = true;
     } else if (result != vk::Result::eSuccess) {
-        throw std::runtime_error("Failed to acquire swapchain image: " +
-                                 vk::to_string(result));
+        throw std::runtime_error("Failed to acquire swapchain image: " + vk::to_string(result));
     }
     acquiredImageIndex_ = imageIndex;
     return imageIndex;
@@ -151,8 +149,7 @@ void GraphicsFrameRuntime::submit(uint32_t imageIndex) {
     const vk::Device device = context.getDevice().getDevice();
     vk::SubmitInfo submitInfo{};
     const vk::Semaphore waitSemaphore = imageAvailableSemaphores_[currentFrame_];
-    const vk::PipelineStageFlags waitStage =
-        vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    const vk::PipelineStageFlags waitStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
     const vk::CommandBuffer buffer = commandBuffers_[currentFrame_];
     const vk::Semaphore signalSemaphore = renderFinishedSemaphores_[imageIndex];
     submitInfo.setWaitSemaphoreCount(1)
@@ -163,22 +160,19 @@ void GraphicsFrameRuntime::submit(uint32_t imageIndex) {
         .setSignalSemaphoreCount(1)
         .setPSignalSemaphores(&signalSemaphore);
     device.resetFences(inFlightFences_[currentFrame_]);
-    context.getDevice().getGraphicsQueue().submit(submitInfo,
-                                                  inFlightFences_[currentFrame_]);
+    context.getDevice().getGraphicsQueue().submit(submitInfo, inFlightFences_[currentFrame_]);
     acquiredImageIndex_ = imageIndex;
     imageReadyForPresent_ = true;
 }
 
-void GraphicsFrameRuntime::present(
-    vk::RenderPass renderPass, vk::Format depthFormat,
-    const FormatChangedHandler& onFormatChanged) {
+void GraphicsFrameRuntime::present(vk::RenderPass renderPass, vk::Format depthFormat,
+                                   const FormatChangedHandler& onFormatChanged) {
     if (!imageReadyForPresent_) {
         return;
     }
 
     auto& context = Context::Instance();
-    const vk::Semaphore waitSemaphore =
-        renderFinishedSemaphores_[acquiredImageIndex_];
+    const vk::Semaphore waitSemaphore = renderFinishedSemaphores_[acquiredImageIndex_];
     const vk::SwapchainKHR swapchain = swapchain_->getSwapchain();
     vk::PresentInfoKHR presentInfo{};
     presentInfo.setWaitSemaphoreCount(presentWaitSemaphoreConsumed_ ? 0u : 1u)
@@ -206,8 +200,7 @@ void GraphicsFrameRuntime::present(
         recreateAfterPresent = true;
     } else if (result != vk::Result::eSuccess) {
         imageReadyForPresent_ = false;
-        throw std::runtime_error("Failed to present image: " +
-                                 vk::to_string(result));
+        throw std::runtime_error("Failed to present image: " + vk::to_string(result));
     }
 
     imageReadyForPresent_ = false;
@@ -221,8 +214,7 @@ void GraphicsFrameRuntime::present(
     }
 }
 
-void GraphicsFrameRuntime::setPresentModePreference(
-    PresentModePreference preference) {
+void GraphicsFrameRuntime::setPresentModePreference(PresentModePreference preference) {
     if (!swapchain_) {
         return;
     }
@@ -251,10 +243,9 @@ void GraphicsFrameRuntime::createSyncObjects() {
         renderFinishedSemaphores_[index] = device.createSemaphore(semaphoreInfo);
     }
 
-    commandPool_.create(
-        device,
-        context.getDevice().getQueueFamilyIndices().graphicsIndex.value(),
-        vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+    const auto graphicsIndex = context.getDevice().getQueueFamilyIndices().graphicsIndex;
+    if (!graphicsIndex) throw std::runtime_error("Graphics queue family is unavailable");
+    commandPool_.create(device, *graphicsIndex, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     for (vk::CommandBuffer& commandBuffer : commandBuffers_) {
         commandBuffer = commandPool_.allocateCommandBuffer();
     }
@@ -275,9 +266,9 @@ void GraphicsFrameRuntime::recreateRenderFinishedSemaphores() {
     }
 }
 
-void GraphicsFrameRuntime::recreate(
-    uint32_t width, uint32_t height, vk::RenderPass renderPass,
-    vk::Format depthFormat, const FormatChangedHandler& onFormatChanged) {
+void GraphicsFrameRuntime::recreate(uint32_t width, uint32_t height, vk::RenderPass renderPass,
+                                    vk::Format depthFormat,
+                                    const FormatChangedHandler& onFormatChanged) {
     if (width == 0u || height == 0u) {
         recreationPending_ = true;
         return;
@@ -289,8 +280,7 @@ void GraphicsFrameRuntime::recreate(
     swapchain_->recreateSwapchain(width, height);
     recreateRenderFinishedSemaphores();
     if (oldFormat != swapchain_->getImageFormat()) {
-        renderPass = onFormatChanged(swapchain_->getImageFormat(),
-                                     swapchain_->getExtent());
+        renderPass = onFormatChanged(swapchain_->getImageFormat(), swapchain_->getExtent());
     }
     swapchain_->createFramebuffers(device, renderPass, depthFormat);
     imageReadyForPresent_ = false;

@@ -28,9 +28,7 @@ enum class RenderMode {
 // delegates viewer and training policy to their controllers/panels.
 class Application {
 public:
-    Application(const std::string& title,
-                int width,
-                int height,
+    Application(const std::string& title, int width, int height,
                 RenderMode mode = RenderMode::GaussianGraphics,
                 std::optional<std::string> gpuSelector = std::nullopt);
     virtual ~Application();
@@ -38,7 +36,9 @@ public:
     void run();
     void tick();
     void switchRenderMode(RenderMode mode);
-    [[nodiscard]] RenderMode getCurrentRenderMode() const { return currentMode_; }
+    [[nodiscard]] RenderMode getCurrentRenderMode() const {
+        return currentMode_;
+    }
 
     void setModel(const GaussianModel* model);
     bool loadModelFromFile(const std::string& filename);

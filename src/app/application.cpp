@@ -1,12 +1,12 @@
 #include "app/application.hpp"
 
+#include "app/window.hpp"
 #include "context/context.hpp"
 #include "graphics/gaussian_model.hpp"
 #include "graphics/gaussian_renderer.hpp"
 #include "render/renderer.hpp"
 #include "utils/logger.hpp"
 #include "viewer/viewer_panel.hpp"
-#include "app/window.hpp"
 
 #include <imgui.h>
 
@@ -20,22 +20,17 @@
 namespace vulkan3DGS {
 namespace {
 
-bool hasExtension(const std::filesystem::path& path,
-                  const std::string& extension) {
+bool hasExtension(const std::filesystem::path& path, const std::string& extension) {
     std::string actual = path.extension().string();
-    std::transform(actual.begin(), actual.end(), actual.begin(),
-                   [](unsigned char character) {
-                       return static_cast<char>(std::tolower(character));
-                   });
+    std::transform(actual.begin(), actual.end(), actual.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
     return actual == extension;
 }
 
 } // namespace
 
-Application::Application(const std::string& title,
-                         int width,
-                         int height,
-                         RenderMode mode,
+Application::Application(const std::string& title, int width, int height, RenderMode mode,
                          std::optional<std::string> gpuSelector)
     : currentMode_(mode) {
 #ifdef _DEBUG
@@ -58,26 +53,20 @@ Application::Application(const std::string& title,
     configureRenderer();
     trainingController_.initializeDevice(std::move(gpuSelector));
 
-    window_->set_resize_callback([this](int framebufferWidth,
-                                        int framebufferHeight) {
+    window_->set_resize_callback([this](int framebufferWidth, int framebufferHeight) {
         if (framebufferWidth <= 0 || framebufferHeight <= 0) return;
         if (renderer_) {
             renderer_->onResize(static_cast<uint32_t>(framebufferWidth),
                                 static_cast<uint32_t>(framebufferHeight));
         }
         if (viewerController_.hasCamera()) {
-            viewerController_.updateCamera(
-                0.0f, framebufferWidth, framebufferHeight);
+            viewerController_.updateCamera(0.0f, framebufferWidth, framebufferHeight);
         }
     });
     window_->set_drop_callback(
-        [this](const std::vector<std::string>& paths) {
-            handleDroppedFiles(paths);
-        });
+        [this](const std::vector<std::string>& paths) { handleDroppedFiles(paths); });
     window_->set_scroll_callback(
-        [this](double xOffset, double yOffset) {
-            handleScroll(xOffset, yOffset);
-        });
+        [this](double xOffset, double yOffset) { handleScroll(xOffset, yOffset); });
     initialize();
 }
 
@@ -88,7 +77,8 @@ Application::~Application() {
 
 void Application::run() {
     LOG_INFO("Starting application main loop");
-    while (!window_->should_close() && running_) tick();
+    while (!window_->should_close() && running_)
+        tick();
 }
 
 void Application::tick() {
@@ -98,8 +88,7 @@ void Application::tick() {
     const double currentTime = glfwGetTime();
     float deltaTime = 0.0f;
     if (hasLastTickTime_) {
-        deltaTime = std::clamp(
-            static_cast<float>(currentTime - lastTickTime_), 0.0f, 0.1f);
+        deltaTime = std::clamp(static_cast<float>(currentTime - lastTickTime_), 0.0f, 0.1f);
     } else {
         hasLastTickTime_ = true;
     }
@@ -107,11 +96,9 @@ void Application::tick() {
     update(deltaTime);
 
     bool renderUi = true;
-    if (trainingController_.isActive() &&
-        trainingController_.state().pureActive) {
+    if (trainingController_.isActive() && trainingController_.state().pureActive) {
         constexpr double pureUiIntervalSeconds = 0.1;
-        renderUi =
-            currentTime - pureLastUiRenderTime_ >= pureUiIntervalSeconds;
+        renderUi = currentTime - pureLastUiRenderTime_ >= pureUiIntervalSeconds;
     }
     if (renderUi) {
         pureLastUiRenderTime_ = currentTime;
@@ -123,8 +110,8 @@ void Application::tick() {
 
 void Application::switchRenderMode(RenderMode mode) {
     if (currentMode_ == mode) return;
-    LOG_INFO("Switching render mode from {} to {}",
-             static_cast<int>(currentMode_), static_cast<int>(mode));
+    LOG_INFO("Switching render mode from {} to {}", static_cast<int>(currentMode_),
+             static_cast<int>(mode));
     if (renderer_) {
         renderer_->cleanup();
         renderer_.reset();
@@ -132,8 +119,7 @@ void Application::switchRenderMode(RenderMode mode) {
     currentMode_ = mode;
     renderer_ = createRenderer(currentMode_);
     if (!renderer_) {
-        LOG_ERROR("Failed to create renderer for mode: {}",
-                  static_cast<int>(mode));
+        LOG_ERROR("Failed to create renderer for mode: {}", static_cast<int>(mode));
         return;
     }
     renderer_->initialize(window_->get_handle());
@@ -149,12 +135,9 @@ std::unique_ptr<Renderer> Application::createRenderer(RenderMode mode) {
 }
 
 void Application::configureRenderer() {
-    if (auto* gaussianRenderer =
-            dynamic_cast<GaussianRenderer*>(renderer_.get())) {
-        gaussianRenderer->setPresentModePreference(
-            viewerController_.presentMode());
-        gaussianRenderer->setRenderProfile(
-            viewerController_.renderProfile());
+    if (auto* gaussianRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get())) {
+        gaussianRenderer->setPresentModePreference(viewerController_.presentMode());
+        gaussianRenderer->setRenderProfile(viewerController_.renderProfile());
         gaussianRenderer->setSHBands(viewerController_.shBands());
     }
     renderer_->setImGuiDrawCallback([this]() { drawImGuiControls(); });
@@ -169,25 +152,20 @@ void Application::update(float deltaTime) {
 void Application::updateViewer(float deltaTime) {
     if (!window_ || !viewerController_.hasCamera()) return;
     GLFWwindow* handle = window_->get_handle();
-    const ImGuiIO* io =
-        ImGui::GetCurrentContext() ? &ImGui::GetIO() : nullptr;
+    const ImGuiIO* io = ImGui::GetCurrentContext() ? &ImGui::GetIO() : nullptr;
 
     ViewerInputState input{};
     glfwGetCursorPos(handle, &input.mouseX, &input.mouseY);
-    input.orbitButton =
-        glfwGetMouseButton(handle, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    input.panButton =
-        glfwGetMouseButton(handle, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    input.orbitButton = glfwGetMouseButton(handle, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    input.panButton = glfwGetMouseButton(handle, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     input.captureMouse = io && io->WantCaptureMouse;
     input.captureKeyboard = io && io->WantCaptureKeyboard;
     input.toggleMode = glfwGetKey(handle, GLFW_KEY_V) == GLFW_PRESS;
     input.focus = glfwGetKey(handle, GLFW_KEY_F) == GLFW_PRESS;
-    const bool shift =
-        glfwGetKey(handle, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-        glfwGetKey(handle, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
-    const bool alt =
-        glfwGetKey(handle, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
-        glfwGetKey(handle, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+    const bool shift = glfwGetKey(handle, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                       glfwGetKey(handle, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+    const bool alt = glfwGetKey(handle, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+                     glfwGetKey(handle, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
     input.resetFocus = input.focus && shift;
     input.moveRight = glfwGetKey(handle, GLFW_KEY_D) == GLFW_PRESS;
     input.moveLeft = glfwGetKey(handle, GLFW_KEY_A) == GLFW_PRESS;
@@ -197,29 +175,23 @@ void Application::updateViewer(float deltaTime) {
     input.moveBackward = glfwGetKey(handle, GLFW_KEY_S) == GLFW_PRESS;
     input.speedMultiplier = shift ? 10.0f : 1.0f;
     if (alt) input.speedMultiplier *= 0.1f;
-    glfwGetFramebufferSize(
-        handle, &input.framebufferWidth, &input.framebufferHeight);
+    glfwGetFramebufferSize(handle, &input.framebufferWidth, &input.framebufferHeight);
 
     viewerController_.updateInput(input, deltaTime);
-    viewerController_.updateCamera(
-        deltaTime, input.framebufferWidth, input.framebufferHeight);
+    viewerController_.updateCamera(deltaTime, input.framebufferWidth, input.framebufferHeight);
 }
 
 void Application::render() {
     if (!renderer_) return;
-    auto* gaussianRenderer =
-        dynamic_cast<GaussianRenderer*>(renderer_.get());
+    auto* gaussianRenderer = dynamic_cast<GaussianRenderer*>(renderer_.get());
     if (gaussianRenderer) {
-        gaussianRenderer->setPresentModePreference(
-            viewerController_.presentMode());
-        gaussianRenderer->setRenderProfile(
-            viewerController_.renderProfile());
+        gaussianRenderer->setPresentModePreference(viewerController_.presentMode());
+        gaussianRenderer->setRenderProfile(viewerController_.renderProfile());
         gaussianRenderer->setSHBands(viewerController_.shBands());
         const ViewerRenderData data = viewerController_.renderData();
         if (data.model) {
-            gaussianRenderer->setRenderData(
-                data.model, data.view, data.projection,
-                data.camera, data.modelMatrix);
+            gaussianRenderer->setRenderData(data.model, data.view, data.projection, data.camera,
+                                            data.modelMatrix);
         }
     }
     renderer_->render();
@@ -232,9 +204,8 @@ void Application::setModel(const GaussianModel* model) {
     if (window_) {
         glfwGetFramebufferSize(window_->get_handle(), &width, &height);
     }
-    viewerController_.resetCamera(
-        static_cast<float>(std::max(width, 1)),
-        static_cast<float>(std::max(height, 1)));
+    viewerController_.resetCamera(static_cast<float>(std::max(width, 1)),
+                                  static_cast<float>(std::max(height, 1)));
 }
 
 bool Application::loadModelFromFile(const std::string& filename) {
@@ -245,15 +216,13 @@ bool Application::loadModelFromFile(const std::string& filename) {
     int width = 1;
     int height = 1;
     glfwGetFramebufferSize(window_->get_handle(), &width, &height);
-    viewerController_.resetCamera(
-        static_cast<float>(std::max(width, 1)),
-        static_cast<float>(std::max(height, 1)));
+    viewerController_.resetCamera(static_cast<float>(std::max(width, 1)),
+                                  static_cast<float>(std::max(height, 1)));
     LOG_INFO("Loaded model from dropped file: {}", filename);
     return true;
 }
 
-void Application::setCamera(const glm::mat4& view,
-                            const glm::mat4& projection) {
+void Application::setCamera(const glm::mat4& view, const glm::mat4& projection) {
     viewerController_.setCameraMatrices(view, projection);
 }
 
@@ -265,8 +234,7 @@ void Application::drawImGuiControls() {
     int width = 1;
     int height = 1;
     glfwGetFramebufferSize(window_->get_handle(), &width, &height);
-    ViewerPanel::draw(viewerController_, ImGui::GetIO().Framerate,
-                      width, height);
+    ViewerPanel::draw(viewerController_, ImGui::GetIO().Framerate, width, height);
     trainingPanel_.draw(trainingController_);
 }
 
@@ -276,8 +244,7 @@ void Application::handleScroll(double xOffset, double yOffset) {
     viewerController_.dolly(static_cast<float>(yOffset));
 }
 
-void Application::handleDroppedFiles(
-    const std::vector<std::string>& paths) {
+void Application::handleDroppedFiles(const std::vector<std::string>& paths) {
     if (paths.empty()) return;
     if (paths.size() > 1) {
         LOG_WARN("Multiple files dropped; loading the first one only");

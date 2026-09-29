@@ -6,8 +6,7 @@
 
 namespace vulkan3DGS {
 
-void TrainingFrameScheduler::configure(
-    const TrainingScheduleConfig& config) {
+void TrainingFrameScheduler::configure(const TrainingScheduleConfig& config) {
     config_ = config;
     restartSequence();
 }
@@ -30,8 +29,7 @@ void TrainingFrameScheduler::clear() {
 }
 
 size_t TrainingFrameScheduler::selectForIteration() {
-    if (frameCount_ == 0u ||
-        config_.imageSelectionMode != TrainingImageSelectionMode::Random) {
+    if (frameCount_ == 0u || config_.imageSelectionMode != TrainingImageSelectionMode::Random) {
         return currentFrame_;
     }
     if (randomFrameStack_.empty()) {
@@ -45,16 +43,14 @@ size_t TrainingFrameScheduler::selectForIteration() {
 }
 
 void TrainingFrameScheduler::advanceAfterIteration() {
-    if (frameCount_ > 0u &&
-        config_.imageSelectionMode == TrainingImageSelectionMode::Sequential) {
+    if (frameCount_ > 0u && config_.imageSelectionMode == TrainingImageSelectionMode::Sequential) {
         currentFrame_ = (currentFrame_ + 1u) % frameCount_;
     }
 }
 
 void TrainingFrameScheduler::setCurrentFrame(size_t frameIndex) {
     if (frameCount_ == 0u) {
-        throw std::runtime_error(
-            "Cannot set training frame index without a loaded dataset");
+        throw std::runtime_error("Cannot set training frame index without a loaded dataset");
     }
     if (frameIndex >= frameCount_) {
         throw std::runtime_error("Training frame index is out of range");
@@ -62,16 +58,14 @@ void TrainingFrameScheduler::setCurrentFrame(size_t frameIndex) {
     currentFrame_ = frameIndex;
 }
 
-std::vector<size_t> TrainingFrameScheduler::upcomingFrames(
-    size_t maximumCount) const {
+std::vector<size_t> TrainingFrameScheduler::upcomingFrames(size_t maximumCount) const {
     std::vector<size_t> result;
     result.reserve(maximumCount);
     if (frameCount_ == 0u || maximumCount == 0u) return result;
 
     if (config_.imageSelectionMode == TrainingImageSelectionMode::Random) {
         for (auto it = randomFrameStack_.rbegin();
-             it != randomFrameStack_.rend() && result.size() < maximumCount;
-             ++it) {
+             it != randomFrameStack_.rend() && result.size() < maximumCount; ++it) {
             result.push_back(*it);
         }
         return result;
@@ -83,10 +77,8 @@ std::vector<size_t> TrainingFrameScheduler::upcomingFrames(
     return result;
 }
 
-bool TrainingFrameScheduler::isComplete(
-    uint32_t trainingIteration) const noexcept {
-    return config_.totalIterations > 0u &&
-           trainingIteration >= config_.totalIterations;
+bool TrainingFrameScheduler::isComplete(uint32_t trainingIteration) const noexcept {
+    return config_.totalIterations > 0u && trainingIteration >= config_.totalIterations;
 }
 
 } // namespace vulkan3DGS

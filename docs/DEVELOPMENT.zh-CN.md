@@ -65,7 +65,7 @@ tests/                                 CPU 和缓存测试
 
 全局 Vulkan-Hpp dispatcher 只由 presentation device 初始化。Training device 不重新初始化 dispatcher，否则其未启用的 swapchain 函数可能覆盖显示路径的 device-level 函数指针。
 
-普通训练通过 `TrainingController` 的 `std::jthread` 执行，worker 独占对 `GaussianTraining` 的调用；ImGui 只读取 mutex 保护的 `TrainingUiSnapshot`。非 Pure 模式每 32 步发布一次快照；Pure Training 不刷新中间详细数据、降低 presentation 频率、记录 wall time，并在完成后自动导出配置的 PLY。GPU 内部每步仍在 prepare/main fence 边界同步。
+普通训练通过 `TrainingController` 的 `std::jthread` 执行，worker 独占对 `GaussianTraining` 的调用；ImGui 只读取 mutex 保护的 `TrainingUiSnapshot`。非 Pure 模式每 100 步发布一次快照；Pure Training 不刷新中间详细数据、降低 presentation 频率、记录 wall time，并在完成后自动导出配置的 PLY。GPU 内部每步仍在 prepare/main fence 边界同步。
 
 ## Gaussian PLY 数据
 
@@ -790,6 +790,21 @@ Validation layer 通过运行时 layer manifest 发现。安装 package 并不�
 ```text
 build/bin/<Config>/shaders/
 ```
+
+重构后新增模块提供独立的质量检查目标，不会格式化旧代码或第三方代码：
+
+```powershell
+cmake --build build --config Debug --target format-new
+cmake --build build --config Debug --target check-format-new
+cmake --build build --config Debug --target clang-tidy-new
+cmake --build build --config Debug --target clang-tidy-advisory-new
+cmake --build build --config Debug --target quality-new
+```
+
+`clang-tidy-new` 将 `bugprone-*` 诊断作为强制门槛；
+`clang-tidy-advisory-new` 报告 `modernize-*`、`cppcoreguidelines-*` 和
+`bugprone-*`，但不使构建失败，使 Vulkan、GLM 和 ImGui 集成代码可以使用附带原因的局部例外，而不是全局关闭规则。
+clang-tidy 目标逐个分析源文件，并过滤第三方头文件产生的诊断统计，同时保留真实项目诊断和失败退出码。
 
 C++/Slang 结构布局和 descriptor binding 必须保持同步。
 

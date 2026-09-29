@@ -14,8 +14,7 @@ public:
     TrainingProfilingService(const TrainingProfilingService&) = delete;
     TrainingProfilingService& operator=(const TrainingProfilingService&) = delete;
 
-    void initialize(vk::Device device,
-                    vk::PhysicalDevice physicalDevice,
+    void initialize(vk::Device device, vk::PhysicalDevice physicalDevice,
                     uint32_t computeQueueFamilyIndex);
     void cleanup();
 

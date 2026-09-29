@@ -4,6 +4,9 @@
 /vcpkg_installed
 /.**
 /tools
+!/.clang-format
+!/.clang-tidy
+!/.gitattributes
 !/.gitmodules
 !/.gitignore
 

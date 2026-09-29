@@ -16,41 +16,46 @@ namespace vulkan3DGS {
 
 class GraphicsFrameRuntime {
 public:
-    using FormatChangedHandler =
-        std::function<vk::RenderPass(vk::Format, vk::Extent2D)>;
+    using FormatChangedHandler = std::function<vk::RenderPass(vk::Format, vk::Extent2D)>;
 
     GraphicsFrameRuntime() = default;
-    ~GraphicsFrameRuntime();
+    ~GraphicsFrameRuntime() noexcept;
 
     GraphicsFrameRuntime(const GraphicsFrameRuntime&) = delete;
     GraphicsFrameRuntime& operator=(const GraphicsFrameRuntime&) = delete;
 
-    void initialize(GLFWwindow* window,
-                    PresentModePreference preference,
-                    vk::Format depthFormat,
+    void initialize(GLFWwindow* window, PresentModePreference preference, vk::Format depthFormat,
                     const FormatChangedHandler& createRenderPass);
     void cleanup();
 
-    bool ensureReady(vk::RenderPass renderPass,
-                     vk::Format depthFormat,
+    bool ensureReady(vk::RenderPass renderPass, vk::Format depthFormat,
                      const FormatChangedHandler& onFormatChanged);
-    std::optional<uint32_t> acquireFrame(
-        vk::RenderPass renderPass,
-        vk::Format depthFormat,
-        const FormatChangedHandler& onFormatChanged);
+    std::optional<uint32_t> acquireFrame(vk::RenderPass renderPass, vk::Format depthFormat,
+                                         const FormatChangedHandler& onFormatChanged);
     void submit(uint32_t imageIndex);
-    void present(vk::RenderPass renderPass,
-                 vk::Format depthFormat,
+    void present(vk::RenderPass renderPass, vk::Format depthFormat,
                  const FormatChangedHandler& onFormatChanged);
 
-    void requestResize() { recreationPending_ = true; }
+    void requestResize() {
+        recreationPending_ = true;
+    }
     void setPresentModePreference(PresentModePreference preference);
 
-    uint32_t currentFrame() const { return currentFrame_; }
-    uint32_t frameCount() const { return frameResourceCount_; }
-    uint32_t imageCount() const { return swapchainImageCount_; }
-    vk::Extent2D extent() const { return swapchain_->getExtent(); }
-    vk::Format imageFormat() const { return swapchain_->getImageFormat(); }
+    uint32_t currentFrame() const {
+        return currentFrame_;
+    }
+    uint32_t frameCount() const {
+        return frameResourceCount_;
+    }
+    uint32_t imageCount() const {
+        return swapchainImageCount_;
+    }
+    vk::Extent2D extent() const {
+        return swapchain_->getExtent();
+    }
+    vk::Format imageFormat() const {
+        return swapchain_->getImageFormat();
+    }
     vk::Framebuffer framebuffer(uint32_t imageIndex) const {
         return swapchain_->getFramebuffer(imageIndex);
     }
@@ -64,11 +69,8 @@ public:
 private:
     void createSyncObjects();
     void recreateRenderFinishedSemaphores();
-    void recreate(uint32_t width,
-                  uint32_t height,
-                  vk::RenderPass renderPass,
-                  vk::Format depthFormat,
-                  const FormatChangedHandler& onFormatChanged);
+    void recreate(uint32_t width, uint32_t height, vk::RenderPass renderPass,
+                  vk::Format depthFormat, const FormatChangedHandler& onFormatChanged);
 
     GLFWwindow* window_ = nullptr;
     std::unique_ptr<Swapchain> swapchain_;

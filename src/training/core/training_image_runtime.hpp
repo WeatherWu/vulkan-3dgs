@@ -1,9 +1,9 @@
 #pragma once
 
-#include "training/core/training_buffers.hpp"
-#include "training/core/training_dataset.hpp"
 #include "image/image_streamer.hpp"
 #include "training/cache/device_image_cache.hpp"
+#include "training/core/training_buffers.hpp"
+#include "training/core/training_dataset.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -26,41 +26,34 @@ public:
     TrainingImageRuntime(const TrainingImageRuntime&) = delete;
     TrainingImageRuntime& operator=(const TrainingImageRuntime&) = delete;
 
-    void initialize(vk::Device device,
-                    vk::PhysicalDevice physicalDevice,
-                    vk::Queue transferQueue,
-                    uint32_t transferQueueFamilyIndex,
-                    uint32_t computeQueueFamilyIndex,
-                    const TrainingDataset& dataset,
-                    TrainingBuffers& buffers);
+    void initialize(vk::Device device, vk::PhysicalDevice physicalDevice, vk::Queue transferQueue,
+                    uint32_t transferQueueFamilyIndex, uint32_t computeQueueFamilyIndex,
+                    const TrainingDataset& dataset, TrainingBuffers& buffers);
     void cleanup(TrainingBuffers& buffers);
 
-    [[nodiscard]] TrainingImageUploadResult uploadFrame(
-        size_t frameIndex,
-        const TrainingCameraFrame& frame,
-        const TrainingForwardCamera& camera,
-        TrainingBuffers& buffers);
+    [[nodiscard]] TrainingImageUploadResult uploadFrame(size_t frameIndex,
+                                                        const TrainingCameraFrame& frame,
+                                                        const TrainingForwardCamera& camera,
+                                                        TrainingBuffers& buffers);
     void prefetch(std::span<const size_t> frameIndices);
-    void reserveForDensification(uint32_t trainingIteration,
-                                 TrainingBuffers& buffers);
-    void refreshBudget(uint32_t trainingIteration,
-                       TrainingBuffers& buffers);
+    void reserveForDensification(uint32_t trainingIteration, TrainingBuffers& buffers);
+    void refreshBudget(uint32_t trainingIteration, TrainingBuffers& buffers);
 
     [[nodiscard]] ImageStreamerStats imageCacheStats() const;
     [[nodiscard]] DeviceImageCacheStats deviceImageCacheStats() const;
     [[nodiscard]] uint64_t pendingUploadValue() const noexcept {
         return pendingUploadValue_;
     }
-    void clearPendingUpload() noexcept { pendingUploadValue_ = 0; }
+    void clearPendingUpload() noexcept {
+        pendingUploadValue_ = 0;
+    }
     [[nodiscard]] vk::Semaphore uploadSemaphore() const noexcept;
 
-    [[nodiscard]] static std::vector<ImageSourceDesc> makeSources(
-        const TrainingDataset& dataset);
+    [[nodiscard]] static std::vector<ImageSourceDesc> makeSources(const TrainingDataset& dataset);
 
 private:
     [[nodiscard]] uint64_t initialDeviceCacheBudget() const;
-    bool refreshDeviceCache(bool reserveForDensification,
-                            uint32_t trainingIteration,
+    bool refreshDeviceCache(bool reserveForDensification, uint32_t trainingIteration,
                             TrainingBuffers& buffers);
 
     vk::Device device_ = nullptr;

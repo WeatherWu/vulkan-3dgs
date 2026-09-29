@@ -65,7 +65,7 @@ The `Training` panel GPU selector and `--gpu` affect only the training device. S
 
 Only the presentation device initializes the global Vulkan-Hpp dispatcher. A training device must not reinitialize it because device-level swapchain function pointers could otherwise be overwritten by a logical device that did not enable the swapchain extension.
 
-Normal training runs through `TrainingController` on a `std::jthread`. The worker owns calls into `GaussianTraining`; ImGui reads a mutex-protected `TrainingUiSnapshot`. Non-Pure mode publishes a snapshot every 32 steps. Pure Training suppresses intermediate details, throttles presentation, measures wall time, and exports the configured PLY on completion. The GPU iteration itself remains synchronous at its prepare/main fence boundaries.
+Normal training runs through `TrainingController` on a `std::jthread`. The worker owns calls into `GaussianTraining`; ImGui reads a mutex-protected `TrainingUiSnapshot`. Non-Pure mode publishes a snapshot every 100 steps. Pure Training suppresses intermediate details, throttles presentation, measures wall time, and exports the configured PLY on completion. The GPU iteration itself remains synchronous at its prepare/main fence boundaries.
 
 ## Gaussian PLY Data
 
@@ -660,6 +660,24 @@ Generated SPIR-V is copied into:
 ```text
 build/bin/<Config>/shaders/
 ```
+
+Refactored modules have opt-in quality targets. They do not reformat legacy or
+third-party code:
+
+```powershell
+cmake --build build --config Debug --target format-new
+cmake --build build --config Debug --target check-format-new
+cmake --build build --config Debug --target clang-tidy-new
+cmake --build build --config Debug --target clang-tidy-advisory-new
+cmake --build build --config Debug --target quality-new
+```
+
+`clang-tidy-new` makes `bugprone-*` diagnostics a required gate.
+`clang-tidy-advisory-new` reports `modernize-*`, `cppcoreguidelines-*`, and
+`bugprone-*` without failing the build, so Vulkan, GLM, and ImGui integration
+can use narrowly documented local exceptions instead of repository-wide disables.
+The clang-tidy targets run one source at a time and suppress third-party warning
+statistics while preserving actionable diagnostics and failure exit codes.
 
 C++/Slang structure layouts and descriptor binding numbers must remain synchronized.
 
