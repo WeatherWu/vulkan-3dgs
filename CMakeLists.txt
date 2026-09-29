@@ -218,9 +218,6 @@ endif()
 # 如果目标名不同，请相应调整
 add_dependencies(vulkan_3dgs_core compile_shaders)
 
-# 安装配置
-install(DIRECTORY src/ DESTINATION include)
-
 # 安装着色器文件（使用生成器表达式支持多配置）
 install(DIRECTORY ${GRAPHICS_SHADER_SPV_DIR}/ 
     DESTINATION bin/$<CONFIG>/shaders

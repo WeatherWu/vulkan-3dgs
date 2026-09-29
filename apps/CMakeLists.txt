@@ -11,12 +11,6 @@ find_package(imgui CONFIG REQUIRED)
 target_link_libraries(vulkan_3dgs_app PRIVATE vulkan_3dgs_core)
 target_link_libraries(vulkan_3dgs_app PRIVATE imgui::imgui)
 
-# 包含目录
-target_include_directories(vulkan_3dgs_app PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/src/include
-)
-
 # 安装配置
 install(TARGETS vulkan_3dgs_app
     RUNTIME DESTINATION bin

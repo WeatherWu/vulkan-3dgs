@@ -36,40 +36,63 @@ add_library(vulkan_3dgs_core STATIC
     vulkan/shader.cpp
     vulkan/swapchain.cpp
     vulkan/compute_pipeline.cpp
-    vulkan/device_image_cache.cpp
     vulkan/vrdx_impl.cpp
     
     # Gaussian Splatting 渲染模块
-    gaussian_renderer/gaussian_model.cpp
-    gaussian_renderer/gaussian_renderer.cpp
-    gaussian_renderer/renderpass.cpp
-    gaussian_renderer/pipeline.cpp
+    graphics/gaussian_model.cpp
+    graphics/gaussian_renderer.cpp
+    graphics/graphics_splat_sorter.cpp
+    graphics/graphics_splat_resources.cpp
+    graphics/graphics_pipeline_set.cpp
+    graphics/graphics_frame_runtime.cpp
+    graphics/graphics_command_recorder.cpp
+    graphics/renderpass.cpp
+    graphics/pipeline.cpp
 
-    # Gaussian Training 训练模块
-    gaussian_training/gaussian_training.cpp
-    gaussian_training/training_buffers.cpp
-    gaussian_training/training_pipeline.cpp
-    gaussian_training/gaussian_forward_renderer.cpp
-    gaussian_training/gaussian_backward_renderer.cpp
-    gaussian_training/gaussian_densification_renderer.cpp
-    gaussian_training/training_dataset.cpp
+    # Gaussian Training 训练核心
+    training/core/gaussian_training.cpp
+    training/core/training_validation_service.cpp
+    training/core/training_profiling_service.cpp
+    training/core/training_frame_scheduler.cpp
+    training/core/training_model_io.cpp
+    training/core/training_image_runtime.cpp
+    training/core/training_step_executor.cpp
+    training/core/training_buffers.cpp
+    training/core/training_pipeline.cpp
+    training/core/gaussian_forward_renderer.cpp
+    training/core/gaussian_backward_renderer.cpp
+    training/core/gaussian_densification_renderer.cpp
+    training/core/training_dataset.cpp
+    training/cache/device_image_cache.cpp
 
     # 通用图像加载与缓存模块
     image/image_decoder.cpp
     image/image_disk_cache.cpp
     image/image_streamer.cpp
 
-    # 工具模块
-    utils/camera.cpp
-    utils/camera_controller.cpp
+    # 查看器相机与通用工具
+    viewer/camera.cpp
+    viewer/camera_controller.cpp
     utils/system_memory.cpp
     utils/stb_image_impl.cpp
     ${IMGUI_FILE_DIALOG_DIR}/ImGuiFileDialog.cpp
     
-    # 应用框架与渲染管理
-    window.cpp
-    application.cpp
-    renderer.cpp
+    # 训练应用层与 UI
+    training/app/training_controller.cpp
+    training/app/training_settings.cpp
+    training/ui/training_command_panel.cpp
+    training/ui/training_diagnostics_panel.cpp
+    training/ui/training_settings_panel.cpp
+    training/ui/training_file_dialogs.cpp
+    training/ui/training_panel.cpp
+    viewer/viewer_controller.cpp
+    viewer/viewer_panel.cpp
+    viewer/viewer_settings.cpp
+
+    # 应用组合根与两条渲染路径的共同接口
+    app/window.cpp
+    app/application.cpp
+    render/renderer.cpp
 )
 
 # 包含目录
@@ -127,4 +150,7 @@ install(TARGETS vulkan_3dgs_core
     ARCHIVE DESTINATION lib
 )
 
-install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY app context graphics image render training utils viewer vulkan
+    DESTINATION include
+    FILES_MATCHING PATTERN "*.hpp"
+)

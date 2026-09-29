@@ -11,6 +11,7 @@
 - `image_cache_tests`：图片解码和缓存测试。
 - `training_ssim_tests`：DSSIM backward 系数测试。
 - `training_validation_tests`：两级 validation reduction 测试。
+- `tests/`：训练服务、调度器、模型 I/O、图片运行时、相机及 GPU 选择测试。
 
 Windows 应用输出为 `vulkan-3dgs.exe`，非 Windows 平台输出为 `vulkan-3dgs`。
 
@@ -18,12 +19,18 @@ Windows 应用输出为 `vulkan-3dgs.exe`，非 Windows 平台输出为 `vulkan-
 
 ```text
 apps/                                  应用入口
-src/application.*                     窗口、UI 和应用流程
+src/app/                               Application、Window 与帧路由
+src/viewer/                            查看器控制器、面板、配置与相机
+src/graphics/                          PLY 模型与图形高斯渲染
+src/training/app/                      训练控制器与持久化配置
+src/training/ui/                       训练控件、诊断、GPU 选择与文件对话框
+src/training/core/                     GaussianTraining façade 与计算服务
+src/training/cache/                    显存图片缓存与上传 ring
+src/render/                            两条路径共用的 renderer 基类接口
 src/context/                           Vulkan instance、device 和 queue 初始化
-src/vulkan/                            Vulkan 资源封装和显存图片缓存
+src/vulkan/                            通用 Vulkan 资源封装
 src/image/                             可复用图片解码、磁盘缓存和主存流式加载
-src/gaussian_renderer/                 普通 PLY 渲染路径
-src/gaussian_training/                 compute 训练路径
+src/utils/                             通用日志、内存与 stb 辅助
 shaders/gaussian_compute_shader/slang/ 图形渲染和排序 shader
 shaders/training_shader/slang/common/  训练共享 shader 代码
 shaders/training_shader/slang/passes/  训练 compute passes
@@ -34,14 +41,20 @@ tests/                                 CPU 和缓存测试
 
 ## 主要架构
 
-`Application` 负责 GLFW 窗口、Vulkan context、UI 状态、文件对话框和主循环。
+`Application` 是 GLFW 窗口、Vulkan context、renderer、帧路由、`ViewerController`/`ViewerPanel` 和 `TrainingController`/`TrainingPanel` 的组合根。`TrainingController` 独占训练设备、分组后的持久化配置、数据集生命周期、`GaussianTraining`、异步 worker、benchmark fallback、计时、不可变快照与导出。训练启动时会生成经过校验并由 const 指针持有的 `TrainingRunConfig`，worker 策略、benchmark 参数和 Pure 导出只使用该快照，不读取可变 UI 配置。`TrainingPanel` 持有训练 ImGui 状态和文件对话框，并且只通过 controller 分发 UI 意图。`ViewerController` 持有当前模型、相机与输入策略、矩阵、渲染配置及其持久化。`Application` 不再修改训练生命周期状态，也不解析训练或查看器配置。
 
 项目包含两条独立的 Gaussian 路径：
 
-- `GaussianRenderer` 使用 graphics shader、GPU key generation 和 `vulkan_radix_sort` 加载并渲染 PLY 模型。
+- `GaussianRenderer` 是 PLY 渲染 façade；帧与交换链同步、双图形管线、模型资源与描述符、GPU 基数排序及命令录制分别由专门的 `Graphics*` 运行时模块负责。
 - `GaussianTraining` 负责数据集选择、训练 buffer、compute renderer、优化、稠密化、validation、图片缓存和 PLY 导出。
 
 训练路径不是 `GaussianRenderer` 的封装，它拥有独立的 GPU 资源和 compute pipeline。
+
+`GaussianTraining` 继续作为训练 façade。`TrainingValidationService` 持有三槽 validation readback ring 以及 validation/history 统计，`TrainingProfilingService` 持有 timestamp query pool 和计时累计；各 renderer 只观察 profiling query pool，不拥有它。
+`TrainingFrameScheduler` 持有 Sequential/Random 帧顺序、带 seed 的无放回随机栈、完成条件和预取顺序，不依赖 Vulkan 或图片缓存。
+`TrainingModelIO` 持有 sparse/random 的主机端 Gaussian 初始化、尺度与场景范围估计以及 PLY 序列化；GPU 参数上传/下载仍由 `GaussianTraining` 和 `TrainingBuffers` 保持所有权。
+`TrainingImageRuntime` 持有 ImageStreamer、DeviceImageCache、图片源配置、target 上传、缓存预算刷新和 upload timeline 状态；仅通过 `TrainingBuffers` 完成 descriptor override 或 fallback target 上传。
+`TrainingStepExecutor` 持有训练 command/fence 资源和 prepare/main GPU 执行序列；`GaussianTraining` 继续作为 iteration、benchmark、dataset 和模型状态的 façade。
 
 应用维护两个逻辑设备角色：
 
@@ -52,7 +65,7 @@ tests/                                 CPU 和缓存测试
 
 全局 Vulkan-Hpp dispatcher 只由 presentation device 初始化。Training device 不重新初始化 dispatcher，否则其未启用的 swapchain 函数可能覆盖显示路径的 device-level 函数指针。
 
-普通训练由 `std::jthread` 执行，worker 独占对 `GaussianTraining` 的调用；ImGui 只读取 mutex 保护的 `TrainingUiSnapshot`。非 Pure 模式每 32 步发布一次快照；Pure Training 不刷新中间详细数据、降低 presentation 频率、记录 wall time，并在完成后自动导出配置的 PLY。GPU 内部每步仍在 prepare/main fence 边界同步。
+普通训练通过 `TrainingController` 的 `std::jthread` 执行，worker 独占对 `GaussianTraining` 的调用；ImGui 只读取 mutex 保护的 `TrainingUiSnapshot`。非 Pure 模式每 32 步发布一次快照；Pure Training 不刷新中间详细数据、降低 presentation 频率、记录 wall time，并在完成后自动导出配置的 PLY。GPU 内部每步仍在 prepare/main fence 边界同步。
 
 ## Gaussian PLY 数据
 

@@ -2,7 +2,7 @@
 #include <cmath>
 #include <iostream>
 
-#include "utils/camera_controller.hpp"
+#include "viewer/camera_controller.hpp"
 
 namespace {
 

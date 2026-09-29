@@ -11,6 +11,7 @@ This document contains implementation-oriented information for contributors and 
 - `image_cache_tests`: image decode/cache tests.
 - `training_ssim_tests`: DSSIM backward coefficient tests.
 - `training_validation_tests`: two-level validation reduction tests.
+- `tests/`: training service, scheduler, model I/O, image runtime, camera, and GPU selection tests.
 
 The application output is `vulkan-3dgs.exe` on Windows and `vulkan-3dgs` on non-Windows platforms.
 
@@ -18,12 +19,18 @@ The application output is `vulkan-3dgs.exe` on Windows and `vulkan-3dgs` on non-
 
 ```text
 apps/                                  application entry
-src/application.*                     window, UI, and application flow
+src/app/                               Application, Window, and frame routing
+src/viewer/                            viewer controller, panel, settings, and camera
+src/graphics/                          PLY model and graphics Gaussian renderer
+src/training/app/                      training controller and persisted settings
+src/training/ui/                       training controls, diagnostics, GPU selector, and dialogs
+src/training/core/                     GaussianTraining façade and compute services
+src/training/cache/                    device-local image cache and upload ring
+src/render/                            renderer base interfaces shared by both paths
 src/context/                           Vulkan instance/device/queue setup
-src/vulkan/                            Vulkan resource wrappers and device image cache
+src/vulkan/                            reusable Vulkan resource wrappers
 src/image/                             reusable image decode, disk cache, and host streaming
-src/gaussian_renderer/                 normal PLY rendering path
-src/gaussian_training/                 compute training path
+src/utils/                             shared logging, memory, and stb helpers
 shaders/gaussian_compute_shader/slang/ graphics and sorting shaders
 shaders/training_shader/slang/common/  shared training shader code
 shaders/training_shader/slang/passes/  training compute passes
@@ -34,14 +41,20 @@ tests/                                 CPU and cache tests
 
 ## Main Architecture
 
-`Application` owns the GLFW window, Vulkan context, UI state, file dialogs, and main loop.
+`Application` is the composition root for the GLFW window, Vulkan context, renderer, frame routing, `ViewerController`/`ViewerPanel`, and `TrainingController`/`TrainingPanel`. `TrainingController` owns the training device, grouped persisted settings, dataset lifecycle, `GaussianTraining`, asynchronous worker, benchmark fallback, timer, immutable snapshots, and export. Starting training creates a validated, pointer-to-const `TrainingRunConfig`; worker policy, benchmark parameters, and Pure export use that snapshot rather than mutable UI settings. `TrainingPanel` owns training ImGui state and file dialogs and dispatches typed UI intents only through the controller. `ViewerController` owns the current model, camera/input policy, matrices, render settings, and viewer-settings persistence. `Application` neither mutates training lifecycle state nor parses either settings format.
 
 The project has two separate Gaussian paths:
 
-- `GaussianRenderer` loads and renders PLY models through graphics shaders, GPU key generation, and `vulkan_radix_sort`.
+- `GaussianRenderer` is the PLY-rendering facade. Frame/swapchain synchronization, dual pipelines, packed model resources/descriptors, GPU radix sorting, and command recording are owned by focused `Graphics*` runtime modules.
 - `GaussianTraining` owns dataset selection, training buffers, compute renderers, optimization, densification, validation, image caches, and PLY export.
 
 The training path is not a wrapper around `GaussianRenderer`; it owns independent GPU resources and compute pipelines.
+
+`GaussianTraining` remains the training façade. `TrainingValidationService` owns the three-slot validation readback ring and validation/history statistics, while `TrainingProfilingService` owns the timestamp query pool and timing accumulators. Renderers observe the profiling query pool but do not own it.
+`TrainingFrameScheduler` owns Sequential/Random frame order, the seeded random-without-replacement stack, completion checks, and prefetch ordering; it has no Vulkan or image-cache dependency.
+`TrainingModelIO` owns sparse/random host-side Gaussian initialization, scale and scene-extent estimation, and PLY serialization; GPU parameter upload/download remains with `GaussianTraining` and `TrainingBuffers`.
+`TrainingImageRuntime` owns ImageStreamer, DeviceImageCache, image-source setup, target upload, cache-budget refresh and upload timeline state; it receives `TrainingBuffers` only for descriptor override or fallback target upload.
+`TrainingStepExecutor` owns training command/fence resources and the prepare/main GPU execution sequence; `GaussianTraining` remains the façade for iteration, benchmark, dataset and model state.
 
 The application maintains two logical device roles:
 
@@ -52,7 +65,7 @@ The `Training` panel GPU selector and `--gpu` affect only the training device. S
 
 Only the presentation device initializes the global Vulkan-Hpp dispatcher. A training device must not reinitialize it because device-level swapchain function pointers could otherwise be overwritten by a logical device that did not enable the swapchain extension.
 
-Normal training runs on a `std::jthread`. The worker owns calls into `GaussianTraining`; ImGui reads a mutex-protected `TrainingUiSnapshot`. Non-Pure mode publishes a snapshot every 32 steps. Pure Training suppresses intermediate details, throttles presentation, measures wall time, and exports the configured PLY on completion. The GPU iteration itself remains synchronous at its prepare/main fence boundaries.
+Normal training runs through `TrainingController` on a `std::jthread`. The worker owns calls into `GaussianTraining`; ImGui reads a mutex-protected `TrainingUiSnapshot`. Non-Pure mode publishes a snapshot every 32 steps. Pure Training suppresses intermediate details, throttles presentation, measures wall time, and exports the configured PLY on completion. The GPU iteration itself remains synchronous at its prepare/main fence boundaries.
 
 ## Gaussian PLY Data
 

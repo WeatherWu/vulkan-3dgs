@@ -3,6 +3,7 @@
 /data
 /vcpkg_installed
 /.**
+/tools
 !/.gitmodules
 !/.gitignore
 

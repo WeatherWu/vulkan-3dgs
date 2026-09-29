@@ -1,4 +1,4 @@
-#include "gaussian_training/training_types.hpp"
+#include "training/core/training_types.hpp"
 
 #include <algorithm>
 #include <array>
