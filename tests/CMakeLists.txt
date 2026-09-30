@@ -56,6 +56,10 @@ configure_vulkan_3dgs_test(training_image_runtime_tests)
 add_executable(training_math_tests training_math_tests.cpp)
 configure_vulkan_3dgs_test(training_math_tests)
 
+add_executable(backward_dispatch_policy_tests backward_dispatch_policy_tests.cpp)
+target_link_libraries(backward_dispatch_policy_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(backward_dispatch_policy_tests)
+
 add_executable(training_settings_tests training_settings_tests.cpp)
 target_link_libraries(training_settings_tests PRIVATE vulkan_3dgs_core)
 configure_vulkan_3dgs_test(training_settings_tests)

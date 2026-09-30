@@ -37,6 +37,19 @@ set(VULKAN_3DGS_QUALITY_RELATIVE_FILES
     training/core/training_step_executor.hpp
     training/core/training_validation_service.cpp
     training/core/training_validation_service.hpp
+    training/core/backward/backward_pass_context.hpp
+    training/core/backward/backward_command_utils.cpp
+    training/core/backward/backward_command_utils.hpp
+    training/core/backward/backward_loss_pass.cpp
+    training/core/backward/backward_loss_pass.hpp
+    training/core/backward/pixel_to_2dgs_dispatcher.cpp
+    training/core/backward/pixel_to_2dgs_dispatcher.hpp
+    training/core/backward/projection_optimizer_pass.cpp
+    training/core/backward/projection_optimizer_pass.hpp
+    training/core/backward/backward_validation_pass.cpp
+    training/core/backward/backward_validation_pass.hpp
+    training/core/gaussian_backward_renderer.cpp
+    training/core/gaussian_backward_renderer.hpp
 
     graphics/gaussian_renderer.cpp
     graphics/gaussian_renderer.hpp
@@ -50,6 +63,8 @@ set(VULKAN_3DGS_QUALITY_RELATIVE_FILES
     graphics/graphics_splat_resources.hpp
     graphics/graphics_splat_sorter.cpp
     graphics/graphics_splat_sorter.hpp
+
+    ../tests/backward_dispatch_policy_tests.cpp
 )
 
 set(VULKAN_3DGS_QUALITY_FILES)

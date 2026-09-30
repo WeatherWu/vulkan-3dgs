@@ -61,6 +61,11 @@ add_library(vulkan_3dgs_core STATIC
     training/core/training_pipeline.cpp
     training/core/gaussian_forward_renderer.cpp
     training/core/gaussian_backward_renderer.cpp
+    training/core/backward/backward_command_utils.cpp
+    training/core/backward/backward_loss_pass.cpp
+    training/core/backward/pixel_to_2dgs_dispatcher.cpp
+    training/core/backward/projection_optimizer_pass.cpp
+    training/core/backward/backward_validation_pass.cpp
     training/core/gaussian_densification_renderer.cpp
     training/core/training_dataset.cpp
     training/cache/device_image_cache.cpp
