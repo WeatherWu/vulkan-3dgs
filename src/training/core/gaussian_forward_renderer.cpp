@@ -6,6 +6,7 @@
 #include <array>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace vulkan3DGS {
@@ -47,11 +48,6 @@ ComputePipelineConfig prefixPipelineConfig(
 
 uint32_t ceilDiv(uint32_t value, uint32_t divisor) {
     return (value + divisor - 1u) / divisor;
-}
-
-uint32_t tileCount(TrainingExtent extent) {
-    constexpr uint32_t tileSize = 16;
-    return ceilDiv(extent.width, tileSize) * ceilDiv(extent.height, tileSize);
 }
 
 bool supportsShaderBufferFloat32AtomicMinMax(vk::PhysicalDevice physicalDevice) {
@@ -138,6 +134,9 @@ void GaussianForwardRenderer::forward() {
 }
 
 void GaussianForwardRenderer::prepareTileItems() {
+    if (pushConstants_.tileSize == 32u) {
+        adaptiveSplitThreshold_ = std::max(pushConstants_.tileItemCount, 1u);
+    }
     writeProfilingTimestamp(TrainingGpuProfileStage::GaussianProjection, false);
     projectGaussians();
     writeProfilingTimestamp(TrainingGpuProfileStage::GaussianProjection, true);
@@ -176,13 +175,164 @@ void GaussianForwardRenderer::writeProfilingTimestamp(TrainingGpuProfileStage st
     }
 }
 
+void GaussianForwardRenderer::initializeTileVariant(TilePipelineVariant& variant,
+                                                    uint32_t tileSize) {
+    variant.tileSize = tileSize;
+    const bool tile8 = tileSize == kTrainingTileSize8;
+    variant.tileClearPipeline.initialize(
+        device_,
+        tile8 ? "shaders/train_forward_tile_clear_tile8.comp.spv"
+              : "shaders/train_forward_tile_clear.comp.spv",
+        pipelineConfig({storageBinding(5)}));
+    variant.tileCountPipeline.initialize(
+        device_,
+        tile8 ? "shaders/train_forward_tile_count_tile8.comp.spv"
+              : "shaders/train_forward_tile_count.comp.spv",
+        pipelineConfig({storageBinding(3), storageBinding(16), storageBinding(32)}));
+    variant.tileEmitPipeline.initialize(
+        device_,
+        tile8 ? "shaders/train_forward_tile_emit_tile8.comp.spv"
+              : "shaders/train_forward_tile_emit.comp.spv",
+        pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(20),
+                        storageBinding(21), storageBinding(22), storageBinding(32)}));
+    variant.tileRangeBoundariesPipeline.initialize(
+        device_,
+        tile8 ? "shaders/train_forward_tile_range_boundaries_tile8.comp.spv"
+              : "shaders/train_forward_tile_range_boundaries.comp.spv",
+        pipelineConfig({storageBinding(5), storageBinding(21), storageBinding(22)}));
+    variant.tileRangeBuildPipeline.initialize(
+        device_,
+        tile8 ? "shaders/train_forward_tile_sort_tile8.comp.spv"
+              : "shaders/train_forward_tile_sort.comp.spv",
+        pipelineConfig({storageBinding(5)}));
+    variant.forwardPipeline.initialize(
+        device_,
+        tile8 ? "shaders/train_forward_tile8.comp.spv"
+              : "shaders/train_forward.comp.spv",
+        pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5),
+                        storageBinding(6), storageBinding(14)}));
+    variant.forwardWorkgroupPipeline.initialize(
+        device_,
+        tile8 ? "shaders/train_forward_workgroup_tile8.comp.spv"
+              : "shaders/train_forward_workgroup.comp.spv",
+        pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5),
+                        storageBinding(6), storageBinding(14)}));
+}
+
+void GaussianForwardRenderer::cleanupTileVariant(TilePipelineVariant& variant) {
+    variant.forwardWorkgroupPipeline.cleanup();
+    variant.forwardPipeline.cleanup();
+    variant.tileRangeBuildPipeline.cleanup();
+    variant.tileRangeBoundariesPipeline.cleanup();
+    variant.tileEmitPipeline.cleanup();
+    variant.tileCountPipeline.cleanup();
+    variant.tileClearPipeline.cleanup();
+    variant.tileClearDescriptorSet = nullptr;
+    variant.tileCountDescriptorSet = nullptr;
+    variant.tileEmitDescriptorSet = nullptr;
+    variant.tileRangeBoundariesDescriptorSet = nullptr;
+    variant.tileRangeBuildDescriptorSet = nullptr;
+    variant.forwardDescriptorSet = nullptr;
+    variant.forwardWorkgroupDescriptorSet = nullptr;
+}
+
+void GaussianForwardRenderer::initializeAdaptivePipelines() {
+    adaptivePipelines_.countChildren.initialize(
+        device_, "shaders/train_forward_adaptive_child_count.comp.spv",
+        pipelineConfig({storageBinding(3), storageBinding(5), storageBinding(24),
+                        storageBinding(35), storageBinding(36)}));
+    adaptivePipelines_.prefixChildren.initialize(
+        device_, "shaders/train_forward_adaptive_child_prefix.comp.spv",
+        pipelineConfig({storageBinding(5), storageBinding(35), storageBinding(38),
+                        storageBinding(39)}));
+    adaptivePipelines_.prefixChildBlocks.initialize(
+        device_, "shaders/train_forward_adaptive_child_block_prefix.comp.spv",
+        pipelineConfig({storageBinding(9), storageBinding(39)}));
+    adaptivePipelines_.selectChildren.initialize(
+        device_, "shaders/train_forward_adaptive_child_select.comp.spv",
+        pipelineConfig({storageBinding(5), storageBinding(9), storageBinding(34),
+                        storageBinding(35), storageBinding(37), storageBinding(38),
+                        storageBinding(39), storageBinding(40)}));
+    adaptivePipelines_.dispatchChildren.initialize(
+        device_, "shaders/train_forward_adaptive_child_dispatch.comp.spv",
+        pipelineConfig({storageBinding(9), storageBinding(41)}));
+    adaptivePipelines_.scatterChildren.initialize(
+        device_, "shaders/train_forward_adaptive_child_scatter.comp.spv",
+        pipelineConfig({storageBinding(5), storageBinding(24), storageBinding(34),
+                        storageBinding(36), storageBinding(37)}));
+    adaptivePipelines_.buildParentBoundaries.initialize(
+        device_, "shaders/train_forward_adaptive_parent_range_boundaries.comp.spv",
+        pipelineConfig({storageBinding(5), storageBinding(21), storageBinding(22)}));
+    adaptivePipelines_.clearLeafRanges.initialize(
+        device_, "shaders/train_forward_tile_clear_adaptive.comp.spv",
+        pipelineConfig({storageBinding(5)}));
+    adaptivePipelines_.buildLeafRanges.initialize(
+        device_, "shaders/train_forward_tile_sort_adaptive.comp.spv",
+        pipelineConfig({storageBinding(5)}));
+    adaptivePipelines_.installChildRanges.initialize(
+        device_, "shaders/train_forward_adaptive_child_ranges.comp.spv",
+        pipelineConfig({storageBinding(5), storageBinding(34), storageBinding(35),
+                        storageBinding(37)}));
+    adaptivePipelines_.forwardDirect.initialize(
+        device_, "shaders/train_forward_adaptive.comp.spv",
+        pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6),
+                        storageBinding(14), storageBinding(34)}));
+    for (uint32_t index = 0u; index < adaptivePipelines_.forwardWorkgroup.size(); ++index) {
+        const uint32_t tileSize = index == 0u ? kTrainingTileSize8 : kTrainingTileSize16;
+        adaptivePipelines_.forwardWorkgroup[index].initialize(
+            device_, "shaders/train_forward_workgroup_adaptive_tile" +
+                         std::to_string(tileSize) + ".comp.spv",
+            pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5),
+                            storageBinding(6), storageBinding(14), storageBinding(34),
+                            storageBinding(40), storageBinding(41)}));
+    }
+}
+
+void GaussianForwardRenderer::cleanupAdaptivePipelines() {
+    for (uint32_t index = 0u; index < adaptivePipelines_.forwardWorkgroup.size(); ++index) {
+        adaptivePipelines_.forwardWorkgroup[index].cleanup();
+        adaptivePipelines_.forwardWorkgroupSets[index] = nullptr;
+    }
+    adaptivePipelines_.forwardDirect.cleanup();
+    adaptivePipelines_.installChildRanges.cleanup();
+    adaptivePipelines_.buildLeafRanges.cleanup();
+    adaptivePipelines_.clearLeafRanges.cleanup();
+    adaptivePipelines_.buildParentBoundaries.cleanup();
+    adaptivePipelines_.scatterChildren.cleanup();
+    adaptivePipelines_.selectChildren.cleanup();
+    adaptivePipelines_.dispatchChildren.cleanup();
+    adaptivePipelines_.prefixChildBlocks.cleanup();
+    adaptivePipelines_.prefixChildren.cleanup();
+    adaptivePipelines_.countChildren.cleanup();
+    adaptivePipelines_.countChildrenSet = nullptr;
+    adaptivePipelines_.prefixChildrenSet = nullptr;
+    adaptivePipelines_.prefixChildBlocksSet = nullptr;
+    adaptivePipelines_.selectChildrenSet = nullptr;
+    adaptivePipelines_.dispatchChildrenSet = nullptr;
+    adaptivePipelines_.scatterChildrenSet = nullptr;
+    adaptivePipelines_.buildParentBoundariesSet = nullptr;
+    adaptivePipelines_.clearLeafRangesSet = nullptr;
+    adaptivePipelines_.buildLeafRangesSet = nullptr;
+    adaptivePipelines_.installChildRangesSet = nullptr;
+    adaptivePipelines_.forwardDirectSet = nullptr;
+}
+
+GaussianForwardRenderer::TilePipelineVariant& GaussianForwardRenderer::activeTileVariant() {
+    return pushConstants_.tileSize == kTrainingTileSize8 ? tileVariants_[0] : tileVariants_[1];
+}
+
+const GaussianForwardRenderer::TilePipelineVariant&
+GaussianForwardRenderer::activeTileVariant() const {
+    return pushConstants_.tileSize == kTrainingTileSize8 ? tileVariants_[0]
+                                                         : tileVariants_[1];
+}
+
 void GaussianForwardRenderer::createForwardResources() {
     projectPipeline_.initialize(device_, "shaders/train_forward_project.comp.spv",
-                                 pipelineConfig({storageBinding(0), storageBinding(3), uniformBinding(11), storageBinding(16)}));
-    tileClearPipeline_.initialize(device_, "shaders/train_forward_tile_clear.comp.spv",
-                                  pipelineConfig({storageBinding(5)}));
-    tileCountPipeline_.initialize(device_, "shaders/train_forward_tile_count.comp.spv",
-                                  pipelineConfig({storageBinding(3), storageBinding(32)}));
+                                 pipelineConfig({storageBinding(0), storageBinding(3), uniformBinding(11)}));
+    initializeTileVariant(tileVariants_[0], kTrainingTileSize8);
+    initializeTileVariant(tileVariants_[1], kTrainingTileSize16);
+    initializeAdaptivePipelines();
     gaussianPrefixRangesPipeline_.initialize(
         device_, "shaders/train_forward_gaussian_prefix_ranges.comp.spv",
         prefixPipelineConfig({storageBinding(32), storageBinding(33)}));
@@ -198,23 +348,10 @@ void GaussianForwardRenderer::createForwardResources() {
     gaussianPrefixAddRangesPipeline_.initialize(
         device_, "shaders/train_forward_gaussian_prefix_add_ranges.comp.spv",
         prefixPipelineConfig({storageBinding(32), storageBinding(33)}));
-    tileEmitPipeline_.initialize(device_, "shaders/train_forward_tile_emit.comp.spv",
-                                 pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(20), storageBinding(21), storageBinding(22), storageBinding(32)}));
     tileGatherHighPipeline_.initialize(device_, "shaders/train_forward_tile_gather_high.comp.spv",
                                        pipelineConfig({storageBinding(21), storageBinding(22), storageBinding(23)}));
     tileGatherItemsPipeline_.initialize(device_, "shaders/train_forward_tile_gather_items.comp.spv",
                                         pipelineConfig({storageBinding(4), storageBinding(22), storageBinding(24)}));
-    tileRangeBoundariesPipeline_.initialize(
-        device_, "shaders/train_forward_tile_range_boundaries.comp.spv",
-        pipelineConfig({storageBinding(5), storageBinding(21), storageBinding(22)}));
-    tileRangeBuildPipeline_.initialize(device_, "shaders/train_forward_tile_sort.comp.spv",
-                                       pipelineConfig({storageBinding(5)}));
-    forwardPipeline_.initialize(device_, "shaders/train_forward.comp.spv",
-                                pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14)}));
-    forwardWorkgroupPipeline_.initialize(
-        device_,
-        "shaders/train_forward_workgroup.comp.spv",
-        pipelineConfig({storageBinding(3), storageBinding(4), storageBinding(5), storageBinding(6), storageBinding(14)}));
 
     VrdxSorterCreateInfo sorterInfo{};
     sorterInfo.physicalDevice = physicalDevice_;
@@ -224,33 +361,49 @@ void GaussianForwardRenderer::createForwardResources() {
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].setType(vk::DescriptorType::eStorageBuffer)
-                .setDescriptorCount(64);
+                .setDescriptorCount(224);
     poolSizes[1].setType(vk::DescriptorType::eUniformBuffer)
                 .setDescriptorCount(1);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
             .setPPoolSizes(poolSizes.data())
-            .setMaxSets(15);
+            .setMaxSets(35);
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
-    std::array<vk::DescriptorSetLayout, 15> layouts = {
-        projectPipeline_.getDescriptorSetLayout(),
-        tileClearPipeline_.getDescriptorSetLayout(),
-        tileCountPipeline_.getDescriptorSetLayout(),
-        gaussianPrefixRangesPipeline_.getDescriptorSetLayout(),
-        gaussianPrefixScratchPipeline_.getDescriptorSetLayout(),
-        gaussianPrefixTopPipeline_.getDescriptorSetLayout(),
-        gaussianPrefixAddScratchPipeline_.getDescriptorSetLayout(),
-        gaussianPrefixAddRangesPipeline_.getDescriptorSetLayout(),
-        tileEmitPipeline_.getDescriptorSetLayout(),
-        tileGatherHighPipeline_.getDescriptorSetLayout(),
-        tileGatherItemsPipeline_.getDescriptorSetLayout(),
-        tileRangeBoundariesPipeline_.getDescriptorSetLayout(),
-        tileRangeBuildPipeline_.getDescriptorSetLayout(),
-        forwardPipeline_.getDescriptorSetLayout(),
-        forwardWorkgroupPipeline_.getDescriptorSetLayout(),
-    };
+    std::vector<vk::DescriptorSetLayout> layouts;
+    layouts.reserve(35u);
+    layouts.push_back(projectPipeline_.getDescriptorSetLayout());
+    layouts.push_back(gaussianPrefixRangesPipeline_.getDescriptorSetLayout());
+    layouts.push_back(gaussianPrefixScratchPipeline_.getDescriptorSetLayout());
+    layouts.push_back(gaussianPrefixTopPipeline_.getDescriptorSetLayout());
+    layouts.push_back(gaussianPrefixAddScratchPipeline_.getDescriptorSetLayout());
+    layouts.push_back(gaussianPrefixAddRangesPipeline_.getDescriptorSetLayout());
+    layouts.push_back(tileGatherHighPipeline_.getDescriptorSetLayout());
+    layouts.push_back(tileGatherItemsPipeline_.getDescriptorSetLayout());
+    for (const TilePipelineVariant& variant : tileVariants_) {
+        layouts.push_back(variant.tileClearPipeline.getDescriptorSetLayout());
+        layouts.push_back(variant.tileCountPipeline.getDescriptorSetLayout());
+        layouts.push_back(variant.tileEmitPipeline.getDescriptorSetLayout());
+        layouts.push_back(variant.tileRangeBoundariesPipeline.getDescriptorSetLayout());
+        layouts.push_back(variant.tileRangeBuildPipeline.getDescriptorSetLayout());
+        layouts.push_back(variant.forwardPipeline.getDescriptorSetLayout());
+        layouts.push_back(variant.forwardWorkgroupPipeline.getDescriptorSetLayout());
+    }
+    layouts.push_back(adaptivePipelines_.countChildren.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.prefixChildren.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.prefixChildBlocks.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.selectChildren.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.dispatchChildren.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.scatterChildren.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.buildParentBoundaries.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.clearLeafRanges.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.buildLeafRanges.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.installChildRanges.getDescriptorSetLayout());
+    layouts.push_back(adaptivePipelines_.forwardDirect.getDescriptorSetLayout());
+    for (const ComputePipeline& pipeline : adaptivePipelines_.forwardWorkgroup) {
+        layouts.push_back(pipeline.getDescriptorSetLayout());
+    }
 
     vk::DescriptorSetAllocateInfo allocInfo{};
     allocInfo.setDescriptorPool(descriptorPool_)
@@ -258,21 +411,38 @@ void GaussianForwardRenderer::createForwardResources() {
              .setPSetLayouts(layouts.data());
 
     std::vector<vk::DescriptorSet> sets = device_.allocateDescriptorSets(allocInfo);
-    projectDescriptorSet_ = sets[0];
-    tileClearDescriptorSet_ = sets[1];
-    tileCountDescriptorSet_ = sets[2];
-    gaussianPrefixRangesDescriptorSet_ = sets[3];
-    gaussianPrefixScratchDescriptorSet_ = sets[4];
-    gaussianPrefixTopDescriptorSet_ = sets[5];
-    gaussianPrefixAddScratchDescriptorSet_ = sets[6];
-    gaussianPrefixAddRangesDescriptorSet_ = sets[7];
-    tileEmitDescriptorSet_ = sets[8];
-    tileGatherHighDescriptorSet_ = sets[9];
-    tileGatherItemsDescriptorSet_ = sets[10];
-    tileRangeBoundariesDescriptorSet_ = sets[11];
-    tileRangeBuildDescriptorSet_ = sets[12];
-    forwardDescriptorSet_ = sets[13];
-    forwardWorkgroupDescriptorSet_ = sets[14];
+    size_t setIndex = 0u;
+    projectDescriptorSet_ = sets[setIndex++];
+    gaussianPrefixRangesDescriptorSet_ = sets[setIndex++];
+    gaussianPrefixScratchDescriptorSet_ = sets[setIndex++];
+    gaussianPrefixTopDescriptorSet_ = sets[setIndex++];
+    gaussianPrefixAddScratchDescriptorSet_ = sets[setIndex++];
+    gaussianPrefixAddRangesDescriptorSet_ = sets[setIndex++];
+    tileGatherHighDescriptorSet_ = sets[setIndex++];
+    tileGatherItemsDescriptorSet_ = sets[setIndex++];
+    for (TilePipelineVariant& variant : tileVariants_) {
+        variant.tileClearDescriptorSet = sets[setIndex++];
+        variant.tileCountDescriptorSet = sets[setIndex++];
+        variant.tileEmitDescriptorSet = sets[setIndex++];
+        variant.tileRangeBoundariesDescriptorSet = sets[setIndex++];
+        variant.tileRangeBuildDescriptorSet = sets[setIndex++];
+        variant.forwardDescriptorSet = sets[setIndex++];
+        variant.forwardWorkgroupDescriptorSet = sets[setIndex++];
+    }
+    adaptivePipelines_.countChildrenSet = sets[setIndex++];
+    adaptivePipelines_.prefixChildrenSet = sets[setIndex++];
+    adaptivePipelines_.prefixChildBlocksSet = sets[setIndex++];
+    adaptivePipelines_.selectChildrenSet = sets[setIndex++];
+    adaptivePipelines_.dispatchChildrenSet = sets[setIndex++];
+    adaptivePipelines_.scatterChildrenSet = sets[setIndex++];
+    adaptivePipelines_.buildParentBoundariesSet = sets[setIndex++];
+    adaptivePipelines_.clearLeafRangesSet = sets[setIndex++];
+    adaptivePipelines_.buildLeafRangesSet = sets[setIndex++];
+    adaptivePipelines_.installChildRangesSet = sets[setIndex++];
+    adaptivePipelines_.forwardDirectSet = sets[setIndex++];
+    for (vk::DescriptorSet& descriptorSet : adaptivePipelines_.forwardWorkgroupSets) {
+        descriptorSet = sets[setIndex++];
+    }
 }
 
 void GaussianForwardRenderer::destroyForwardResources() {
@@ -280,20 +450,22 @@ void GaussianForwardRenderer::destroyForwardResources() {
         device_.destroyDescriptorPool(descriptorPool_);
         descriptorPool_ = nullptr;
         projectDescriptorSet_ = nullptr;
-        tileClearDescriptorSet_ = nullptr;
-        tileCountDescriptorSet_ = nullptr;
         gaussianPrefixRangesDescriptorSet_ = nullptr;
         gaussianPrefixScratchDescriptorSet_ = nullptr;
         gaussianPrefixTopDescriptorSet_ = nullptr;
         gaussianPrefixAddScratchDescriptorSet_ = nullptr;
         gaussianPrefixAddRangesDescriptorSet_ = nullptr;
-        tileEmitDescriptorSet_ = nullptr;
         tileGatherHighDescriptorSet_ = nullptr;
         tileGatherItemsDescriptorSet_ = nullptr;
-        tileRangeBoundariesDescriptorSet_ = nullptr;
-        tileRangeBuildDescriptorSet_ = nullptr;
-        forwardDescriptorSet_ = nullptr;
-        forwardWorkgroupDescriptorSet_ = nullptr;
+        for (TilePipelineVariant& variant : tileVariants_) {
+            variant.tileClearDescriptorSet = nullptr;
+            variant.tileCountDescriptorSet = nullptr;
+            variant.tileEmitDescriptorSet = nullptr;
+            variant.tileRangeBoundariesDescriptorSet = nullptr;
+            variant.tileRangeBuildDescriptorSet = nullptr;
+            variant.forwardDescriptorSet = nullptr;
+            variant.forwardWorkgroupDescriptorSet = nullptr;
+        }
     }
 
     if (radixSorter_) {
@@ -301,42 +473,54 @@ void GaussianForwardRenderer::destroyForwardResources() {
         radixSorter_ = VK_NULL_HANDLE;
     }
 
-    forwardWorkgroupPipeline_.cleanup();
-    forwardPipeline_.cleanup();
-    tileRangeBuildPipeline_.cleanup();
-    tileRangeBoundariesPipeline_.cleanup();
+    for (TilePipelineVariant& variant : tileVariants_) {
+        cleanupTileVariant(variant);
+    }
+    cleanupAdaptivePipelines();
     tileGatherItemsPipeline_.cleanup();
     tileGatherHighPipeline_.cleanup();
-    tileEmitPipeline_.cleanup();
     gaussianPrefixAddRangesPipeline_.cleanup();
     gaussianPrefixAddScratchPipeline_.cleanup();
     gaussianPrefixTopPipeline_.cleanup();
     gaussianPrefixScratchPipeline_.cleanup();
     gaussianPrefixRangesPipeline_.cleanup();
-    tileCountPipeline_.cleanup();
-    tileClearPipeline_.cleanup();
     projectPipeline_.cleanup();
 }
 
 void GaussianForwardRenderer::projectGaussians() {
-    updateDescriptorSet(projectDescriptorSet_, {0, 3, 11, 16});
+    updateDescriptorSet(projectDescriptorSet_, {0, 3, 11});
     bindAndDispatch(projectPipeline_, projectDescriptorSet_, ceilDiv(pushConstants_.gaussianCount, 256u));
-    shaderBufferBarrier({trainingBuffers_->projectedInfo(),
-                         trainingBuffers_->densificationStatesInfo()},
+    shaderBufferBarrier({trainingBuffers_->projectedInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
 void GaussianForwardRenderer::clearTileRanges() {
-    updateDescriptorSet(tileClearDescriptorSet_, {5});
-    bindAndDispatch(tileClearPipeline_, tileClearDescriptorSet_, ceilDiv(tileCount(extent_), 256u));
+    if (pushConstants_.tileSize == 32u) {
+        const uint32_t rangeCapacity = trainingAdaptiveRangeCapacity(extent_);
+        updateDescriptorSet(adaptivePipelines_.clearLeafRangesSet, {5});
+        bindAndDispatch(adaptivePipelines_.clearLeafRanges,
+                        adaptivePipelines_.clearLeafRangesSet,
+                        ceilDiv(rangeCapacity, 256u));
+        shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
+                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+        return;
+    }
+    TilePipelineVariant& variant = activeTileVariant();
+    const TrainingTileLayout layout = makeTrainingTileLayout(extent_, variant.tileSize);
+    updateDescriptorSet(variant.tileClearDescriptorSet, {5});
+    bindAndDispatch(variant.tileClearPipeline, variant.tileClearDescriptorSet,
+                    ceilDiv(layout.tileCount, 256u));
     shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
 void GaussianForwardRenderer::countTileCoverage() {
-    updateDescriptorSet(tileCountDescriptorSet_, {3, 32});
-    bindAndDispatch(tileCountPipeline_, tileCountDescriptorSet_, ceilDiv(pushConstants_.gaussianCount, 256u));
-    shaderBufferBarrier({trainingBuffers_->gaussianTileRangesInfo()},
+    TilePipelineVariant& variant = activeTileVariant();
+    updateDescriptorSet(variant.tileCountDescriptorSet, {3, 16, 32});
+    bindAndDispatch(variant.tileCountPipeline, variant.tileCountDescriptorSet,
+                    ceilDiv(pushConstants_.gaussianCount, 256u));
+    shaderBufferBarrier({trainingBuffers_->gaussianTileRangesInfo(),
+                         trainingBuffers_->densificationStatesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 }
 
@@ -431,8 +615,10 @@ void GaussianForwardRenderer::prefixGaussianTileRanges() {
 }
 
 void GaussianForwardRenderer::emitTileItems() {
-    updateDescriptorSet(tileEmitDescriptorSet_, {3, 4, 20, 21, 22, 32});
-    bindAndDispatch(tileEmitPipeline_, tileEmitDescriptorSet_, ceilDiv(pushConstants_.gaussianCount, 256u));
+    TilePipelineVariant& variant = activeTileVariant();
+    updateDescriptorSet(variant.tileEmitDescriptorSet, {3, 4, 20, 21, 22, 32});
+    bindAndDispatch(variant.tileEmitPipeline, variant.tileEmitDescriptorSet,
+                    ceilDiv(pushConstants_.gaussianCount, 256u));
     shaderBufferBarrier({trainingBuffers_->tileItemsUnsortedInfo(),
                          trainingBuffers_->tileKeyLowInfo(),
                          trainingBuffers_->tileKeyHighInfo(),
@@ -503,17 +689,110 @@ void GaussianForwardRenderer::gatherSortedTileItems(uint32_t tileItemCount) {
 }
 
 void GaussianForwardRenderer::rebuildTileRanges(uint32_t tileItemCount) {
-    updateDescriptorSet(tileRangeBoundariesDescriptorSet_, {5, 21, 22});
-    bindAndDispatch(tileRangeBoundariesPipeline_,
-                    tileRangeBoundariesDescriptorSet_,
+    if (pushConstants_.tileSize == 32u) {
+        updateDescriptorSet(adaptivePipelines_.buildParentBoundariesSet, {5, 21, 22});
+        bindAndDispatch(adaptivePipelines_.buildParentBoundaries,
+                        adaptivePipelines_.buildParentBoundariesSet,
+                        ceilDiv(tileItemCount + 1u, 256u));
+        shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
+                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+
+        const uint32_t rangeCapacity = trainingAdaptiveRangeCapacity(extent_);
+        updateDescriptorSet(adaptivePipelines_.buildLeafRangesSet, {5});
+        bindAndDispatch(adaptivePipelines_.buildLeafRanges,
+                        adaptivePipelines_.buildLeafRangesSet,
+                        ceilDiv(rangeCapacity, 256u));
+        shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
+                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+        buildAdaptiveChildRanges();
+        return;
+    }
+
+    TilePipelineVariant& variant = activeTileVariant();
+    const TrainingTileLayout layout = makeTrainingTileLayout(extent_, variant.tileSize);
+    updateDescriptorSet(variant.tileRangeBoundariesDescriptorSet, {5, 21, 22});
+    bindAndDispatch(variant.tileRangeBoundariesPipeline,
+                    variant.tileRangeBoundariesDescriptorSet,
                     ceilDiv(tileItemCount + 1u, 256u));
     shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 
-    updateDescriptorSet(tileRangeBuildDescriptorSet_, {5});
-    bindAndDispatch(tileRangeBuildPipeline_, tileRangeBuildDescriptorSet_, ceilDiv(tileCount(extent_), 256u));
+    updateDescriptorSet(variant.tileRangeBuildDescriptorSet, {5});
+    bindAndDispatch(variant.tileRangeBuildPipeline, variant.tileRangeBuildDescriptorSet,
+                    ceilDiv(layout.tileCount, 256u));
     shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+
+}
+
+void GaussianForwardRenderer::buildAdaptiveChildRanges() {
+    const TrainingTileLayout parentLayout = makeTrainingTileLayout(extent_, kTrainingTileSize16);
+    const uint32_t parentItemCount = pushConstants_.tileItemCount;
+
+    // Only child counting needs the configured coarse threshold. The other
+    // passes use tileItemCount as the sorted parent-list length and append base.
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildCount, false);
+    pushConstants_.tileItemCount = adaptiveSplitThreshold_;
+    updateDescriptorSet(adaptivePipelines_.countChildrenSet, {3, 5, 24, 35, 36});
+    bindAndDispatch(adaptivePipelines_.countChildren, adaptivePipelines_.countChildrenSet,
+                    parentLayout.tileCountX, parentLayout.tileCountY);
+    pushConstants_.tileItemCount = parentItemCount;
+    shaderBufferBarrier(
+        {trainingBuffers_->adaptiveChildCountsInfo(), trainingBuffers_->adaptiveChildMasksInfo()},
+        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildCount, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildSelect, false);
+    const uint32_t parentCount = parentLayout.tileCount;
+    const uint32_t blockCount = (parentCount + 255u) / 256u;
+    updateDescriptorSet(adaptivePipelines_.prefixChildrenSet, {5, 35, 38, 39});
+    bindAndDispatch(adaptivePipelines_.prefixChildren,
+                    adaptivePipelines_.prefixChildrenSet, blockCount);
+    shaderBufferBarrier({trainingBuffers_->adaptiveChildPrefixInfo(),
+                         trainingBuffers_->adaptiveChildBlockSumsInfo()},
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+
+    updateDescriptorSet(adaptivePipelines_.prefixChildBlocksSet, {9, 39});
+    bindAndDispatch(adaptivePipelines_.prefixChildBlocks,
+                    adaptivePipelines_.prefixChildBlocksSet, 1u);
+    shaderBufferBarrier({trainingBuffers_->adaptiveChildBlockSumsInfo(),
+                         trainingBuffers_->countersInfo()},
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+
+    updateDescriptorSet(adaptivePipelines_.selectChildrenSet,
+                        {5, 9, 34, 35, 37, 38, 39, 40});
+    bindAndDispatch(adaptivePipelines_.selectChildren,
+                    adaptivePipelines_.selectChildrenSet,
+                    ceilDiv(parentCount, 256u));
+    shaderBufferBarrier({trainingBuffers_->adaptiveTileSplitFlagsInfo(),
+                         trainingBuffers_->adaptiveChildOffsetsInfo(),
+                         trainingBuffers_->adaptiveActiveParentsInfo(),
+                         trainingBuffers_->countersInfo()},
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
+                            vk::AccessFlagBits::eTransferRead);
+    updateDescriptorSet(adaptivePipelines_.dispatchChildrenSet, {9, 41});
+    bindAndDispatch(adaptivePipelines_.dispatchChildren,
+                    adaptivePipelines_.dispatchChildrenSet, 1u);
+    shaderBufferBarrier({trainingBuffers_->adaptiveChildDispatchInfo()},
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eIndirectCommandRead);
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildSelect, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildScatter, false);
+    updateDescriptorSet(adaptivePipelines_.scatterChildrenSet, {5, 24, 34, 36, 37});
+    bindAndDispatch(adaptivePipelines_.scatterChildren, adaptivePipelines_.scatterChildrenSet,
+                    parentLayout.tileCountX, parentLayout.tileCountY);
+    shaderBufferBarrier({trainingBuffers_->tileItemsInfo()},
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildScatter, true);
+
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildRangeInstall, false);
+    updateDescriptorSet(adaptivePipelines_.installChildRangesSet, {5, 34, 35, 37});
+    bindAndDispatch(adaptivePipelines_.installChildRanges,
+                    adaptivePipelines_.installChildRangesSet,
+                    ceilDiv(parentLayout.tileCount, 256u));
+    shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
+                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    writeProfilingTimestamp(TrainingGpuProfileStage::AdaptiveChildRangeInstall, true);
 }
 
 void GaussianForwardRenderer::ensureTileSortResources(uint32_t tileItemCount) {
@@ -532,14 +811,45 @@ void GaussianForwardRenderer::ensureTileSortResources(uint32_t tileItemCount) {
 }
 
 void GaussianForwardRenderer::compositePixels() {
+    if (pushConstants_.tileSize == 32u) {
+        if (compositeMode_ == TrainingForwardCompositeMode::WorkgroupShared) {
+            for (uint32_t index : {1u, 0u}) {
+                const uint32_t tileSize = index == 0u ? kTrainingTileSize8 : kTrainingTileSize16;
+                const vk::DescriptorSet descriptorSet =
+                    adaptivePipelines_.forwardWorkgroupSets[index];
+                updateDescriptorSet(descriptorSet, {3, 4, 5, 6, 14, 34, 40, 41});
+                if (tileSize == kTrainingTileSize8) {
+                    bindAndDispatchChildren(adaptivePipelines_.forwardWorkgroup[index], descriptorSet);
+                } else {
+                    bindAndDispatch(adaptivePipelines_.forwardWorkgroup[index], descriptorSet,
+                                    ceilDiv(extent_.width, tileSize),
+                                    ceilDiv(extent_.height, tileSize));
+                }
+            }
+        } else {
+            updateDescriptorSet(adaptivePipelines_.forwardDirectSet, {3, 4, 5, 6, 14, 34});
+            bindAndDispatch(adaptivePipelines_.forwardDirect,
+                            adaptivePipelines_.forwardDirectSet,
+                            ceilDiv(extent_.width, kTrainingTileSize16),
+                            ceilDiv(extent_.height, kTrainingTileSize16));
+        }
+        shaderBufferBarrier({trainingBuffers_->renderedColorInfo(),
+                             trainingBuffers_->pixelBlendStatesInfo()},
+                            vk::AccessFlagBits::eShaderRead |
+                                vk::AccessFlagBits::eShaderWrite);
+        return;
+    }
+    TilePipelineVariant& variant = activeTileVariant();
     ComputePipeline& pipeline = compositeMode_ == TrainingForwardCompositeMode::WorkgroupShared
-        ? forwardWorkgroupPipeline_
-        : forwardPipeline_;
+        ? variant.forwardWorkgroupPipeline
+        : variant.forwardPipeline;
     vk::DescriptorSet descriptorSet = compositeMode_ == TrainingForwardCompositeMode::WorkgroupShared
-        ? forwardWorkgroupDescriptorSet_
-        : forwardDescriptorSet_;
+        ? variant.forwardWorkgroupDescriptorSet
+        : variant.forwardDescriptorSet;
     updateDescriptorSet(descriptorSet, {3, 4, 5, 6, 14});
-    bindAndDispatch(pipeline, descriptorSet, ceilDiv(extent_.width, 16u), ceilDiv(extent_.height, 16u));
+    bindAndDispatch(pipeline, descriptorSet,
+                    ceilDiv(extent_.width, variant.tileSize),
+                    ceilDiv(extent_.height, variant.tileSize));
     shaderBufferBarrier({trainingBuffers_->renderedColorInfo(),
                          trainingBuffers_->pixelBlendStatesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
@@ -568,6 +878,16 @@ void GaussianForwardRenderer::bindAndDispatch(ComputePipeline& pipeline,
                                  sizeof(TrainingPushConstants),
                                  &pushConstants_);
     commandBuffer_.dispatch(groupCountX, groupCountY, groupCountZ);
+}
+
+void GaussianForwardRenderer::bindAndDispatchChildren(ComputePipeline& pipeline,
+                                                       vk::DescriptorSet descriptorSet) {
+    commandBuffer_.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.getPipeline());
+    commandBuffer_.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                                      pipeline.getPipelineLayout(), 0, descriptorSet, {});
+    commandBuffer_.pushConstants(pipeline.getPipelineLayout(), vk::ShaderStageFlagBits::eCompute,
+                                 0, sizeof(TrainingPushConstants), &pushConstants_);
+    commandBuffer_.dispatchIndirect(trainingBuffers_->adaptiveChildDispatchBuffer(), 0u);
 }
 
 void GaussianForwardRenderer::bindAndDispatchPrefix(
@@ -621,6 +941,9 @@ void GaussianForwardRenderer::shaderBufferBarrier(std::initializer_list<vk::Desc
     if (dstAccessMask & (vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite)) {
         dstStages |= vk::PipelineStageFlagBits::eTransfer;
     }
+    if (dstAccessMask & vk::AccessFlagBits::eIndirectCommandRead) {
+        dstStages |= vk::PipelineStageFlagBits::eDrawIndirect;
+    }
 
     commandBuffer_.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
                                    dstStages,
@@ -653,8 +976,12 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     auto gaussianParamsInfo = trainingBuffers_->gaussianParamsInfo();
     auto gaussianGradsInfo = trainingBuffers_->gaussianGradsInfo();
     auto projectedInfo = trainingBuffers_->projectedInfo();
-    auto tileItemsInfo = (descriptorSet == tileEmitDescriptorSet_ ||
-                          descriptorSet == tileGatherItemsDescriptorSet_)
+    const bool tileEmitSet = std::any_of(
+        tileVariants_.begin(), tileVariants_.end(),
+        [descriptorSet](const TilePipelineVariant& variant) {
+            return descriptorSet == variant.tileEmitDescriptorSet;
+        });
+    auto tileItemsInfo = (tileEmitSet || descriptorSet == tileGatherItemsDescriptorSet_)
         ? trainingBuffers_->tileItemsUnsortedInfo()
         : trainingBuffers_->tileItemsInfo();
     auto tileRangesInfo = trainingBuffers_->tileRangesInfo();
@@ -665,7 +992,7 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
     auto densificationStatesInfo = trainingBuffers_->densificationStatesInfo();
 
-    std::array<vk::DescriptorBufferInfo, 34> infos{};
+    std::array<vk::DescriptorBufferInfo, 42> infos{};
     infos[0] = gaussianParamsInfo;
     infos[1] = gaussianGradsInfo;
     infos[3] = projectedInfo;
@@ -684,6 +1011,14 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     infos[24] = trainingBuffers_->tileItemsSortedInfo();
     infos[32] = trainingBuffers_->gaussianTileRangesInfo();
     infos[33] = trainingBuffers_->gaussianTilePrefixScratchInfo();
+    infos[34] = trainingBuffers_->adaptiveTileSplitFlagsInfo();
+    infos[35] = trainingBuffers_->adaptiveChildCountsInfo();
+    infos[36] = trainingBuffers_->adaptiveChildMasksInfo();
+    infos[37] = trainingBuffers_->adaptiveChildOffsetsInfo();
+    infos[38] = trainingBuffers_->adaptiveChildPrefixInfo();
+    infos[39] = trainingBuffers_->adaptiveChildBlockSumsInfo();
+    infos[40] = trainingBuffers_->adaptiveActiveParentsInfo();
+    infos[41] = trainingBuffers_->adaptiveChildDispatchInfo();
 
     std::array<vk::WriteDescriptorSet, 20> writes{};
     uint32_t writeCount = 0;
@@ -691,12 +1026,13 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
         if (!infos[binding].buffer) {
             continue;
         }
-        writes[writeCount].setDstSet(descriptorSet)
-                          .setDstBinding(binding)
-                          .setDescriptorCount(1)
-                          .setDescriptorType(binding == 11 ? vk::DescriptorType::eUniformBuffer
-                                                           : vk::DescriptorType::eStorageBuffer)
-                          .setPBufferInfo(&infos[binding]);
+        writes[writeCount]
+            .setDstSet(descriptorSet)
+            .setDstBinding(binding)
+            .setDescriptorCount(1)
+            .setDescriptorType(binding == 11 ? vk::DescriptorType::eUniformBuffer
+                                             : vk::DescriptorType::eStorageBuffer)
+            .setPBufferInfo(&infos[binding]);
         ++writeCount;
     }
 

@@ -23,8 +23,76 @@ struct TileScanRange {
     uint maximumExclusive;
 };
 
+uint trainAdaptiveChildItemCount(uint4 childCounts) {
+    return childCounts.x + childCounts.y + childCounts.z + childCounts.w;
+}
+
+bool trainAdaptiveRefinementIsProfitable(uint parentItemCount, uint4 childCounts) {
+    uint childItemCount = trainAdaptiveChildItemCount(childCounts);
+    float coarseWork = 256.0 * float(parentItemCount);
+    float refinedWork = 64.0 * float(childItemCount);
+    float childWriteCost = 64.0 * float(childItemCount);
+    return childItemCount > 0u &&
+           coarseWork > refinedWork + childWriteCost + 4096.0;
+}
+
 uint trainTileCountY() {
     return (params.height + TRAIN_TILE_SIZE - 1) / TRAIN_TILE_SIZE;
+}
+
+bool trainGaussianIntersectsPixelRect(ProjectedGaussian gaussian,
+                                     uint2 origin,
+                                     uint tileSize) {
+    if (!(gaussian.conicOpacity.w >= TRAIN_ALPHA_MIN) ||
+        !(gaussian.centerRadius.w > 0.0) ||
+        !all(isfinite(gaussian.centerRadius.xy)) ||
+        !isfinite(gaussian.centerRadius.w)) {
+        return false;
+    }
+
+    uint2 end = min(origin + tileSize, uint2(params.width, params.height));
+    if (any(end <= origin)) {
+        return false;
+    }
+
+    float2 minimum = float2(origin) - gaussian.centerRadius.xy;
+    float2 maximum = float2(end - 1u) - gaussian.centerRadius.xy;
+    float a = gaussian.conicOpacity.x;
+    float b = gaussian.conicOpacity.y;
+    float c = gaussian.conicOpacity.z;
+    float determinant = a * c - b * b;
+    if (!all(isfinite(gaussian.conicOpacity.xyz)) ||
+        !(a > 0.0) || !(c > 0.0) || !(determinant > 0.0)) {
+        float radius = gaussian.centerRadius.w;
+        return maximum.x >= -radius && minimum.x <= radius &&
+               maximum.y >= -radius && minimum.y <= radius;
+    }
+
+    float minimumX = clamp(0.0, minimum.x, maximum.x);
+    float minimumY = clamp(0.0, minimum.y, maximum.y);
+    float minimumQuadratic = a * minimumX * minimumX +
+        2.0 * b * minimumX * minimumY + c * minimumY * minimumY;
+
+    minimumY = clamp(-b * minimum.x / c, minimum.y, maximum.y);
+    minimumQuadratic = min(minimumQuadratic,
+        a * minimum.x * minimum.x + 2.0 * b * minimum.x * minimumY +
+        c * minimumY * minimumY);
+    minimumY = clamp(-b * maximum.x / c, minimum.y, maximum.y);
+    minimumQuadratic = min(minimumQuadratic,
+        a * maximum.x * maximum.x + 2.0 * b * maximum.x * minimumY +
+        c * minimumY * minimumY);
+    minimumX = clamp(-b * minimum.y / a, minimum.x, maximum.x);
+    minimumQuadratic = min(minimumQuadratic,
+        a * minimumX * minimumX + 2.0 * b * minimumX * minimum.y +
+        c * minimum.y * minimum.y);
+    minimumX = clamp(-b * maximum.y / a, minimum.x, maximum.x);
+    minimumQuadratic = min(minimumQuadratic,
+        a * minimumX * minimumX + 2.0 * b * minimumX * maximum.y +
+        c * maximum.y * maximum.y);
+
+    float supportQuadratic = 2.0 * log(gaussian.conicOpacity.w / TRAIN_ALPHA_MIN);
+    float tolerance = 1e-5 * max(1.0, abs(supportQuadratic));
+    return minimumQuadratic <= supportQuadratic + tolerance;
 }
 
 uint trainTileCount() {

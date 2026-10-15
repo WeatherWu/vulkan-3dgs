@@ -29,8 +29,8 @@ struct TrainingPushConstants {
     uint validationUsesDensifiedGaussians;
     float pixelTo2DGSMinSubgroupUtilization;
     uint clearGaussianGrads;
-    uint padding1;
-    uint padding2;
+    uint densificationGradientMode;
+    uint tileSize;
 };
 
 struct TrainingPixelValidationPartial {

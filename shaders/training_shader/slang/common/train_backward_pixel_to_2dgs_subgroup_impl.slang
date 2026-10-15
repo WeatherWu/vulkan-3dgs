@@ -94,7 +94,7 @@ void backpropPixelTo2DGSDirect(uint processedCount,
 }
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(TRAIN_TILE_SIZE, TRAIN_TILE_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint2 pixel = dispatchThreadID.xy;
     bool validPixel = pixel.x < params.width && pixel.y < params.height;

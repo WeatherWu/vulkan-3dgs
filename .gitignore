@@ -4,11 +4,13 @@
 /vcpkg_installed
 /.**
 /tools
+/nsight**
 !/.clang-format
 !/.clang-tidy
 !/.gitattributes
 !/.gitmodules
 !/.gitignore
+**.pdf
 
 # Ignore all spv folders under any shaders directory
 **/shaders/**/spv/
@@ -17,5 +19,11 @@
 
 *.ply
 *.obj
+benchmark_gradients/
+benchmark_tiles/
+/scripts
 
 /docs/training-flow.dot
+
+plan.md
+analysis.json

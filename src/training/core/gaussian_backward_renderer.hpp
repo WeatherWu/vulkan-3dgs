@@ -25,6 +25,33 @@ public:
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
         pixelDispatcher_.setRequestedMode(mode);
     }
+    void setAdaptiveSpatialTiles(bool enabled) {
+        pixelDispatcher_.setAdaptiveSpatialTiles(enabled);
+    }
+    void setAdaptiveTensorChildBatch(uint32_t batch) {
+        pixelDispatcher_.setAdaptiveTensorChildBatch(batch);
+    }
+    void setTensorSubgroupReduction(bool enabled) {
+        pixelDispatcher_.setTensorSubgroupReduction(enabled);
+    }
+    void setTensorGlobalPixelGrad(bool enabled) {
+        pixelDispatcher_.setTensorGlobalPixelGrad(enabled);
+    }
+    void setTensorRgbLatencyHiding(bool enabled) {
+        pixelDispatcher_.setTensorRgbLatencyHiding(enabled);
+    }
+    [[nodiscard]] bool tensorRgbLatencyHidingActive(uint32_t tileSize) const {
+        return pixelDispatcher_.tensorRgbLatencyHidingActive(tileSize);
+    }
+    [[nodiscard]] bool tensorGlobalPixelGradActive(uint32_t tileSize) const {
+        return pixelDispatcher_.tensorGlobalPixelGradActive(tileSize);
+    }
+    [[nodiscard]] bool tensorSubgroupReductionSupported() const {
+        return supportsTensorSubgroupReduction(pixelDispatcher_.capabilities());
+    }
+    [[nodiscard]] bool tensorSubgroupReductionActive(uint32_t tileSize) const {
+        return pixelDispatcher_.tensorSubgroupReductionActive(tileSize);
+    }
     [[nodiscard]] bool subgroupPixelTo2DGSSupported() const {
         return pixelDispatcher_.capabilities().subgroup;
     }
@@ -39,6 +66,9 @@ public:
     }
     [[nodiscard]] TrainingPixelTo2DGSMode activePixelTo2DGSMode() const {
         return pixelDispatcher_.activeMode();
+    }
+    [[nodiscard]] bool adaptiveSpatialModeSupported() const {
+        return pixelDispatcher_.adaptiveSpatialModeSupported();
     }
     void backward() override;
     void gradientDescent() override;

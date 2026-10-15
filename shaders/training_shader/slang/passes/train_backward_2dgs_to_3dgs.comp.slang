@@ -15,6 +15,9 @@ StructuredBuffer<ProjectedGaussianGrad> projectedGrads;
 [[vk::binding(16, 0)]]
 RWStructuredBuffer<GaussianDensificationState> densificationStates;
 
+[[vk::binding(32, 0)]]
+StructuredBuffer<uint2> gaussianTileRanges;
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
@@ -35,7 +38,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         gaussian,
         projectedGrads[gaussianIndex],
         grad,
-        densification);
+        densification,
+        gaussianTileRanges[gaussianIndex].y > 0u);
     gaussianGrads[gaussianIndex] = grad;
     densificationStates[gaussianIndex] = densification;
 }

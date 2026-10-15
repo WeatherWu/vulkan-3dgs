@@ -19,7 +19,7 @@ RWStructuredBuffer<ProjectedGaussianGrad> projectedGrads;
 StructuredBuffer<PixelBlendState> pixelBlendStates;
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(TRAIN_TILE_SIZE, TRAIN_TILE_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint2 pixel = dispatchThreadID.xy;
     if (pixel.x >= params.width || pixel.y >= params.height) {

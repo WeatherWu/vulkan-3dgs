@@ -394,7 +394,8 @@ void accumulateProjectedGradientToGaussian(
     GaussianTrainParam gaussian,
     ProjectedGaussianGrad projectedGrad,
     inout GaussianGrad grad,
-    inout GaussianDensificationState densification) {
+    inout GaussianDensificationState densification,
+    bool recordDensificationStats) {
     ProjectionLocalState projectionState = trainBuildProjectionLocalState(gaussian);
     float2 dLoss_dCenter = projectedGrad.centerRadius.xy;
     grad.positionOpacity.xyz += backwardPixelCenterToPosition(
@@ -420,8 +421,12 @@ void accumulateProjectedGradientToGaussian(
         gaussian, projectedGrad.color.xyz);
     backwardProjectedColorToSH(grad, gaussian, projectedGrad.color.xyz);
 
-    float2 densificationGrad = dLoss_dCenter *
-        (0.5 * max(trainingCamera.viewport.zw, float2(1.0)));
-    densification.screenGradSum += length(densificationGrad);
-    densification.screenGradCount += 1u;
+    if (recordDensificationStats) {
+        float2 densificationGrad = dLoss_dCenter *
+            (0.5 * max(trainingCamera.viewport.zw, float2(1.0)));
+        densification.screenGradSum += length(densificationGrad);
+    }
+    if (recordDensificationStats || params.densificationGradientMode == 1u) {
+        densification.screenGradCount += 1u;
+    }
 }

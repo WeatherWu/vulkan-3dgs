@@ -54,6 +54,9 @@ target_link_libraries(training_image_runtime_tests PRIVATE vulkan_3dgs_core)
 configure_vulkan_3dgs_test(training_image_runtime_tests)
 
 add_executable(training_math_tests training_math_tests.cpp)
+target_include_directories(training_math_tests PRIVATE ../src)
+find_package(glm CONFIG REQUIRED)
+target_link_libraries(training_math_tests PRIVATE glm::glm)
 configure_vulkan_3dgs_test(training_math_tests)
 
 add_executable(backward_dispatch_policy_tests backward_dispatch_policy_tests.cpp)

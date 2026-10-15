@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <optional>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -25,15 +26,27 @@ public:
     void adoptDensifiedGaussians(uint32_t gaussianCount);
     void uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount);
     std::vector<GaussianTrainParam> downloadGaussianParams(uint32_t gaussianCount);
+    std::vector<ProjectedGaussianGrad> downloadProjectedGrads(uint32_t gaussianCount);
+    std::vector<TrainingAdaptiveTileDiagnostic> downloadAdaptiveTileDiagnostics(
+        uint32_t parentItemCount);
+    std::vector<uint32_t> downloadAdaptiveChildMasks(uint32_t parentItemCount);
+    std::vector<uint8_t> downloadAdaptiveChildMembership(uint32_t gaussianCount,
+                                                          uint32_t parentItemCount,
+                                                          uint32_t childItemCount);
     std::vector<float> downloadLoss(uint32_t pixelCount);
     std::vector<glm::vec4> downloadRenderedColor(uint32_t pixelCount);
     void uploadTargetColor(const uint8_t* pixels, uint32_t width, uint32_t height);
-    void setTargetColorDescriptor(vk::DescriptorBufferInfo descriptor) { targetColorDescriptorOverride_ = descriptor; }
-    void clearTargetColorDescriptor() { targetColorDescriptorOverride_.reset(); }
+    void setTargetColorDescriptor(vk::DescriptorBufferInfo descriptor) {
+        targetColorDescriptorOverride_ = descriptor;
+    }
+    void clearTargetColorDescriptor() {
+        targetColorDescriptorOverride_.reset();
+    }
     void uploadCamera(const TrainingForwardCamera& camera);
     void recordTileItemCountReadback(vk::CommandBuffer commandBuffer);
     void recordDensificationStatsReadback(vk::CommandBuffer commandBuffer);
     uint32_t requiredTileItemCount();
+    [[nodiscard]] std::array<uint32_t, 2> adaptiveChildStats() const;
     uint32_t densifiedGaussianCount();
     TrainingDensificationStats densificationStats();
 
@@ -60,11 +73,40 @@ public:
     vk::Buffer tileSortScratchBuffer() const { return tileSortScratch_.getBuffer(); }
     vk::Buffer tileSortStorageBuffer() const { return tileSortStorage_.getBuffer(); }
     vk::DescriptorBufferInfo tileRangesInfo() const { return tileRanges_.getDescriptorInfo(); }
-    vk::DescriptorBufferInfo gaussianTileRangesInfo() const { return gaussianTileRanges_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo gaussianTileRangesInfo() const {
+        return gaussianTileRanges_.getDescriptorInfo();
+    }
     vk::DescriptorBufferInfo gaussianTilePrefixScratchInfo() const {
         return gaussianTilePrefixScratch_.getDescriptorInfo();
     }
-    vk::DescriptorBufferInfo renderedColorInfo() const { return renderedColor_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo adaptiveChildCountsInfo() const {
+        return adaptiveChildCounts_.getDescriptorInfo();
+    }
+    vk::DescriptorBufferInfo adaptiveTileSplitFlagsInfo() const {
+        return adaptiveTileSplitFlags_.getDescriptorInfo();
+    }
+    vk::DescriptorBufferInfo adaptiveChildMasksInfo() const {
+        return adaptiveChildMasks_.getDescriptorInfo();
+    }
+    vk::DescriptorBufferInfo adaptiveChildOffsetsInfo() const {
+        return adaptiveChildOffsets_.getDescriptorInfo();
+    }
+    vk::DescriptorBufferInfo adaptiveChildPrefixInfo() const {
+        return adaptiveChildPrefix_.getDescriptorInfo();
+    }
+    vk::DescriptorBufferInfo adaptiveChildBlockSumsInfo() const {
+        return adaptiveChildBlockSums_.getDescriptorInfo();
+    }
+    vk::DescriptorBufferInfo adaptiveActiveParentsInfo() const {
+        return adaptiveActiveParents_.getDescriptorInfo();
+    }
+    vk::DescriptorBufferInfo adaptiveChildDispatchInfo() const {
+        return adaptiveChildDispatch_.getDescriptorInfo();
+    }
+    vk::Buffer adaptiveChildDispatchBuffer() const { return adaptiveChildDispatch_.getBuffer(); }
+    vk::DescriptorBufferInfo renderedColorInfo() const {
+        return renderedColor_.getDescriptorInfo();
+    }
     vk::DescriptorBufferInfo targetColorInfo() const {
         return targetColorDescriptorOverride_.value_or(targetColor_.getDescriptorInfo());
     }
@@ -119,6 +161,14 @@ private:
     Buffer tileRanges_;
     Buffer gaussianTileRanges_;
     Buffer gaussianTilePrefixScratch_;
+    Buffer adaptiveChildCounts_;
+    Buffer adaptiveTileSplitFlags_;
+    Buffer adaptiveChildMasks_;
+    Buffer adaptiveChildOffsets_;
+    Buffer adaptiveChildPrefix_;
+    Buffer adaptiveChildBlockSums_;
+    Buffer adaptiveActiveParents_;
+    Buffer adaptiveChildDispatch_;
     Buffer renderedColor_;
     Buffer targetColor_;
     std::optional<vk::DescriptorBufferInfo> targetColorDescriptorOverride_;

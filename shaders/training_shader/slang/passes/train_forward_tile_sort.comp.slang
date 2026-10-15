@@ -7,7 +7,7 @@ RWStructuredBuffer<uint4> tileRanges;
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint tileIndex = dispatchThreadID.x;
-    if (tileIndex >= trainTileCount()) {
+    if (tileIndex >= tileRangeCapacity()) {
         return;
     }
 

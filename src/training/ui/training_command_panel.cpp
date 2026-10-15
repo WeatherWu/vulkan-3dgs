@@ -128,6 +128,31 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
                     benchmark.frameIndex, benchmark.completedWarmupSteps, benchmark.warmupSteps,
                     benchmark.completedMeasuredSteps, benchmark.measuredSteps,
                     benchmark.active ? "running" : (benchmark.complete ? "complete" : "stopped"));
+        if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial &&
+            benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
+            ImGui::Text("Benchmark child Tensor batch %u", benchmark.adaptiveTensorChildBatch);
+        }
+        if (benchmark.tileMode == TrainingTileMode::Fixed16 &&
+            benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
+            ImGui::Text("Benchmark Tensor reduction: %s",
+                        benchmark.tensorSubgroupReduction ? "Subgroup" : "Shared");
+            ImGui::Text("Benchmark Tensor pixel grad: %s",
+                        benchmark.tensorGlobalPixelGrad ? "Global" : "Shared");
+            if (benchmark.tensorGlobalPixelGrad) {
+                ImGui::Text("Benchmark Tensor RGB schedule: %s",
+                            benchmark.tensorRgbLatencyHiding ? "Latency Hiding" : "Baseline");
+            }
+        }
+    }
+    if (benchmark.complete && !state.trainingRunning) {
+        if (ImGui::Button("Export Benchmark Gradients")) {
+            actions.exportFixedBenchmarkGradients = true;
+        }
+        if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial) {
+            if (ImGui::Button("Export Adaptive Tile Diagnostics")) {
+                actions.exportAdaptiveTileDiagnostics = true;
+            }
+        }
     }
     if (!pureWorkerRunning) {
         TrainingDiagnosticsPanel::draw(snapshot, state.frameCount);

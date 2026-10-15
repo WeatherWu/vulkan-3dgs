@@ -1,9 +1,40 @@
 #include "../common/train_backward_common.slang"
 
+#ifndef TRAIN_TENSOR_SUBGROUP_REDUCTION
+#define TRAIN_TENSOR_SUBGROUP_REDUCTION 0
+#endif
+#ifndef TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
+#define TRAIN_TENSOR_GLOBAL_PIXEL_GRAD 0
+#endif
+#ifndef TRAIN_TENSOR_RGB_LATENCY_HIDING
+#define TRAIN_TENSOR_RGB_LATENCY_HIDING 0
+#endif
+#if TRAIN_TENSOR_RGB_LATENCY_HIDING && !TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
+#error RGB latency hiding requires the Global pixel-gradient variant
+#endif
+#if TRAIN_TENSOR_GLOBAL_PIXEL_GRAD && !TRAIN_TENSOR_SUBGROUP_REDUCTION
+#error Global pixel gradients require the Fixed16 Tensor subgroup variant
+#endif
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION && (TRAIN_TILE_SIZE != 16 || TRAIN_ADAPTIVE_TILES)
+#error Tensor subgroup reduction is only supported for Fixed16
+#endif
+
+#if TRAIN_TILE_SIZE == 8
+#ifndef TRAIN_TENSOR_CHILD_BATCH
+#define TRAIN_TENSOR_CHILD_BATCH 8
+#endif
+#if TRAIN_TENSOR_CHILD_BATCH != 8 && TRAIN_TENSOR_CHILD_BATCH != 16 && TRAIN_TENSOR_CHILD_BATCH != 32
+#error Unsupported Tensor child batch size
+#endif
+static const uint VKSPLAT_TENSOR_BATCH_SIZE = TRAIN_TENSOR_CHILD_BATCH;
+static const uint VKSPLAT_TENSOR_REDUCTION_WIDTH = 64u / VKSPLAT_TENSOR_BATCH_SIZE;
+#else
 static const uint VKSPLAT_TENSOR_BATCH_SIZE = 16u;
 static const uint VKSPLAT_TENSOR_REDUCTION_WIDTH = 16u;
+#endif
 static const uint VKSPLAT_TILE_PIXEL_COUNT = TRAIN_TILE_SIZE * TRAIN_TILE_SIZE;
 static const uint VKSPLAT_TENSOR_GRAD_COMPONENT_COUNT = 9u;
+static const uint VKSPLAT_PREFIX_REDUCTION_WIDTH = TRAIN_TILE_SIZE;
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<ProjectedGaussian> projectedGaussians;
@@ -26,11 +57,58 @@ StructuredBuffer<PixelBlendState> pixelBlendStates;
 groupshared ProjectedGaussian sharedGaussians[VKSPLAT_TENSOR_BATCH_SIZE];
 groupshared float2 sharedPairDerivatives[
     VKSPLAT_TENSOR_BATCH_SIZE * VKSPLAT_TILE_PIXEL_COUNT];
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+groupshared uint sharedSubgroupCounter;
+#else
 groupshared float sharedThreadGradComponents[
     VKSPLAT_TENSOR_GRAD_COMPONENT_COUNT * VKSPLAT_TILE_PIXEL_COUNT];
+#endif
+#if !TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
 groupshared float sharedPixelGradRed[VKSPLAT_TILE_PIXEL_COUNT];
 groupshared float sharedPixelGradGreen[VKSPLAT_TILE_PIXEL_COUNT];
 groupshared float sharedPixelGradBlue[VKSPLAT_TILE_PIXEL_COUNT];
+#endif
+
+void tensorStorePrefix(uint index, uint value) {
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+    // This scratch is dead before the pair-derivative phase begins.
+    sharedPairDerivatives[index].x = asfloat(value);
+#else
+    sharedThreadGradComponents[index] = asfloat(value);
+#endif
+}
+
+uint tensorLoadPrefix(uint index) {
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+    return asuint(sharedPairDerivatives[index].x);
+#else
+    return asuint(sharedThreadGradComponents[index]);
+#endif
+}
+
+uint tensorProcessedPrefix(uint threadIndex, uint processedCount) {
+    tensorStorePrefix(threadIndex, processedCount);
+    GroupMemoryBarrierWithGroupSync();
+    if (threadIndex < VKSPLAT_PREFIX_REDUCTION_WIDTH) {
+        uint maximum = 0u;
+        for (uint pixel = threadIndex; pixel < VKSPLAT_TILE_PIXEL_COUNT;
+             pixel += VKSPLAT_PREFIX_REDUCTION_WIDTH) {
+            maximum = max(maximum, tensorLoadPrefix(pixel));
+        }
+        tensorStorePrefix(VKSPLAT_TILE_PIXEL_COUNT + threadIndex, maximum);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (threadIndex == 0u) {
+        uint maximum = 0u;
+        for (uint lane = 0u; lane < VKSPLAT_PREFIX_REDUCTION_WIDTH; ++lane) {
+            maximum = max(maximum,
+                tensorLoadPrefix(VKSPLAT_TILE_PIXEL_COUNT + lane));
+        }
+        tensorStorePrefix(2u * VKSPLAT_TILE_PIXEL_COUNT, maximum);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return tensorLoadPrefix(2u * VKSPLAT_TILE_PIXEL_COUNT);
+}
 
 struct CompactProjectedGrad {
     float2 center;
@@ -59,6 +137,21 @@ bool compactProjectedGradIsNonZero(CompactProjectedGrad grad) {
            any(grad.color != float3(0.0));
 }
 
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+CompactProjectedGrad reduceTensorSegment(CompactProjectedGrad grad) {
+    // Native subgroup32 is guarded on the host. XOR only the low four bits:
+    // the two independent 16-lane Gaussian segments never exchange values.
+    for (uint offset = 8u; offset > 0u; offset >>= 1u) {
+        uint peer = WaveGetLaneIndex() ^ offset;
+        CompactProjectedGrad other;
+        other.center = WaveReadLaneAt(grad.center, peer);
+        other.conicOpacity = WaveReadLaneAt(grad.conicOpacity, peer);
+        other.color = WaveReadLaneAt(grad.color, peer);
+        addCompactProjectedGrad(grad, other);
+    }
+    return grad;
+}
+#else
 void storeSharedThreadGrad(uint threadIndex, CompactProjectedGrad grad) {
     sharedThreadGradComponents[0u * VKSPLAT_TILE_PIXEL_COUNT + threadIndex] =
         grad.center.x;
@@ -102,6 +195,7 @@ CompactProjectedGrad loadSharedThreadGrad(uint threadIndex) {
         8u * VKSPLAT_TILE_PIXEL_COUNT + threadIndex];
     return grad;
 }
+#endif
 
 CompactProjectedGrad backwardTensorPair(ProjectedGaussian gaussian,
                                         float2 samplePosition,
@@ -136,15 +230,18 @@ void atomicAddCompactProjectedGrad(uint gaussianIndex,
 }
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(TRAIN_TILE_SIZE, TRAIN_TILE_SIZE, 1)]
 void main(uint3 groupThreadID : SV_GroupThreadID,
           uint3 groupID : SV_GroupID) {
+    TrainingTileWorkgroup tileWorkgroup = trainingTileWorkgroup(groupID.xy);
+    if (!tileWorkgroup.active) return;
     uint localIndex = groupThreadID.y * TRAIN_TILE_SIZE + groupThreadID.x;
-    uint tileIndex = groupID.y * tileCountX() + groupID.x;
+    uint tileIndex = tileWorkgroup.tileIndex;
     TileRange range = unpackTileRange(tileRanges[tileIndex]);
-    uint safeRangeStart = min(range.start, params.tileItemCount);
-    uint rangeCount = min(range.count, params.tileItemCount - safeRangeStart);
-    uint2 tileOrigin = groupID.xy * TRAIN_TILE_SIZE;
+    uint itemReadLimit = trainBackwardTileItemReadLimit();
+    uint safeRangeStart = min(range.start, itemReadLimit);
+    uint rangeCount = min(range.count, itemReadLimit - safeRangeStart);
+    uint2 tileOrigin = tileWorkgroup.origin;
     uint2 localPixel = uint2(
         localIndex % TRAIN_TILE_SIZE,
         localIndex / TRAIN_TILE_SIZE);
@@ -165,12 +262,28 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
     uint processedCount = validPixel
         ? min(blendState.processedCount, rangeCount)
         : 0u;
+#if !TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
     sharedPixelGradRed[localIndex] = dLoss_dPixelColor.x;
     sharedPixelGradGreen[localIndex] = dLoss_dPixelColor.y;
     sharedPixelGradBlue[localIndex] = dLoss_dPixelColor.z;
+#endif
     float3 suffixColor = float3(0.0);
     float transmittanceBefore = blendState.finalTransmittance;
-    uint remaining = rangeCount;
+    // Offsets at or beyond this maximum fail itemOffset < processedCount for
+    // every valid pixel. They cannot change transmittance, suffix color or any
+    // gradient, so no Gaussian loads or batch reductions are needed for them.
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+    if (localIndex == 0u) sharedSubgroupCounter = 0u;
+#endif
+    uint remaining = tensorProcessedPrefix(localIndex, processedCount);
+    if (remaining == 0u) return;
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+    // Do not assume that SV_GroupThreadID determines subgroup/lane order.
+    // Allocate a unique subgroup rank once per tile, before the batch loop.
+    uint subgroupRank = 0u;
+    if (WaveIsFirstLane()) InterlockedAdd(sharedSubgroupCounter, 1u, subgroupRank);
+    subgroupRank = WaveReadLaneAt(subgroupRank, 0u);
+#endif
     while (remaining > 0u) {
         uint batchCount = min(remaining, VKSPLAT_TENSOR_BATCH_SIZE);
         uint batchStart = remaining - batchCount;
@@ -216,8 +329,13 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
         }
         GroupMemoryBarrierWithGroupSync();
 
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+        uint gaussianLocalIndex = subgroupRank * 2u + WaveGetLaneIndex() / 16u;
+        uint reductionLane = WaveGetLaneIndex() % 16u;
+#else
         uint gaussianLocalIndex = localIndex / VKSPLAT_TENSOR_REDUCTION_WIDTH;
         uint reductionLane = localIndex % VKSPLAT_TENSOR_REDUCTION_WIDTH;
+#endif
         CompactProjectedGrad localGrad = makeZeroCompactProjectedGrad();
         if (gaussianLocalIndex < batchCount) {
             ProjectedGaussian gaussian = sharedGaussians[gaussianLocalIndex];
@@ -231,10 +349,30 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
                         pixelRank % TRAIN_TILE_SIZE,
                         pixelRank / TRAIN_TILE_SIZE);
                     uint2 pairPixel = tileOrigin + pairLocalPixel;
+#if TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
+                    // Read only contributing pairs; guard both coordinates
+                    // before flattening an edge-tile pixel into a buffer index.
+                    float3 pairPixelGrad = float3(0.0);
+                    if (pairPixel.x < params.width && pairPixel.y < params.height) {
+                        pairPixelGrad = pixelGrads[pixelIndex(pairPixel)].color.xyz;
+                    }
+#else
                     float3 pairPixelGrad = float3(
                         sharedPixelGradRed[pixelRank],
                         sharedPixelGradGreen[pixelRank],
                         sharedPixelGradBlue[pixelRank]);
+#endif
+#if TRAIN_TENSOR_RGB_LATENCY_HIDING
+                    // The guarded RGB load above is independent of geometry.
+                    // Accumulate center/conic before consuming its result to
+                    // expose scheduling room without changing per-component
+                    // summation order, precision, or the shared-memory budget.
+                    CompactProjectedGrad geometryGrad = backwardTensorPair(
+                        gaussian, pixelCenter(pairPixel), pairDerivative.y, float3(0.0));
+                    localGrad.center += geometryGrad.center;
+                    localGrad.conicOpacity += geometryGrad.conicOpacity;
+                    localGrad.color += pairPixelGrad * pairDerivative.x;
+#else
                     float3 dLoss_dGaussianColor =
                         pairPixelGrad * pairDerivative.x;
                     CompactProjectedGrad grad = backwardTensorPair(
@@ -243,12 +381,19 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
                         pairDerivative.y,
                         dLoss_dGaussianColor);
                     addCompactProjectedGrad(localGrad, grad);
+#endif
                 }
             }
         }
         CompactProjectedGrad tileGrad = makeZeroCompactProjectedGrad();
         uint outputGaussianLocalIndex = 0u;
         bool outputTileGrad = false;
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION
+        // All lanes participate, including zero-filled tail segments.
+        tileGrad = reduceTensorSegment(localGrad);
+        outputGaussianLocalIndex = gaussianLocalIndex;
+        outputTileGrad = reductionLane == 0u && gaussianLocalIndex < batchCount;
+#else
         storeSharedThreadGrad(localIndex, localGrad);
         GroupMemoryBarrierWithGroupSync();
         if (localIndex < batchCount) {
@@ -259,6 +404,7 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
             outputGaussianLocalIndex = localIndex;
             outputTileGrad = true;
         }
+#endif
         if (outputTileGrad) {
             uint gaussianIndex = tileItems[
                 safeRangeStart + batchStart + outputGaussianLocalIndex];

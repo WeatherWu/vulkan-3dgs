@@ -44,8 +44,8 @@ struct TrainingPushConstants {
     uint32_t validationUsesDensifiedGaussians = 0;
     float pixelTo2DGSMinSubgroupUtilization = 0.5f;
     uint32_t clearGaussianGrads = 1;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
+    uint32_t densificationGradientMode = 0;
+    uint32_t tileSize = 16;
 };
 
 struct TrainingPrefixPushConstants {
@@ -83,6 +83,17 @@ enum class TrainingForwardCompositeMode : uint32_t {
     WorkgroupShared = 1,
 };
 
+enum class TrainingDensificationGradientMode : uint32_t {
+    VisibleSupport = 0,
+    ProjectedExposure = 1,
+};
+
+enum class TrainingTileMode : uint32_t {
+    Fixed8 = 0,
+    Fixed16 = 1,
+    AdaptiveSpatial = 2,
+};
+
 struct TrainingScheduleConfig {
     TrainingImageSelectionMode imageSelectionMode = TrainingImageSelectionMode::Random;
     uint32_t totalIterations = 30000;
@@ -103,6 +114,23 @@ struct TrainingFixedBenchmarkStats {
     uint32_t measuredSteps = 0;
     uint32_t completedWarmupSteps = 0;
     uint32_t completedMeasuredSteps = 0;
+    uint32_t gaussianCount = 0;
+    uint32_t trainingIteration = 0;
+    TrainingTileMode tileMode = TrainingTileMode::Fixed16;
+    TrainingPixelTo2DGSMode pixelMode = TrainingPixelTo2DGSMode::Auto;
+    TrainingForwardCompositeMode compositeMode = TrainingForwardCompositeMode::WorkgroupShared;
+    uint32_t adaptiveSplitThreshold = 256u;
+    uint32_t adaptiveTensorChildBatch = 8u;
+    bool tensorSubgroupReduction = false; // Actual path used by this benchmark.
+    bool tensorGlobalPixelGrad = false;   // Actual pixel-gradient source (false = Shared).
+    bool tensorRgbLatencyHiding = false;  // Actual Global RGB scheduling variant.
+};
+
+struct TrainingAdaptiveTileDiagnostic {
+    uint32_t parentItems = 0u;
+    std::array<uint32_t, 4> childItems{};
+    std::array<uint32_t, 4> maxProcessed{};
+    bool selected = false;
 };
 
 struct TrainingOptimizerConfig {
@@ -141,6 +169,9 @@ struct TrainingValidationStats {
     uint32_t nonFiniteSHCount = 0;
     uint32_t firstNonFiniteGaussianIndex = std::numeric_limits<uint32_t>::max();
     uint32_t tileItemCount = 0;
+    uint32_t parentTileItemCount = 0;
+    uint32_t adaptiveChildItemCount = 0;
+    uint32_t adaptiveSplitParentCount = 0;
     float meanProcessedCandidatesPerPixel = 0.0f;
     float meanContributorsPerPixel = 0.0f;
     uint32_t maxProcessedCandidatesPerPixel = 0;
@@ -250,6 +281,12 @@ enum class TrainingGpuProfileStage : uint32_t {
     Optimizer,
     Validation,
     Densification,
+    AdaptiveChildCount,
+    AdaptiveChildSelect,
+    AdaptiveChildScatter,
+    AdaptiveChildRangeInstall,
+    AdaptiveParentBackward,
+    AdaptiveChildBackward,
     Count,
 };
 
@@ -293,6 +330,8 @@ struct TrainingDensificationConfig {
     uint32_t opacityResetInterval = 3000;
     uint32_t maxGaussianCount = 10000000;
     uint32_t splitChildren = 2;
+    TrainingDensificationGradientMode gradientMode =
+        TrainingDensificationGradientMode::VisibleSupport;
     float densifyGradThreshold = 0.0002f;
     float minOpacity = 0.005f;
     float percentDense = 0.01f;

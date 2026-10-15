@@ -15,6 +15,7 @@
 #include "training/core/training_model_io.hpp"
 #include "training/core/training_image_runtime.hpp"
 #include "training/core/training_step_executor.hpp"
+#include "training/core/training_tile_layout.hpp"
 #include "training/core/training_profiling_service.hpp"
 #include "training/core/training_validation_service.hpp"
 #include "render/renderer.hpp"
@@ -45,6 +46,8 @@ public:
                                uint32_t preferredDownscale = 4);
     void initializeModelFromDataset(const TrainingInitializationConfig& config = {});
     bool exportToPLY(const std::filesystem::path& path);
+    void exportFixedBenchmarkGradients(const std::filesystem::path& path);
+    void exportAdaptiveTileDiagnostics(const std::filesystem::path& path);
     void setTrainingFrameIndex(size_t frameIndex);
     void startFixedWorkloadBenchmark(const TrainingFixedBenchmarkConfig& config);
     void stopFixedWorkloadBenchmark();
@@ -52,15 +55,31 @@ public:
     void setOptimizerConfig(const TrainingOptimizerConfig& config) { optimizerConfig_ = config; }
     void setScheduleConfig(const TrainingScheduleConfig& config);
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode);
+    void setAdaptiveTensorChildBatch(uint32_t batch);
+    void setTensorSubgroupReduction(bool enabled);
+    void setTensorGlobalPixelGrad(bool enabled);
+    void setTensorRgbLatencyHiding(bool enabled);
+    bool tensorRgbLatencyHidingActive() const;
+    bool tensorGlobalPixelGradActive() const;
+    bool tensorSubgroupReductionSupported() const;
+    bool tensorSubgroupReductionActive() const;
+    uint32_t adaptiveTensorChildBatch() const { return adaptiveTensorChildBatch_; }
     void setPixelTo2DGSMinSubgroupUtilization(float utilization) {
         pixelTo2DGSMinSubgroupUtilization_ = std::clamp(utilization, 0.0f, 1.0f);
     }
     void setForwardCompositeMode(TrainingForwardCompositeMode mode);
+    void setTileMode(TrainingTileMode mode, uint32_t adaptiveSplitThreshold = 256u);
     bool subgroupPixelTo2DGSSupported() const;
     bool tileGaussianPixelTo2DGSSupported() const;
     bool vkSplatPerSplatSupported() const;
     bool vkSplatTensorSupported() const;
+    bool adaptiveSpatialBackwardSupported() const;
     TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
+    TrainingTileMode tileMode() const { return tileMode_; }
+    uint32_t activeTileSize() const {
+        return tileMode_ == TrainingTileMode::AdaptiveSpatial ? 0u : trainingTileSize(tileMode_);
+    }
+    uint32_t adaptiveTileSplitThreshold() const { return adaptiveTileSplitThreshold_; }
     void setValidationInterval(uint32_t interval) { validationInterval_ = interval; }
     uint32_t validationInterval() const { return validationInterval_; }
 
@@ -152,6 +171,12 @@ private:
     TrainingPixelTo2DGSMode pixelTo2DGSMode_ = TrainingPixelTo2DGSMode::Auto;
     float pixelTo2DGSMinSubgroupUtilization_ = 0.5f;
     TrainingForwardCompositeMode forwardCompositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
+    TrainingTileMode tileMode_ = TrainingTileMode::Fixed16;
+    uint32_t adaptiveTileSplitThreshold_ = 256u;
+    uint32_t adaptiveTensorChildBatch_ = 8u;
+    bool tensorSubgroupReduction_ = false;
+    bool tensorGlobalPixelGrad_ = false;
+    bool tensorRgbLatencyHiding_ = false;
     float sceneExtent_ = 1.0f;
 
 };

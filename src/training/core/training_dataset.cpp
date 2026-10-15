@@ -18,6 +18,10 @@ namespace vulkan3DGS {
 
 namespace {
 
+// Keep the native loader split identical to tools/evaluate_psnr.py, which
+// holds out every eighth filename-sorted registered view.
+constexpr size_t kValidationFrameStride = 8u;
+
 struct ColmapCameraData {
     uint32_t id = 0;
     int modelId = 0;
@@ -330,7 +334,8 @@ TrainingDataset TrainingDatasetLoader::loadMipNeRF360Scene(const std::filesystem
     dataset.sceneRoot = sceneRoot;
     dataset.imageDirectory = imageDirectory;
     dataset.imageDownscale = selectedDownscale;
-    dataset.frames.reserve(images.size());
+    std::vector<TrainingCameraFrame> allFrames;
+    allFrames.reserve(images.size());
     glm::uvec2 datasetImageSize(0u);
 
     for (const auto& image : images) {
@@ -375,11 +380,33 @@ TrainingDataset TrainingDatasetLoader::loadMipNeRF360Scene(const std::filesystem
         frame.position = glm::vec3(frame.cameraToWorld[3]);
         frame.imagePath = resolvedImagePath;
         frame.imageName = image.name;
-        dataset.frames.push_back(std::move(frame));
+        allFrames.push_back(std::move(frame));
+    }
+
+    if (allFrames.empty()) {
+        throw std::runtime_error("MipNeRF360 scene contains no loadable training frames: " + sceneRoot.string());
+    }
+
+    // A single-view scene cannot provide a useful held-out view. Keep it
+    // trainable instead of producing an empty training dataset.
+    if (allFrames.size() <= 1u) {
+        dataset.frames = std::move(allFrames);
+    } else {
+        dataset.frames.reserve(allFrames.size());
+        dataset.validationFrames.reserve((allFrames.size() + kValidationFrameStride - 1u) /
+                                         kValidationFrameStride);
+        for (size_t index = 0; index < allFrames.size(); ++index) {
+            if (index % kValidationFrameStride == 0u) {
+                dataset.validationFrames.push_back(std::move(allFrames[index]));
+            } else {
+                dataset.frames.push_back(std::move(allFrames[index]));
+            }
+        }
     }
 
     if (dataset.frames.empty()) {
-        throw std::runtime_error("MipNeRF360 scene contains no loadable training frames: " + sceneRoot.string());
+        throw std::runtime_error("MipNeRF360 scene contains no training frames after validation split: " +
+                                 sceneRoot.string());
     }
 
     const auto points3DPath = sparseDirectory / "points3D.bin";
@@ -387,8 +414,9 @@ TrainingDataset TrainingDatasetLoader::loadMipNeRF360Scene(const std::filesystem
         dataset.sparsePoints = readColmapPoints3D(points3DPath);
     }
 
-    LOG_INFO("Loaded MipNeRF360 scene {} with {} frames and {} sparse points from {}",
-             sceneRoot.string(), dataset.frames.size(), dataset.sparsePoints.size(), imageDirectory.string());
+    LOG_INFO("Loaded MipNeRF360 scene {} with {} training frames, {} validation frames and {} sparse points from {}",
+             sceneRoot.string(), dataset.frames.size(), dataset.validationFrames.size(),
+             dataset.sparsePoints.size(), imageDirectory.string());
     return dataset;
 }
 
@@ -401,6 +429,7 @@ TrainingDatasetValidation TrainingDatasetLoader::validateMipNeRF360Scene(const s
         validation.valid = true;
         validation.message = "Dataset is valid";
         validation.frameCount = static_cast<uint32_t>(dataset.frames.size());
+        validation.validationFrameCount = static_cast<uint32_t>(dataset.validationFrames.size());
         validation.width = firstFrame.width;
         validation.height = firstFrame.height;
         validation.downscale = dataset.imageDownscale;

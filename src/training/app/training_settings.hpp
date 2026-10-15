@@ -56,6 +56,7 @@ struct TrainingDensificationSettings {
     uint32_t opacityResetInterval = 3000;
     uint32_t maxGaussians = 10000000;
     uint32_t splitChildren = 2;
+    int gradientMode = 0;
     float gradientThreshold = 0.0002f;
     float minOpacity = 0.005f;
     float percentDense = 0.01f;
@@ -67,6 +68,12 @@ struct TrainingRunSettings {
     int pixelTo2DGSMode = 0;
     float pixelTo2DGSMinSubgroupUtilization = 0.5f;
     int forwardCompositeMode = 1;
+    int tileMode = 1;
+    uint32_t adaptiveTileSplitThreshold = 256;
+    uint32_t adaptiveTensorChildBatch = 8;
+    bool tensorSubgroupReduction = false;
+    bool tensorGlobalPixelGrad = false;
+    bool tensorRgbLatencyHiding = false;
     uint32_t benchmarkStepsPerFrame = 1;
     uint32_t benchmarkFrame = 0;
     uint32_t benchmarkWarmupSteps = 200;

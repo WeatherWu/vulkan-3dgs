@@ -1,3 +1,5 @@
+#include "training/core/training_tile_layout.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -9,6 +11,14 @@
 #include <vector>
 
 namespace {
+
+using namespace vulkan3DGS;
+
+uint32_t activeTileSize = 16u;
+
+uint32_t tileCountForExtent(uint32_t extent) {
+    return (extent + activeTileSize - 1u) / activeTileSize;
+}
 
 bool approximatelyEqual(double lhs, double rhs, double tolerance = 1e-9) {
     const double scale = std::max({1.0, std::abs(lhs), std::abs(rhs)});
@@ -29,7 +39,7 @@ double ndcToPixel(double ndc, uint32_t extent) {
 }
 
 std::array<int, 2> tileBounds(double center, int radius, int tileCount) {
-    constexpr int tileSize = 16;
+    const int tileSize = static_cast<int>(activeTileSize);
     int minimum = static_cast<int>((center - static_cast<double>(radius)) / tileSize);
     int maximumExclusive = static_cast<int>(
         (center + static_cast<double>(radius) + tileSize - 1.0) / tileSize);
@@ -45,8 +55,11 @@ bool testProjectionAndTileBounds() {
         return false;
     }
 
-    const auto bounds = tileBounds(16.0, 1, 4);
-    return bounds[0] == 0 && bounds[1] == 2;
+    const int count = static_cast<int>(tileCountForExtent(64u));
+    const auto bounds = tileBounds(16.0, 1, count);
+    return activeTileSize == 8u
+        ? bounds[0] == 1 && bounds[1] == 3
+        : bounds[0] == 0 && bounds[1] == 2;
 }
 
 struct ConicGaussian2D {
@@ -95,7 +108,7 @@ bool gaussianMayContributeToTile(const ConicGaussian2D& gaussian,
                                  uint32_t tileY,
                                  uint32_t width,
                                  uint32_t height) {
-    constexpr uint32_t tileSize = 16;
+    const uint32_t tileSize = activeTileSize;
     constexpr double alphaMinimum = 1.0 / 255.0;
     if (!(gaussian.opacity >= alphaMinimum)) {
         return false;
@@ -142,9 +155,9 @@ struct TileBounds2D {
 TileBounds2D coarseTileBounds(const ConicGaussian2D& gaussian,
                               uint32_t width,
                               uint32_t height) {
-    constexpr double tileSize = 16.0;
-    const int tileCountX = static_cast<int>((width + 15u) / 16u);
-    const int tileCountY = static_cast<int>((height + 15u) / 16u);
+    const double tileSize = static_cast<double>(activeTileSize);
+    const int tileCountX = static_cast<int>(tileCountForExtent(width));
+    const int tileCountY = static_cast<int>(tileCountForExtent(height));
     const int radius = static_cast<int>(gaussian.radius);
     TileBounds2D bounds{};
     bounds.minimumX = std::clamp(
@@ -154,10 +167,10 @@ TileBounds2D coarseTileBounds(const ConicGaussian2D& gaussian,
         static_cast<int>((gaussian.centerY - static_cast<double>(radius)) / tileSize),
         0, tileCountY);
     bounds.maximumXExclusive = std::clamp(
-        static_cast<int>((gaussian.centerX + static_cast<double>(radius) + 15.0) / tileSize),
+        static_cast<int>((gaussian.centerX + static_cast<double>(radius) + tileSize - 1.0) / tileSize),
         0, tileCountX);
     bounds.maximumYExclusive = std::clamp(
-        static_cast<int>((gaussian.centerY + static_cast<double>(radius) + 15.0) / tileSize),
+        static_cast<int>((gaussian.centerY + static_cast<double>(radius) + tileSize - 1.0) / tileSize),
         0, tileCountY);
     return bounds;
 }
@@ -181,8 +194,8 @@ GaussianTileCullingData prepareGaussianTileCulling(const ConicGaussian2D& gaussi
                                                    uint32_t width,
                                                    uint32_t height) {
     constexpr double alphaMinimum = 1.0 / 255.0;
-    constexpr double tileSize = 16.0;
-    constexpr double lastPixelOffset = tileSize - 1.0;
+    const double tileSize = static_cast<double>(activeTileSize);
+    const double lastPixelOffset = tileSize - 1.0;
     GaussianTileCullingData culling{};
     if (!(gaussian.opacity >= alphaMinimum) || !(gaussian.radius > 0.0) ||
         !std::isfinite(gaussian.centerX) || !std::isfinite(gaussian.centerY) ||
@@ -222,8 +235,8 @@ GaussianTileCullingData prepareGaussianTileCulling(const ConicGaussian2D& gaussi
         return culling;
     }
 
-    const int tileCountX = static_cast<int>((width + 15u) / 16u);
-    const int tileCountY = static_cast<int>((height + 15u) / 16u);
+    const int tileCountX = static_cast<int>(tileCountForExtent(width));
+    const int tileCountY = static_cast<int>(tileCountForExtent(height));
     TileBounds2D tightBounds{};
     tightBounds.minimumX = std::clamp(static_cast<int>(std::ceil(
         (gaussian.centerX - extentX - lastPixelOffset) / tileSize)), 0, tileCountX);
@@ -277,7 +290,7 @@ bool optimizedGaussianMayContributeToTile(const GaussianTileCullingData& culling
         return true;
     }
 
-    constexpr uint32_t tileSize = 16u;
+    const uint32_t tileSize = activeTileSize;
     const uint32_t minimumPixelX = tileX * tileSize;
     const uint32_t minimumPixelY = tileY * tileSize;
     const uint32_t maximumPixelX = std::min(minimumPixelX + tileSize, width);
@@ -311,7 +324,7 @@ std::vector<uint32_t> acceptedTilesLegacy(const ConicGaussian2D& gaussian,
         return accepted;
     }
     const TileBounds2D bounds = coarseTileBounds(gaussian, width, height);
-    const uint32_t tileCountX = (width + 15u) / 16u;
+    const uint32_t tileCountX = tileCountForExtent(width);
     for (int tileY = bounds.minimumY; tileY < bounds.maximumYExclusive; ++tileY) {
         for (int tileX = bounds.minimumX; tileX < bounds.maximumXExclusive; ++tileX) {
             if (gaussianMayContributeToTile(
@@ -333,7 +346,7 @@ std::vector<uint32_t> acceptedTilesOptimized(const ConicGaussian2D& gaussian,
     if (!culling.active || !culling.bounds.valid()) {
         return accepted;
     }
-    const uint32_t tileCountX = (width + 15u) / 16u;
+    const uint32_t tileCountX = tileCountForExtent(width);
     for (int tileY = culling.bounds.minimumY;
          tileY < culling.bounds.maximumYExclusive; ++tileY) {
         for (int tileX = culling.bounds.minimumX;
@@ -354,7 +367,7 @@ std::pair<int, int> scanlineTileRange(const GaussianTileCullingData& culling,
                                       bool scanRows,
                                       uint32_t width,
                                       uint32_t height) {
-    constexpr int tileSize = 16;
+    const int tileSize = static_cast<int>(activeTileSize);
     const int boundMinimum = scanRows
         ? culling.bounds.minimumX
         : culling.bounds.minimumY;
@@ -434,7 +447,7 @@ std::vector<uint32_t> acceptedTilesScanline(const ConicGaussian2D& gaussian,
     const int stripMaximum = scanRows
         ? culling.bounds.maximumYExclusive
         : culling.bounds.maximumXExclusive;
-    const uint32_t tileCountX = (width + 15u) / 16u;
+    const uint32_t tileCountX = tileCountForExtent(width);
     for (int stripTile = stripMinimum; stripTile < stripMaximum; ++stripTile) {
         const auto range = scanlineTileRange(
             culling, stripTile, scanRows, width, height);
@@ -461,9 +474,12 @@ CompactProjectedGrad addCompactProjectedGrad(CompactProjectedGrad lhs,
 }
 
 bool testTileLocalSubgroupReduction() {
-    constexpr size_t pixelCount = 256u;
+    const size_t pixelCount = static_cast<size_t>(activeTileSize) * activeTileSize;
     constexpr size_t gaussianCount = 7u;
-    std::array<std::array<CompactProjectedGrad, pixelCount>, gaussianCount> contributions{};
+    std::array<std::vector<CompactProjectedGrad>, gaussianCount> contributions{};
+    for (auto& gaussianContributions : contributions) {
+        gaussianContributions.resize(pixelCount);
+    }
     std::array<CompactProjectedGrad, gaussianCount> direct{};
     for (size_t gaussian = 0u; gaussian < gaussianCount; ++gaussian) {
         for (size_t pixel = 0u; pixel < pixelCount; ++pixel) {
@@ -480,6 +496,9 @@ bool testTileLocalSubgroupReduction() {
     }
 
     for (size_t subgroupSize : {16u, 32u, 64u}) {
+        if (subgroupSize > pixelCount) {
+            continue;
+        }
         std::array<CompactProjectedGrad, gaussianCount> tileReduced{};
         for (size_t gaussian = 0u; gaussian < gaussianCount; ++gaussian) {
             for (size_t subgroupStart = 0u;
@@ -499,6 +518,42 @@ bool testTileLocalSubgroupReduction() {
         }
     }
     return true;
+}
+
+bool testTensorChildBatchReductionLayout() {
+    constexpr uint32_t pixels = 64u;
+    for (uint32_t batch : {8u, 16u, 32u}) {
+        const uint32_t lanes = pixels / batch;
+        for (uint32_t active : {1u, batch - 1u, batch}) {
+            std::array<CompactProjectedGrad, pixels> threadGrad{};
+            for (uint32_t thread = 0u; thread < pixels; ++thread) {
+                const uint32_t gaussian = thread / lanes;
+                if (gaussian >= active) continue;
+                for (uint32_t pixel = thread % lanes; pixel < pixels; pixel += lanes) {
+                    for (uint32_t component = 0u; component < 9u; ++component) {
+                        threadGrad[thread][component] +=
+                            static_cast<double>(((gaussian + 3u) * (pixel + 1u) * (component + 2u)) % 17u);
+                    }
+                }
+            }
+            for (uint32_t gaussian = 0u; gaussian < active; ++gaussian) {
+                CompactProjectedGrad actual{}, expected{};
+                for (uint32_t lane = 0u; lane < lanes; ++lane) {
+                    actual = addCompactProjectedGrad(actual, threadGrad[gaussian * lanes + lane]);
+                }
+                for (uint32_t pixel = 0u; pixel < pixels; ++pixel) {
+                    for (uint32_t component = 0u; component < 9u; ++component) {
+                        expected[component] +=
+                            static_cast<double>(((gaussian + 3u) * (pixel + 1u) * (component + 2u)) % 17u);
+                    }
+                }
+                if (actual != expected) return false;
+            }
+        }
+    }
+    return normalizeAdaptiveTensorChildBatch(12u) == 8u &&
+           normalizeAdaptiveTensorChildBatch(16u) == 16u &&
+           normalizeAdaptiveTensorChildBatch(32u) == 32u;
 }
 
 bool testVkSplatTraversalOrder() {
@@ -551,6 +606,51 @@ bool testVkSplatTraversalOrder() {
         }
         if (perSplatOrder[pixel] != expected || tensorOrder[pixel] != expected) {
             return false;
+        }
+    }
+    return true;
+}
+
+bool testTensorProcessedPrefixTrimming() {
+    constexpr uint32_t rangeCount = 257u;
+    for (uint32_t batchSize : {8u, 16u, 32u}) {
+        for (uint32_t maximum : {0u, 1u, 7u, 8u, 9u, 16u, 17u, 31u, 129u, rangeCount}) {
+            // The final lane represents an out-of-image edge lane. Its stale
+            // count must never affect the shared maximum or traversal.
+            const std::array<uint32_t, 5> stored = {
+                0u, maximum / 2u, maximum,
+                maximum == rangeCount ? rangeCount + 100u : maximum, rangeCount + 100u};
+            const std::array<bool, 5> valid = {true, true, true, true, false};
+            std::array<uint32_t, 5> processed{};
+            uint32_t prefix = 0u;
+            for (size_t pixel = 0u; pixel < processed.size(); ++pixel) {
+                processed[pixel] = valid[pixel] ? std::min(stored[pixel], rangeCount) : 0u;
+                prefix = std::max(prefix, processed[pixel]);
+            }
+            if (prefix != maximum) return false;
+            const auto traversal = [&](uint32_t remaining) {
+                std::array<std::vector<uint32_t>, 5> order;
+                while (remaining != 0u) {
+                    const uint32_t count = std::min(remaining, batchSize);
+                    const uint32_t start = remaining - count;
+                    for (uint32_t reverse = 0u; reverse < count; ++reverse) {
+                        const uint32_t item = start + count - 1u - reverse;
+                        for (size_t pixel = 0u; pixel < processed.size(); ++pixel) {
+                            if (item < processed[pixel]) order[pixel].push_back(item);
+                        }
+                    }
+                    remaining = start;
+                }
+                return order;
+            };
+            if (traversal(rangeCount) != traversal(prefix)) return false;
+            for (size_t pixel = 0u; pixel < processed.size(); ++pixel) {
+                std::vector<uint32_t> expected;
+                for (uint32_t item = processed[pixel]; item > 0u; --item) {
+                    expected.push_back(item - 1u);
+                }
+                if (traversal(prefix)[pixel] != expected) return false;
+            }
         }
     }
     return true;
@@ -666,17 +766,17 @@ bool testConservativeEllipseTileCulling() {
         gaussian.c = firstEigenvalue * sine * sine + secondEigenvalue * cosine * cosine;
         gaussian.opacity = opacityDistribution(random);
 
-        for (uint32_t tileY = 0; tileY < (height + 15u) / 16u; ++tileY) {
-            for (uint32_t tileX = 0; tileX < (width + 15u) / 16u; ++tileX) {
+        for (uint32_t tileY = 0; tileY < tileCountForExtent(height); ++tileY) {
+            for (uint32_t tileX = 0; tileX < tileCountForExtent(width); ++tileX) {
                 if (gaussianMayContributeToTile(gaussian, tileX, tileY, width, height)) {
                     continue;
                 }
                 ++culledTileCount;
 
-                const uint32_t minimumX = tileX * 16u;
-                const uint32_t minimumY = tileY * 16u;
-                const uint32_t maximumX = std::min(minimumX + 16u, width);
-                const uint32_t maximumY = std::min(minimumY + 16u, height);
+                const uint32_t minimumX = tileX * activeTileSize;
+                const uint32_t minimumY = tileY * activeTileSize;
+                const uint32_t maximumX = std::min(minimumX + activeTileSize, width);
+                const uint32_t maximumY = std::min(minimumY + activeTileSize, height);
                 for (uint32_t y = minimumY; y < maximumY; ++y) {
                     for (uint32_t x = minimumX; x < maximumX; ++x) {
                         const double quadratic = conicQuadratic(
@@ -867,6 +967,102 @@ bool testAdaptivePixelTo2DGSSelection() {
     return !useDirectPixelTo2DGS(sparseLongTail, laneCount, 0.0);
 }
 
+bool testAdaptiveSpatialTileIndexing() {
+    constexpr TrainingExtent extent{53u, 37u};
+    const TrainingTileLayout parents = makeTrainingTileLayout(extent, kTrainingTileSize16);
+    const uint32_t leafCapacity = trainingAdaptiveRangeCapacity(extent);
+    std::vector<uint8_t> assigned(leafCapacity, 0u);
+
+    for (uint32_t parentY = 0u; parentY < parents.tileCountY; ++parentY) {
+        for (uint32_t parentX = 0u; parentX < parents.tileCountX; ++parentX) {
+            for (uint32_t childY = 0u; childY < 2u; ++childY) {
+                for (uint32_t childX = 0u; childX < 2u; ++childX) {
+                    const uint32_t leafIndex = trainingAdaptiveLeafIndex(
+                        parentX, parentY, childX, childY, parents.tileCountX);
+                    if (leafIndex >= leafCapacity || assigned[leafIndex] != 0u) {
+                        return false;
+                    }
+                    assigned[leafIndex] = 1u;
+
+                    const uint32_t pixelX = parentX * 16u + childX * 8u;
+                    const uint32_t pixelY = parentY * 16u + childY * 8u;
+                    if (trainingAdaptiveLeafIndexForPixel(pixelX, pixelY, parents.tileCountX,
+                                                          true) != leafIndex) {
+                        return false;
+                    }
+                }
+            }
+
+            const uint32_t coarseLeaf = trainingAdaptiveLeafIndexForPixel(
+                parentX * 16u + 15u, parentY * 16u + 15u, parents.tileCountX, false);
+            if (coarseLeaf !=
+                trainingAdaptiveLeafIndex(parentX, parentY, 0u, 0u, parents.tileCountX)) {
+                return false;
+            }
+        }
+    }
+
+    const TrainingTileLayout leaves = makeTrainingTileLayout(extent, kTrainingTileSize8);
+    return leafCapacity == parents.tileCount * kAdaptiveTrainingTileLeafFactor &&
+           leafCapacity > leaves.tileCount &&
+           trainingAdaptiveLeafIndex(parents.tileCountX - 1u, parents.tileCountY - 1u, 1u, 1u,
+                                     parents.tileCountX) == leafCapacity - 1u &&
+           trainingAdaptiveRangeCapacity(TrainingExtent{32u, 32u}) ==
+               makeTrainingTileLayout(TrainingExtent{32u, 32u}, kTrainingTileSize8).tileCount &&
+           trainingAdaptiveParentIndex(2u, 1u, parents.tileCountX) < parents.tileCount;
+}
+
+bool testCompactAdaptiveChildCoverage() {
+    constexpr TrainingExtent extent{53u, 37u};
+    const auto parents = makeTrainingTileLayout(extent, kTrainingTileSize16);
+    // Deliberately unsorted, including the partial bottom-right parent.
+    for (const std::vector<uint32_t>& activeParents :
+         {std::vector<uint32_t>{}, std::vector<uint32_t>{11u, 0u, 2u, 7u}}) {
+        std::vector<uint8_t> selected(parents.tileCount, 0u);
+        std::vector<uint8_t> coverage(extent.width * extent.height, 0u);
+        for (uint32_t parent : activeParents) selected[parent] = 1u;
+        for (uint32_t work = 0u; work < activeParents.size() * 4u; ++work) {
+            const uint32_t parent = activeParents[work / 4u];
+            const uint32_t originX = (parent % parents.tileCountX) * 16u + (work % 2u) * 8u;
+            const uint32_t originY = (parent / parents.tileCountX) * 16u + ((work % 4u) / 2u) * 8u;
+            for (uint32_t y = originY; y < std::min(originY + 8u, extent.height); ++y) {
+                for (uint32_t x = originX; x < std::min(originX + 8u, extent.width); ++x) {
+                    if (trainingAdaptiveLeafIndexForPixel(x, y, parents.tileCountX, true) !=
+                        parent * 4u + work % 4u) return false;
+                    ++coverage[y * extent.width + x];
+                }
+            }
+        }
+        for (uint32_t y = 0u; y < extent.height; ++y) {
+            for (uint32_t x = 0u; x < extent.width; ++x) {
+                const uint32_t parent = (y / 16u) * parents.tileCountX + x / 16u;
+                if (coverage[y * extent.width + x] != selected[parent]) return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool testCompactAdaptiveDispatchRows() {
+    constexpr uint32_t widthLimit = kAdaptiveTrainingChildDispatchWidth;
+    for (uint32_t parents : {0u, 1u, 16383u, 16384u, 20000u}) {
+        const uint32_t children = parents * 4u;
+        const uint32_t width = std::min(children, widthLimit);
+        const uint32_t height = std::max(children / widthLimit +
+                                             static_cast<uint32_t>(children % widthLimit != 0u), 1u);
+        uint32_t validGroups = 0u;
+        for (uint32_t y = 0u; y < height; ++y) {
+            for (uint32_t x = 0u; x < width; ++x) {
+                const uint32_t child = y * widthLimit + x;
+                if (child / 4u >= parents) continue;
+                if (child != validGroups++) return false;
+            }
+        }
+        if (validGroups != children) return false;
+    }
+    return true;
+}
+
 bool testPackedConicOffDiagonalGradient() {
     const double a = 0.7;
     const double b = -0.23;
@@ -1022,6 +1218,15 @@ bool testQuaternionNormalizationBackward() {
     return true;
 }
 
+bool testTileDependentMath(uint32_t tileSize) {
+    activeTileSize = tileSize;
+    return testProjectionAndTileBounds() &&
+           testConservativeEllipseTileCulling() &&
+           testOptimizedEllipseTileCullingMatchesLegacy() &&
+           testScanlineEllipseTileCullingMatchesRectanglePredicate() &&
+           testTileLocalSubgroupReduction();
+}
+
 } // namespace
 
 int main() {
@@ -1029,32 +1234,35 @@ int main() {
         std::cerr << "conic off-diagonal convention test failed\n";
         return 1;
     }
-    if (!testProjectionAndTileBounds()) {
-        std::cerr << "projection/tile bounds test failed\n";
-        return 1;
-    }
-    if (!testConservativeEllipseTileCulling()) {
-        std::cerr << "conservative ellipse/tile culling test failed\n";
-        return 1;
-    }
-    if (!testOptimizedEllipseTileCullingMatchesLegacy()) {
-        std::cerr << "optimized ellipse/tile culling equivalence test failed\n";
-        return 1;
-    }
-    if (!testScanlineEllipseTileCullingMatchesRectanglePredicate()) {
-        std::cerr << "scanline ellipse/tile culling equivalence test failed\n";
-        return 1;
-    }
-    if (!testTileLocalSubgroupReduction()) {
-        std::cerr << "tile-local subgroup reduction test failed\n";
-        return 1;
+    for (uint32_t tileSize : {8u, 16u}) {
+        if (!testTileDependentMath(tileSize)) {
+            std::cerr << "tile-dependent math test failed for " << tileSize << "x"
+                      << tileSize << "\n";
+            return 1;
+        }
     }
     if (!testVkSplatTraversalOrder()) {
         std::cerr << "VkSplat traversal-order test failed\n";
         return 1;
     }
+    if (!testTensorProcessedPrefixTrimming()) {
+        std::cerr << "Tensor processed-prefix trimming test failed\n";
+        return 1;
+    }
+    if (!testTensorChildBatchReductionLayout()) {
+        std::cerr << "Tensor child batch/reduction layout test failed\n";
+        return 1;
+    }
     if (!testAdaptivePixelTo2DGSSelection()) {
         std::cerr << "adaptive pixel-to-2DGS selection test failed\n";
+        return 1;
+    }
+    if (!testAdaptiveSpatialTileIndexing()) {
+        std::cerr << "adaptive spatial tile indexing test failed\n";
+        return 1;
+    }
+    if (!testCompactAdaptiveChildCoverage() || !testCompactAdaptiveDispatchRows()) {
+        std::cerr << "compact adaptive child dispatch test failed\n";
         return 1;
     }
     if (!testHierarchicalExclusivePrefix()) {

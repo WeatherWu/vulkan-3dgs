@@ -36,13 +36,15 @@ void ProjectionOptimizerPass::initialize(vk::Device device) {
     ComputePipelineConfig projectionConfig{};
     projectionConfig.descriptorBindings = {
         backwardStorageBinding(0),  backwardStorageBinding(1),  backwardStorageBinding(3),
-        backwardStorageBinding(13), backwardStorageBinding(16), backwardUniformBinding(11),
+        backwardStorageBinding(13), backwardStorageBinding(16), backwardStorageBinding(32),
+        backwardUniformBinding(11),
     };
     projectionConfig.pushConstantSize = sizeof(TrainingPushConstants);
     ComputePipelineConfig fusedConfig{};
     fusedConfig.descriptorBindings = {
         backwardStorageBinding(0),  backwardStorageBinding(2),  backwardStorageBinding(3),
-        backwardStorageBinding(13), backwardStorageBinding(16), backwardUniformBinding(11),
+        backwardStorageBinding(13), backwardStorageBinding(16), backwardStorageBinding(32),
+        backwardUniformBinding(11),
     };
     fusedConfig.pushConstantSize = sizeof(TrainingPushConstants);
     ComputePipelineConfig optimizerConfig{};
@@ -59,7 +61,7 @@ void ProjectionOptimizerPass::initialize(vk::Device device) {
                               fusedConfig);
     optimizerPipeline_.initialize(device_, "shaders/train_optimizer.comp.spv", optimizerConfig);
     const std::vector<vk::DescriptorSet> sets = descriptorPool_.create(
-        device_, 13u, 2u,
+        device_, 15u, 2u,
         {projectionPipeline_.getDescriptorSetLayout(), fusedPipeline_.getDescriptorSetLayout(),
          optimizerPipeline_.getDescriptorSetLayout()});
     projectionDescriptorSet_ = sets[0];
@@ -92,16 +94,18 @@ void ProjectionOptimizerPass::recordProjection(const BackwardPassContext& contex
     const auto projectedInfo = context.buffers.projectedInfo();
     const auto projectedGradsInfo = context.buffers.projectedGradsInfo();
     const auto densificationStatesInfo = context.buffers.densificationStatesInfo();
+    const auto gaussianTileRangesInfo = context.buffers.gaussianTileRangesInfo();
     const auto cameraInfo = context.buffers.cameraInfo();
-    std::array<vk::DescriptorBufferInfo, 6> infos = {gaussianParamsInfo,      gaussianGradsInfo,
-                                                     projectedInfo,           projectedGradsInfo,
-                                                     densificationStatesInfo, cameraInfo};
-    constexpr std::array<uint32_t, 6> bindings = {0u, 1u, 3u, 13u, 16u, 11u};
-    constexpr std::array<vk::DescriptorType, 6> types = {
+    std::array<vk::DescriptorBufferInfo, 7> infos = {
+        gaussianParamsInfo,      gaussianGradsInfo,      projectedInfo, projectedGradsInfo,
+        densificationStatesInfo, gaussianTileRangesInfo, cameraInfo};
+    constexpr std::array<uint32_t, 7> bindings = {0u, 1u, 3u, 13u, 16u, 32u, 11u};
+    constexpr std::array<vk::DescriptorType, 7> types = {
         vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
         vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
-        vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eUniformBuffer};
-    std::array<vk::WriteDescriptorSet, 6> writes{};
+        vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
+        vk::DescriptorType::eUniformBuffer};
+    std::array<vk::WriteDescriptorSet, 7> writes{};
     for (size_t index = 0; index < writes.size(); ++index) {
         writes[index]
             .setDstSet(projectionDescriptorSet_)
@@ -132,16 +136,18 @@ void ProjectionOptimizerPass::recordProjectionAndOptimize(const BackwardPassCont
     const auto projectedInfo = context.buffers.projectedInfo();
     const auto projectedGradsInfo = context.buffers.projectedGradsInfo();
     const auto densificationStatesInfo = context.buffers.densificationStatesInfo();
+    const auto gaussianTileRangesInfo = context.buffers.gaussianTileRangesInfo();
     const auto cameraInfo = context.buffers.cameraInfo();
-    std::array<vk::DescriptorBufferInfo, 6> infos = {gaussianParamsInfo,      adamStatesInfo,
-                                                     projectedInfo,           projectedGradsInfo,
-                                                     densificationStatesInfo, cameraInfo};
-    constexpr std::array<uint32_t, 6> bindings = {0u, 2u, 3u, 13u, 16u, 11u};
-    constexpr std::array<vk::DescriptorType, 6> types = {
+    std::array<vk::DescriptorBufferInfo, 7> infos = {
+        gaussianParamsInfo,      adamStatesInfo,         projectedInfo, projectedGradsInfo,
+        densificationStatesInfo, gaussianTileRangesInfo, cameraInfo};
+    constexpr std::array<uint32_t, 7> bindings = {0u, 2u, 3u, 13u, 16u, 32u, 11u};
+    constexpr std::array<vk::DescriptorType, 7> types = {
         vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
         vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
-        vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eUniformBuffer};
-    std::array<vk::WriteDescriptorSet, 6> writes{};
+        vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
+        vk::DescriptorType::eUniformBuffer};
+    std::array<vk::WriteDescriptorSet, 7> writes{};
     for (size_t index = 0; index < writes.size(); ++index) {
         writes[index]
             .setDstSet(fusedDescriptorSet_)

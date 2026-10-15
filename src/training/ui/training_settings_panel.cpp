@@ -71,6 +71,83 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
             run.forwardCompositeMode = std::clamp(run.forwardCompositeMode, 0, 1);
             actions.forwardCompositeChanged = true;
         }
+        static constexpr const char* tileModes[] = {"Fixed 8x8", "Fixed 16x16", "Adaptive Spatial"};
+        ImGui::Combo("Training Tile", &run.tileMode, tileModes, IM_ARRAYSIZE(tileModes));
+        run.tileMode = std::clamp(run.tileMode, 0, 2);
+        if (run.tileMode == static_cast<int>(TrainingTileMode::AdaptiveSpatial)) {
+            ImGui::InputScalar("Adaptive Split Threshold", ImGuiDataType_U32,
+                               &run.adaptiveTileSplitThreshold);
+            run.adaptiveTileSplitThreshold =
+                std::clamp(run.adaptiveTileSplitThreshold, 1u, 1000000u);
+            if (run.pixelTo2DGSMode == static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor)) {
+                static constexpr const char* batches[] = {"8", "16", "32"};
+                int batchChoice = run.adaptiveTensorChildBatch == 32u ? 2 :
+                                  run.adaptiveTensorChildBatch == 16u ? 1 : 0;
+                if (ImGui::Combo("Adaptive Tensor Child Batch", &batchChoice, batches, IM_ARRAYSIZE(batches))) {
+                    run.adaptiveTensorChildBatch = batchChoice == 2 ? 32u : batchChoice == 1 ? 16u : 8u;
+                    actions.adaptiveTensorBatchChanged = true;
+                }
+            }
+            if (snapshot.rendererInitialized &&
+                snapshot.tileMode != TrainingTileMode::AdaptiveSpatial) {
+                ImGui::TextDisabled(
+                    "Adaptive needs supported Tensor or Per-Splat backward; using Fixed16.");
+            } else if (run.pixelTo2DGSMode !=
+                           static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor) &&
+                       run.pixelTo2DGSMode !=
+                           static_cast<int>(TrainingPixelTo2DGSMode::VkSplatPerSplat)) {
+                ImGui::TextDisabled("Select Tensor or Per-Splat to enable Adaptive Spatial; "
+                                    "otherwise Fixed16 is used.");
+            }
+        }
+        if (run.pixelTo2DGSMode == static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor) &&
+            run.tileMode == static_cast<int>(TrainingTileMode::Fixed16)) {
+            if (ImGui::Checkbox("Tensor Subgroup Reduction (Experimental)",
+                                 &run.tensorSubgroupReduction)) {
+                actions.tensorReductionChanged = true;
+            }
+            if (run.tensorSubgroupReduction) {
+                static constexpr const char* sources[] = {"Shared", "Global (Experimental)"};
+                int source = run.tensorGlobalPixelGrad ? 1 : 0;
+                if (ImGui::Combo("Tensor Pixel Gradient Source", &source, sources,
+                                 IM_ARRAYSIZE(sources))) {
+                    run.tensorGlobalPixelGrad = source == 1;
+                    actions.tensorPixelGradSourceChanged = true;
+                }
+                if (run.tensorGlobalPixelGrad &&
+                    ImGui::Checkbox("Tensor RGB Latency Hiding (Experimental)",
+                                     &run.tensorRgbLatencyHiding)) {
+                    actions.tensorRgbScheduleChanged = true;
+                }
+            }
+            if (snapshot.rendererInitialized && run.tensorSubgroupReduction &&
+                !snapshot.tensorSubgroupReductionSupported) {
+                ImGui::TextDisabled("Requires native subgroup32 with compute shuffle; using Shared.");
+            }
+        } else if (run.tensorSubgroupReduction) {
+            ImGui::TextDisabled("Tensor subgroup reduction only applies to Fixed16 + VkSplat Tensor.");
+        }
+        if (snapshot.rendererInitialized) {
+            if (snapshot.tileMode == TrainingTileMode::Fixed16 &&
+                snapshot.activePixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
+                ImGui::Text("Active Tensor Reduction: %s",
+                            snapshot.tensorSubgroupReductionActive ? "Subgroup" : "Shared");
+                ImGui::Text("Active Tensor Pixel Grad: %s",
+                            snapshot.tensorGlobalPixelGradActive ? "Global" : "Shared");
+                if (snapshot.tensorGlobalPixelGradActive) {
+                    ImGui::Text("Active Tensor RGB Schedule: %s",
+                                snapshot.tensorRgbLatencyHidingActive ? "Latency Hiding" : "Baseline");
+                }
+            }
+            if (snapshot.tileMode == TrainingTileMode::AdaptiveSpatial) {
+                ImGui::Text("Active Tile: Adaptive 8x8 / 16x16");
+                if (snapshot.activePixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
+                    ImGui::Text("Active child Tensor batch %u", snapshot.adaptiveTensorChildBatch);
+                }
+            } else {
+                ImGui::Text("Active Tile %ux%u", snapshot.activeTileSize, snapshot.activeTileSize);
+            }
+        }
         if (schedule.imageSelectionMode == 1) {
             schedule.totalIterations = 30000;
             ImGui::BeginDisabled();
@@ -152,6 +229,13 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         densify.maxGaussians = std::clamp(densify.maxGaussians, 1u, 10000000u);
         ImGui::InputScalar("Split Children", ImGuiDataType_U32, &densify.splitChildren);
         densify.splitChildren = std::clamp(densify.splitChildren, 2u, 8u);
+        static constexpr const char* densificationGradientModes[] = {
+            "Visible Support",
+            "Compact (Projected Exposure)",
+        };
+        ImGui::Combo("Densification Gradient", &densify.gradientMode, densificationGradientModes,
+                     IM_ARRAYSIZE(densificationGradientModes));
+        densify.gradientMode = std::clamp(densify.gradientMode, 0, 1);
         ImGui::InputFloat("Gradient Threshold", &densify.gradientThreshold, 0.00001f, 0.0001f,
                           "%.6g");
         densify.gradientThreshold = std::max(densify.gradientThreshold, 0.0f);

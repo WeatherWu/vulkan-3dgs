@@ -4,10 +4,12 @@
 #include <vulkan/vulkan.hpp>
 
 #include "training/core/training_buffers.hpp"
+#include "training/core/training_tile_layout.hpp"
 #include "training/core/training_types.hpp"
 #include "render/renderer.hpp"
 #include "vulkan/compute_pipeline.hpp"
 #include <vk_radix_sort.h>
+#include <array>
 
 namespace vulkan3DGS {
 
@@ -33,9 +35,61 @@ public:
     bool isInitialized() const override { return initialized_; }
 
 private:
+    struct TilePipelineVariant {
+        uint32_t tileSize = kTrainingTileSize16;
+        ComputePipeline tileClearPipeline;
+        ComputePipeline tileCountPipeline;
+        ComputePipeline tileEmitPipeline;
+        ComputePipeline tileRangeBoundariesPipeline;
+        ComputePipeline tileRangeBuildPipeline;
+        ComputePipeline forwardPipeline;
+        ComputePipeline forwardWorkgroupPipeline;
+        vk::DescriptorSet tileClearDescriptorSet = nullptr;
+        vk::DescriptorSet tileCountDescriptorSet = nullptr;
+        vk::DescriptorSet tileEmitDescriptorSet = nullptr;
+        vk::DescriptorSet tileRangeBoundariesDescriptorSet = nullptr;
+        vk::DescriptorSet tileRangeBuildDescriptorSet = nullptr;
+        vk::DescriptorSet forwardDescriptorSet = nullptr;
+        vk::DescriptorSet forwardWorkgroupDescriptorSet = nullptr;
+    };
+
+    struct AdaptiveTilePipelines {
+        ComputePipeline countChildren;
+        ComputePipeline prefixChildren;
+        ComputePipeline prefixChildBlocks;
+        ComputePipeline selectChildren;
+        ComputePipeline dispatchChildren;
+        ComputePipeline scatterChildren;
+        ComputePipeline buildParentBoundaries;
+        ComputePipeline clearLeafRanges;
+        ComputePipeline buildLeafRanges;
+        ComputePipeline installChildRanges;
+        ComputePipeline forwardDirect;
+        std::array<ComputePipeline, 2> forwardWorkgroup;
+        vk::DescriptorSet countChildrenSet = nullptr;
+        vk::DescriptorSet prefixChildrenSet = nullptr;
+        vk::DescriptorSet prefixChildBlocksSet = nullptr;
+        vk::DescriptorSet selectChildrenSet = nullptr;
+        vk::DescriptorSet dispatchChildrenSet = nullptr;
+        vk::DescriptorSet scatterChildrenSet = nullptr;
+        vk::DescriptorSet buildParentBoundariesSet = nullptr;
+        vk::DescriptorSet clearLeafRangesSet = nullptr;
+        vk::DescriptorSet buildLeafRangesSet = nullptr;
+        vk::DescriptorSet installChildRangesSet = nullptr;
+        vk::DescriptorSet forwardDirectSet = nullptr;
+        std::array<vk::DescriptorSet, 2> forwardWorkgroupSets{};
+    };
+
     void createForwardResources();
     void destroyForwardResources();
+    void initializeTileVariant(TilePipelineVariant& variant, uint32_t tileSize);
+    void cleanupTileVariant(TilePipelineVariant& variant);
+    void initializeAdaptivePipelines();
+    void cleanupAdaptivePipelines();
+    [[nodiscard]] TilePipelineVariant& activeTileVariant();
+    [[nodiscard]] const TilePipelineVariant& activeTileVariant() const;
     void projectGaussians();
+    void buildAdaptiveChildRanges();
     void clearTileRanges();
     void countTileCoverage();
     void prefixGaussianTileRanges();
@@ -46,13 +100,10 @@ private:
     void rebuildTileRanges(uint32_t tileItemCount);
     void ensureTileSortResources(uint32_t tileItemCount);
     void compositePixels();
-    void bindAndDispatch(ComputePipeline& pipeline,
-                         vk::DescriptorSet descriptorSet,
-                         uint32_t groupCountX,
-                         uint32_t groupCountY = 1,
-                         uint32_t groupCountZ = 1);
-    void bindAndDispatchPrefix(ComputePipeline& pipeline,
-                               vk::DescriptorSet descriptorSet,
+    void bindAndDispatch(ComputePipeline& pipeline, vk::DescriptorSet descriptorSet,
+                         uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    void bindAndDispatchChildren(ComputePipeline& pipeline, vk::DescriptorSet descriptorSet);
+    void bindAndDispatchPrefix(ComputePipeline& pipeline, vk::DescriptorSet descriptorSet,
                                const TrainingPrefixPushConstants& prefixConstants,
                                uint32_t groupCountX);
     void shaderMemoryBarrier();
@@ -70,43 +121,32 @@ private:
     TrainingExtent extent_{};
 
     ComputePipeline projectPipeline_;
-    ComputePipeline tileClearPipeline_;
-    ComputePipeline tileCountPipeline_;
     ComputePipeline gaussianPrefixRangesPipeline_;
     ComputePipeline gaussianPrefixScratchPipeline_;
     ComputePipeline gaussianPrefixTopPipeline_;
     ComputePipeline gaussianPrefixAddScratchPipeline_;
     ComputePipeline gaussianPrefixAddRangesPipeline_;
-    ComputePipeline tileEmitPipeline_;
     ComputePipeline tileGatherHighPipeline_;
     ComputePipeline tileGatherItemsPipeline_;
-    ComputePipeline tileRangeBoundariesPipeline_;
-    ComputePipeline tileRangeBuildPipeline_;
-    ComputePipeline forwardPipeline_;
-    ComputePipeline forwardWorkgroupPipeline_;
+    std::array<TilePipelineVariant, 2> tileVariants_{};
+    AdaptiveTilePipelines adaptivePipelines_{};
     VrdxSorter radixSorter_ = VK_NULL_HANDLE;
 
     vk::DescriptorPool descriptorPool_ = nullptr;
     vk::DescriptorSet projectDescriptorSet_ = nullptr;
-    vk::DescriptorSet tileClearDescriptorSet_ = nullptr;
-    vk::DescriptorSet tileCountDescriptorSet_ = nullptr;
     vk::DescriptorSet gaussianPrefixRangesDescriptorSet_ = nullptr;
     vk::DescriptorSet gaussianPrefixScratchDescriptorSet_ = nullptr;
     vk::DescriptorSet gaussianPrefixTopDescriptorSet_ = nullptr;
     vk::DescriptorSet gaussianPrefixAddScratchDescriptorSet_ = nullptr;
     vk::DescriptorSet gaussianPrefixAddRangesDescriptorSet_ = nullptr;
-    vk::DescriptorSet tileEmitDescriptorSet_ = nullptr;
     vk::DescriptorSet tileGatherHighDescriptorSet_ = nullptr;
     vk::DescriptorSet tileGatherItemsDescriptorSet_ = nullptr;
-    vk::DescriptorSet tileRangeBoundariesDescriptorSet_ = nullptr;
-    vk::DescriptorSet tileRangeBuildDescriptorSet_ = nullptr;
-    vk::DescriptorSet forwardDescriptorSet_ = nullptr;
-    vk::DescriptorSet forwardWorkgroupDescriptorSet_ = nullptr;
 
     TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
     vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
+    uint32_t adaptiveSplitThreshold_ = 256u;
     TrainingForwardCompositeMode compositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
     bool initialized_ = false;
 };

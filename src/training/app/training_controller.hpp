@@ -28,7 +28,14 @@ struct TrainingUiSnapshot {
     bool tileGaussianSupported = false;
     bool vkSplatPerSplatSupported = false;
     bool vkSplatTensorSupported = false;
+    bool tensorSubgroupReductionSupported = false;
+    bool tensorSubgroupReductionActive = false;
+    bool tensorGlobalPixelGradActive = false;
+    bool tensorRgbLatencyHidingActive = false;
     TrainingPixelTo2DGSMode activePixelMode = TrainingPixelTo2DGSMode::Direct;
+    TrainingTileMode tileMode = TrainingTileMode::Fixed16;
+    uint32_t activeTileSize = 16u;
+    uint32_t adaptiveTensorChildBatch = 8u;
     uint32_t gaussianCount = 0;
     uint32_t trainingIteration = 0;
     uint32_t totalIterations = 0;
@@ -122,6 +129,8 @@ public:
     void applyLiveSettings();
     void toggleTraining();
     void startFixedBenchmark();
+    void exportFixedBenchmarkGradients();
+    void exportAdaptiveTileDiagnostics();
     void exportDefaultModel();
     void exportModelTo(const std::filesystem::path& path);
     void setOutputDirectory(const std::filesystem::path& path);

@@ -19,13 +19,13 @@ RWStructuredBuffer<ProjectedGaussianGrad> projectedGrads;
 StructuredBuffer<PixelBlendState> pixelBlendStates;
 
 groupshared uint sharedMaxProcessedCount;
-groupshared uint sharedGaussianIndices[256];
-groupshared float4 sharedCenterRadius[256];
-groupshared float4 sharedConicOpacity[256];
-groupshared float4 sharedColor[256];
+groupshared uint sharedGaussianIndices[TRAIN_TILE_PIXEL_COUNT];
+groupshared float4 sharedCenterRadius[TRAIN_TILE_PIXEL_COUNT];
+groupshared float4 sharedConicOpacity[TRAIN_TILE_PIXEL_COUNT];
+groupshared float4 sharedColor[TRAIN_TILE_PIXEL_COUNT];
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(TRAIN_TILE_SIZE, TRAIN_TILE_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID,
           uint3 groupThreadID : SV_GroupThreadID) {
     uint2 pixel = dispatchThreadID.xy;
@@ -60,7 +60,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
     uint remaining = sharedMaxProcessedCount;
 
     while (remaining > 0u) {
-        uint batchCount = min(remaining, 256u);
+        uint batchCount = min(remaining, TRAIN_TILE_PIXEL_COUNT);
         uint batchStart = remaining - batchCount;
         if (localIndex < batchCount) {
             uint itemOffset = batchStart + localIndex;

@@ -36,17 +36,22 @@ struct TrainingDataset {
     std::filesystem::path sceneRoot;
     std::filesystem::path imageDirectory;
     uint32_t imageDownscale = 1;
+    // Frames used by the optimizer. Validation frames are kept separately so
+    // they never enter the training scheduler or device image cache.
     std::vector<TrainingCameraFrame> frames;
+    std::vector<TrainingCameraFrame> validationFrames;
     std::vector<TrainingSparsePoint> sparsePoints;
 
     bool empty() const { return frames.empty(); }
     size_t size() const { return frames.size(); }
+    size_t validationSize() const { return validationFrames.size(); }
 };
 
 struct TrainingDatasetValidation {
     bool valid = false;
     std::string message;
     uint32_t frameCount = 0;
+    uint32_t validationFrameCount = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t downscale = 1;

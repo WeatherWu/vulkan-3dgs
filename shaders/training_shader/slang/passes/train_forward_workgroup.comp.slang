@@ -15,22 +15,30 @@ RWStructuredBuffer<float4> renderedColor;
 [[vk::binding(14, 0)]]
 RWStructuredBuffer<PixelBlendState> pixelBlendStates;
 
-groupshared uint sharedGaussianIndices[256];
-groupshared float4 sharedCenterRadius[256];
-groupshared float4 sharedConicOpacity[256];
-groupshared float4 sharedColor[256];
+groupshared uint sharedGaussianIndices[TRAIN_TILE_PIXEL_COUNT];
+groupshared float4 sharedCenterRadius[TRAIN_TILE_PIXEL_COUNT];
+groupshared float4 sharedConicOpacity[TRAIN_TILE_PIXEL_COUNT];
+groupshared float4 sharedColor[TRAIN_TILE_PIXEL_COUNT];
 groupshared uint sharedActivePixelCount;
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(TRAIN_TILE_SIZE, TRAIN_TILE_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID,
-          uint3 groupThreadID : SV_GroupThreadID) {
+          uint3 groupThreadID : SV_GroupThreadID,
+          uint3 groupID : SV_GroupID) {
     uint2 pixel = dispatchThreadID.xy;
+#if TRAIN_ADAPTIVE_TILES
+    TrainingTileWorkgroup workgroup = trainingTileWorkgroup(groupID.xy);
+    if (!workgroup.active) return;
+    pixel = workgroup.origin + groupThreadID.xy;
+    TileRange range = unpackTileRange(tileRanges[workgroup.tileIndex]);
+#else
+    TileRange range = unpackTileRange(tileRanges[tileIndexForPixel(pixel)]);
+#endif
     uint localIndex = groupThreadID.y * TRAIN_TILE_SIZE + groupThreadID.x;
     bool validPixel = pixel.x < params.width && pixel.y < params.height;
     uint pixelLinearIndex = validPixel ? pixelIndex(pixel) : 0u;
     float2 samplePosition = pixelCenter(pixel);
-    TileRange range = unpackTileRange(tileRanges[tileIndexForPixel(pixel)]);
     PixelComposite composite = makeEmptyComposite();
     bool finished = !validPixel;
     if (localIndex == 0u) {
@@ -43,8 +51,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
     }
     GroupMemoryBarrierWithGroupSync();
 
-    for (uint batchStart = 0u; batchStart < range.count; batchStart += 256u) {
-        uint batchCount = min(range.count - batchStart, 256u);
+    for (uint batchStart = 0u; batchStart < range.count;
+         batchStart += TRAIN_TILE_PIXEL_COUNT) {
+        uint batchCount = min(range.count - batchStart, TRAIN_TILE_PIXEL_COUNT);
         if (localIndex < batchCount) {
             uint gaussianIndex = tileItems[range.start + batchStart + localIndex];
             sharedGaussianIndices[localIndex] = gaussianIndex;

@@ -18,17 +18,17 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
 
     uint currentTile = index == params.tileItemCount
-        ? trainTileCount()
+        ? tileRangeCapacity()
         : tileKeyHigh[tileSortIndices[index]];
     uint previousTile = index == 0u
-        ? trainTileCount()
+        ? tileRangeCapacity()
         : tileKeyHigh[tileSortIndices[index - 1u]];
-    if (index < params.tileItemCount && currentTile < trainTileCount() &&
+    if (index < params.tileItemCount && currentTile < tileRangeCapacity() &&
         (index == 0u || currentTile != previousTile)) {
         uint ignored = 0u;
         InterlockedExchange(tileRanges[currentTile].x, index, ignored);
     }
-    if (index > 0u && previousTile < trainTileCount() &&
+    if (index > 0u && previousTile < tileRangeCapacity() &&
         (index == params.tileItemCount || currentTile != previousTile)) {
         uint ignored = 0u;
         InterlockedExchange(tileRanges[previousTile].y, index, ignored);

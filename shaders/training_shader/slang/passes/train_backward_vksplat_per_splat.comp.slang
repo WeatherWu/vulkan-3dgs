@@ -37,12 +37,15 @@ void addProjectedGrad(inout ProjectedGaussianGrad destination,
 [numthreads(128, 1, 1)]
 void main(uint3 groupThreadID : SV_GroupThreadID,
           uint3 groupID : SV_GroupID) {
+    TrainingTileWorkgroup tileWorkgroup = trainingTileWorkgroup(groupID.xy);
+    if (!tileWorkgroup.active) return;
     uint threadRank = groupThreadID.x;
-    uint tileIndex = groupID.y * tileCountX() + groupID.x;
+    uint tileIndex = tileWorkgroup.tileIndex;
     TileRange range = unpackTileRange(tileRanges[tileIndex]);
-    uint safeRangeStart = min(range.start, params.tileItemCount);
-    uint rangeCount = min(range.count, params.tileItemCount - safeRangeStart);
-    uint2 tileOrigin = groupID.xy * TRAIN_TILE_SIZE;
+    uint itemReadLimit = trainBackwardTileItemReadLimit();
+    uint safeRangeStart = min(range.start, itemReadLimit);
+    uint rangeCount = min(range.count, itemReadLimit - safeRangeStart);
+    uint2 tileOrigin = tileWorkgroup.origin;
 
     for (uint pixelRank = threadRank;
          pixelRank < VKSPLAT_TILE_PIXEL_COUNT;

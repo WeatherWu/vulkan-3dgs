@@ -1,4 +1,5 @@
 #include "training/app/training_settings.hpp"
+#include "training/core/training_tile_layout.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -47,6 +48,12 @@ const std::unordered_set<std::string>& trainingKeys() {
                                                       "pixel_to_2dgs_mode",
                                                       "pixel_to_2dgs_min_subgroup_utilization",
                                                       "forward_composite_mode",
+                                                      "training_tile_mode",
+                                                      "adaptive_tile_split_threshold",
+                                                      "adaptive_tensor_child_batch",
+                                                      "tensor_subgroup_reduction",
+                                                      "tensor_global_pixel_grad",
+                                                      "tensor_rgb_latency_hiding",
                                                       "total_iterations",
                                                       "steps_per_frame",
                                                       "validation_interval",
@@ -78,6 +85,7 @@ const std::unordered_set<std::string>& trainingKeys() {
                                                       "opacity_reset_interval",
                                                       "max_gaussians",
                                                       "split_children",
+                                                      "densification_gradient_mode",
                                                       "densify_grad_threshold",
                                                       "min_opacity",
                                                       "percent_dense",
@@ -163,6 +171,24 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
             row >> settings.run.pixelTo2DGSMinSubgroupUtilization;
         else if (key == "forward_composite_mode")
             row >> settings.run.forwardCompositeMode;
+        else if (key == "training_tile_mode")
+            row >> settings.run.tileMode;
+        else if (key == "adaptive_tile_split_threshold")
+            row >> settings.run.adaptiveTileSplitThreshold;
+        else if (key == "adaptive_tensor_child_batch")
+            row >> settings.run.adaptiveTensorChildBatch;
+        else if (key == "tensor_subgroup_reduction") {
+            int value = 0;
+            if (row >> value) settings.run.tensorSubgroupReduction = value != 0;
+        }
+        else if (key == "tensor_global_pixel_grad") {
+            int value = 0;
+            if (row >> value) settings.run.tensorGlobalPixelGrad = value != 0;
+        }
+        else if (key == "tensor_rgb_latency_hiding") {
+            int value = 0;
+            if (row >> value) settings.run.tensorRgbLatencyHiding = value != 0;
+        }
         else if (key == "steps_per_frame")
             row >> settings.run.benchmarkStepsPerFrame;
         else if (key == "benchmark_frame")
@@ -223,6 +249,8 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
             row >> settings.densification.maxGaussians;
         else if (key == "split_children")
             row >> settings.densification.splitChildren;
+        else if (key == "densification_gradient_mode")
+            row >> settings.densification.gradientMode;
         else if (key == "densify_grad_threshold")
             row >> settings.densification.gradientThreshold;
         else if (key == "min_opacity")
@@ -275,6 +303,12 @@ void TrainingSettingsStore::write(std::ostream& output, const TrainingSettings& 
     output << "pixel_to_2dgs_min_subgroup_utilization " << run.pixelTo2DGSMinSubgroupUtilization
            << '\n';
     output << "forward_composite_mode " << run.forwardCompositeMode << '\n';
+    output << "training_tile_mode " << run.tileMode << '\n';
+    output << "adaptive_tile_split_threshold " << run.adaptiveTileSplitThreshold << '\n';
+    output << "adaptive_tensor_child_batch " << run.adaptiveTensorChildBatch << '\n';
+    output << "tensor_subgroup_reduction " << (run.tensorSubgroupReduction ? 1 : 0) << '\n';
+    output << "tensor_global_pixel_grad " << (run.tensorGlobalPixelGrad ? 1 : 0) << '\n';
+    output << "tensor_rgb_latency_hiding " << (run.tensorRgbLatencyHiding ? 1 : 0) << '\n';
     output << "steps_per_frame " << run.benchmarkStepsPerFrame << '\n';
     output << "benchmark_frame " << run.benchmarkFrame << '\n';
     output << "benchmark_warmup " << run.benchmarkWarmupSteps << '\n';
@@ -304,6 +338,7 @@ void TrainingSettingsStore::write(std::ostream& output, const TrainingSettings& 
     output << "opacity_reset_interval " << densify.opacityResetInterval << '\n';
     output << "max_gaussians " << densify.maxGaussians << '\n';
     output << "split_children " << densify.splitChildren << '\n';
+    output << "densification_gradient_mode " << densify.gradientMode << '\n';
     output << "densify_grad_threshold " << densify.gradientThreshold << '\n';
     output << "min_opacity " << densify.minOpacity << '\n';
     output << "percent_dense " << densify.percentDense << '\n';
@@ -356,6 +391,16 @@ TrainingSettingsValidation TrainingSettingsStore::validate(const TrainingSetting
     if (run.forwardCompositeMode < 0 || run.forwardCompositeMode > 1) {
         return invalid("Forward composite mode is invalid");
     }
+    if (run.tileMode < 0 || run.tileMode > 2) {
+        return invalid("Training tile mode is invalid");
+    }
+    if (run.adaptiveTileSplitThreshold == 0u || run.adaptiveTileSplitThreshold > 1000000u) {
+        return invalid("Adaptive tile split threshold is invalid");
+    }
+    if (run.adaptiveTensorChildBatch != 8u && run.adaptiveTensorChildBatch != 16u &&
+        run.adaptiveTensorChildBatch != 32u) {
+        return invalid("Adaptive Tensor child batch must be 8, 16 or 32");
+    }
     if (run.benchmarkStepsPerFrame == 0u || run.benchmarkMeasuredSteps == 0u) {
         return invalid("Benchmark step counts must be greater than zero");
     }
@@ -387,6 +432,9 @@ TrainingSettingsValidation TrainingSettingsStore::validate(const TrainingSetting
     }
 
     const auto& densify = settings.densification;
+    if (densify.gradientMode < 0 || densify.gradientMode > 1) {
+        return invalid("Densification gradient mode is invalid");
+    }
     if (densify.untilIteration < densify.fromIteration || densify.interval == 0u ||
         densify.opacityResetInterval == 0u || densify.maxGaussians == 0u ||
         densify.splitChildren < 2u || densify.splitChildren > 8u ||
@@ -427,11 +475,20 @@ void TrainingSettingsStore::clamp(TrainingSettings& settings) {
     settings.run.pixelTo2DGSMinSubgroupUtilization =
         std::clamp(settings.run.pixelTo2DGSMinSubgroupUtilization, 0.0f, 1.0f);
     settings.run.forwardCompositeMode = std::clamp(settings.run.forwardCompositeMode, 0, 1);
+    // Unknown persisted values should remain on the established fixed 16x16
+    // path; do not silently opt users into the experimental adaptive mode.
+    if (settings.run.tileMode < 0 || settings.run.tileMode > 2) {
+        settings.run.tileMode = 1;
+    }
+    settings.run.adaptiveTileSplitThreshold =
+        std::clamp(settings.run.adaptiveTileSplitThreshold, 1u, 1000000u);
+    settings.run.adaptiveTensorChildBatch = normalizeAdaptiveTensorChildBatch(settings.run.adaptiveTensorChildBatch);
     settings.run.benchmarkStepsPerFrame = std::max(settings.run.benchmarkStepsPerFrame, 1u);
     settings.run.benchmarkMeasuredSteps = std::max(settings.run.benchmarkMeasuredSteps, 1u);
     settings.optimizer.maxSHDegree = std::min(settings.optimizer.maxSHDegree, 3u);
     settings.optimizer.shDegreeInterval = std::max(settings.optimizer.shDegreeInterval, 1u);
     settings.densification.splitChildren = std::clamp(settings.densification.splitChildren, 2u, 8u);
+    settings.densification.gradientMode = std::clamp(settings.densification.gradientMode, 0, 1);
 }
 
 } // namespace vulkan3DGS

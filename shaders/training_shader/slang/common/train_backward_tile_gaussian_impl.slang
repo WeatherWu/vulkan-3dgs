@@ -70,7 +70,7 @@ uint reduceTileGaussianSubgroupCount(uint value,
 }
 
 [shader("compute")]
-[numthreads(16, 16, 1)]
+[numthreads(TRAIN_TILE_SIZE, TRAIN_TILE_SIZE, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID,
           uint3 groupThreadID : SV_GroupThreadID) {
     uint2 pixel = dispatchThreadID.xy;
