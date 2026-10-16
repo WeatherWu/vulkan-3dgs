@@ -147,6 +147,8 @@ scene/
 
 也支持 `sparse/` 或根目录 COLMAP 二进制文件。加载器通过 STB 读取真实图片尺寸，要求图片尺寸一致，并将 PINHOLE/SIMPLE_PINHOLE 内参缩放到所选图片目录。训练路径不会校正畸变相机模型。
 
+可加载图片按名称排序后，零起始索引 `0、8、16、...` 留作验证；只有一张图片的场景仍全部用于训练。Benchmark frame索引指向训练子集，不是原始完整COLMAP列表。评测held-out质量时必须匹配这一拆分。
+
 存在 `points3D.bin` 时，`TrainingModelIO` 使用稀疏点的位置和 RGB，并通过 CPU 3 近邻估计 scale。没有稀疏点时，会在相机范围附近采样配置数量的随机 Gaussian。
 
 查看器和导出器使用 binary little-endian 3DGS PLY，包含 position、opacity、scale、quaternion rotation、SH DC 和 SH rest 字段。
@@ -196,7 +198,7 @@ scene/
 1. 按 Gaussian 连续写入 tile item。
 2. 通过两次稳定的 32-bit radix pass 排序 `(tile, depth)`。
 3. 重建每 tile 的 `[start,count]`。
-4. 把排序后的 Gaussian 合成到渲染图片。
+4. Adaptive Spatial先选择parent并追加稳定child列表，再按选定tile布局合成渲染图片。
 5. 执行 loss、backward clear、loss-to-pixel、Pixel-to-2DGS 和 projection/optimizer。
 6. 按需执行 validation 与 densify/prune。
 7. 提交并等待选定 fence，收集紧凑统计，并在需要时 adopt densified buffer。
@@ -215,6 +217,32 @@ scene/
 | `BackwardValidationPass` | Gaussian validation 与最终紧凑 reduction |
 
 Auto Pixel-to-2DGS 只在 Direct 与 subgroup-adaptive 路径之间选择。不支持的显式模式会回退 Direct；Per-Splat 和 Tensor 不会被 Auto 选择。
+
+### 训练tile
+
+`Training Tile`支持Fixed8、Fixed16（默认）和实验性Adaptive Spatial。Adaptive要求支持的Tensor或Per-Splat backward，否则训练使用Fixed16。它只排序一次16×16 parent列表，在parent item数量四分之一的child预算内选择有收益的parent，追加保持深度顺序的8×8 child列表，并通过GPU元数据调度细分工作；不增加第二次全局child排序或CPU计数回读。
+
+`Adaptive Split Threshold`默认256。`Adaptive Tensor Child Batch`支持8/16/32，默认8，只改变child。下面的Fixed16 Tensor控件不改变Adaptive parent或child内核。已有Adaptive试验不能支持替换Fixed16默认值。
+
+### Fixed16 Tensor控件
+
+这些A/B控件只在停止时修改，使用相同descriptor ABI和独立编译pipeline。请求配置会持久化；`Active Tensor ...`和已完成benchmark标签报告实际经过能力保护的路径。
+
+| 控件 / 持久化key | 默认值 | 生效条件 |
+| --- | --- | --- |
+| `Tensor Subgroup Reduction (Experimental)` / `tensor_subgroup_reduction` | Off | Fixed16＋VkSplat Tensor；native subgroup32、compute BASIC/SHUFFLE及基础Tensor支持 |
+| `Tensor Pixel Gradient Source` / `tensor_global_pixel_grad` | Shared（0） | Global（1）要求上面的subgroup路径生效 |
+| `Tensor RGB Latency Hiding (Experimental)` / `tensor_rgb_latency_hiding` | Off | 要求上面的Global路径生效 |
+
+Tensor能力检查仍要求至少45 KiB共享内存。Fixed16 Shared归约每工作组使用45824 B，Subgroup归约36612 B，Subgroup＋Global像素梯度33540 B。Global读取检查像素的两个坐标。RGB调度变体保持相同共享存储预算，改变RGB消费与几何累加的相对位置，目前没有明确的稳定提速证据。Tensor名称不表示使用Tensor Core MMA。
+
+Fixed16/Tensor/Subgroup/Global/Baseline RGB是手动选择的后续实验工作基线，不是程序默认值变更。Global变体通过了提供的单步梯度比较，并在匹配单帧ABA中改善了耗时；这不等于跨场景质量或整轮训练性能验证。寄存器数量与`# Warp`属于编译器/驱动观测，后者是理论驻留上限。
+
+### Loss与SSIM
+
+Loss pass计算L1/DSSIM并保存`SsimBackwardState`，loss-to-pixel消费这些系数。两者仍遍历二维11×11邻域，使用零填充和固定归一化。可分离SSIM和Checkpointed Warp Backward尚未实现。
+
+### Projection与优化器
 
 Projection backward 与 Adam 默认融合。设置 `VULKAN_3DGS_SEPARATE_PROJECTION_OPTIMIZER=1` 可用于 A/B 调试；设置 `VULKAN_3DGS_COMPUTE_BACKWARD_CLEAR=1` 可用 compute fallback 替代常规 `vkCmdFillBuffer` 清理。
 
@@ -248,6 +276,8 @@ Projection backward 与 Adam 默认融合。设置 `VULKAN_3DGS_SEPARATE_PROJECT
 | 28 | SSIM backward state |
 | 29/30/31 | Pixel partial、Gaussian partial、validation 最终结果 |
 | 32/33 | 每 Gaussian tile range 与 prefix scratch |
+| 34/35/36/37 | Adaptive split flag、child count、item mask、child offset |
+| 38/39/40/41 | Adaptive parent prefix、block scratch/offset、active parent、child dispatch元数据 |
 
 Binding 数字与 C++/Slang struct layout 都是 ABI。修改时必须同步更新 C++ descriptor write、Slang `[[vk::binding(N, 0)]]` 和 static assertion。`TrainingBuffers` descriptor getter 返回值；赋给 `pBufferInfo` 前必须保存在生命周期稳定的局部变量中。
 
@@ -270,9 +300,42 @@ Validation 在前五次迭代执行，之后按配置间隔执行。GPU 把 pixe
 
 使用 `Start Fixed Benchmark` 进行 kernel A/B。它固定一帧，冻结模型与迭代状态，关闭 optimizer 和 densification，在 warmup 后清空统计，并只在最后一个 measured step 执行 validation。它不是端到端训练 benchmark；wall-clock 对比应使用 Pure Training。
 
+### 梯度检查与计时
+
+1. 暂停在同一模型上，保持benchmark frame、forward设置和extent不变。用warmup 0/measured 1，每次完成后导出梯度。
+2. 用本地辅助脚本比较实际路径：
+
+   ```powershell
+   python scripts/compare_projected_gradients.py baseline.bin candidate.bin
+   python -m unittest discover -s tests -p "test_*.py"
+   ```
+
+3. 对新性能假设使用warmup 200/measured 1000做ABA，记录average，不在中间恢复普通训练。确认measured进度达到目标；`n=30000`整轮训练累计统计不是完成的1000步Fixed Benchmark。
+
+`Export Benchmark Gradients`写入配置输出目录下的`benchmark_gradients/`。Fixed16 Tensor文件名区分归约、像素梯度来源和Global RGB schedule；Adaptive Tensor文件名区分child batch。重名文件使用数字后缀。当前写v5：80字节little-endian header，包含magic `V3DGGRD1`、16个uint32和loss/alpha两个float32，之后是每Gaussian 12个float32梯度分量和一个membership字节。比较器读v1–v5，报告实际路径，并检查repeat捕获的路径一致。除退出状态外还要看mismatch计数，不能只为通过而放宽容差。
+
+`Export Adaptive Tile Diagnostics`在`benchmark_tiles/`写CSV和配套mask文件。Adaptive构建计时嵌套于sort/ranges；parent/child backward与`Tile-local backward`嵌套于Pixel-to-2DGS，不能重复相加。
+
+当前ignore规则排除`scripts/`、捕获输出、`plan.md`和`.codex/`。只传输受Git跟踪的源码时，需显式同步本地辅助脚本、计划和技能；上述命令要求这些本地脚本存在。
+
+### Shader源码profiling
+
+需要源码关联的GPU Trace时，开启默认OFF的CMake选项：
+
+```powershell
+cmake -S . -B build -DVULKAN_3DGS_TRAINING_SHADER_DEBUG_INFO=ON
+cmake --build build --config Release
+```
+
+Linux单配置构建还需设置预期的`CMAKE_BUILD_TYPE`，例如Release。该选项为训练shader添加Slang `-g2`，通过依赖stamp在切换后重编译；它不是环境变量。
+
+使用`ngfx`启动脚本和real-time shader profiling，选择实际compute设备/时间范围，在benchmark进度递增时捕获。绿色源码关联不表示采到了执行样本。零样本和缺少debug信息是两个问题，Show Inactive不能补回未捕获的工作负载。普通计时与可能控制GPU时钟的Nsight采集分开。归因LGSB/SHRTSB前展开调用点；采样行可能是等待其他位置所产生数据的消费指令，不能直接认定load、spill或bank conflict。
+
 ## 稠密化与优化器
 
 默认稠密化从第 500 次迭代开始，在 15,000 次停止，每 100 次执行一次，并每 3,000 次重置 opacity。支持 clone、split、opacity pruning、screen/world-size pruning、局部 split offset、scale shrink 和 Adam state 处理。
+
+`Densification Gradient`选择Visible Support（默认，`densification_gradient_mode=0`）或Compact（Projected Exposure，1）。这是两种已实现的统计模式，不是连续support-ratio beta；性能和质量对比必须保持该模式一致。
 
 Adopt 时 active/output 参数和 Adam buffer 进行 ping-pong。Workspace capacity 按几何比例增长并向 16,384 Gaussian 对齐。支持 `VK_EXT_shader_atomic_float` 时使用 float atomic add；不支持 float min/max atomic 时使用 uint-radius shader 变体完成 radius-max fallback。
 
@@ -315,7 +378,10 @@ cmake --build build --config Debug --target quality-new
 - 每次训练迭代仍会等待 prepare 和 main submission。
 - Tile sort 使用两次稳定的 32-bit radix pass，而非单一 packed key。
 - Loss 与 loss-to-pixel 仍是两个 pass。
+- 可分离SSIM、Checkpointed Warp Backward、像素级EarlyCull/scanline原型、GPU SoA/AoSoA参数存储和GPU-driven count/sort是后续方向，不是当前功能。
 - Pixel backward kernel 由用户选择，Auto 不选择 VkSplat。
+- RGB latency hiding尚无明确稳定收益；三个Tensor A/B开关仍默认关闭，也不改变Adaptive内核。
+- 普通训练计划完成后，同步路径的training-complete检查可能提前终止新启动的多步Fixed Benchmark；独立生命周期修复前，应使用更早的冻结检查点并确认进度。
 - 完整 Gaussian gradient buffer 仍为 fallback、optimizer-disabled 和 densification 路径保留。
 - Densification 仍可能产生较大的分配和带宽峰值。
 - 训练只接受未畸变 PINHOLE/SIMPLE_PINHOLE 相机，不处理 target alpha mask。
