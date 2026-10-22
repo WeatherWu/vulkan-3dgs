@@ -50,7 +50,7 @@ TrainingPixelTo2DGSMode
 resolvePixelTo2DGSMode(TrainingPixelTo2DGSMode requested,
                        const PixelTo2DGSCapabilities& capabilities) noexcept {
     if (requested == TrainingPixelTo2DGSMode::CheckpointedWarp)
-        return TrainingPixelTo2DGSMode::Direct; // P2 is selected by its explicit benchmark request.
+        return TrainingPixelTo2DGSMode::Direct; // checkpoint warp is selected by its explicit benchmark request.
     if (requested == TrainingPixelTo2DGSMode::Auto) {
         return capabilities.subgroup ? TrainingPixelTo2DGSMode::Auto
                                      : TrainingPixelTo2DGSMode::Direct;

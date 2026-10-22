@@ -73,12 +73,12 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
         if (ImGui::Button("Start Fixed Benchmark")) {
             actions.startFixedBenchmark = true;
         }
-        if (ImGui::Button("Run P1 State Diagnostic")) {
+        if (ImGui::Button("Run Checkpoint State Diagnostic")) {
             actions.startCheckpointDiagnostic = true;
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Benchmarks checkpoint state generation; gradients use the original Tensor path.");
-        if (ImGui::Button("Run P2 Warp Benchmark")) actions.startCheckpointWarp = true;
+        if (ImGui::Button("Run Checkpoint Warp Benchmark")) actions.startCheckpointWarp = true;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Tests checkpointed warp gradients on this frozen model/frame.");
         if (ImGui::Button("Run S3 EarlyCull Benchmark")) actions.startTensorEarlyCull = true;
@@ -92,7 +92,7 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
     if (!state.trainingRunning) {
         ImGui::BeginDisabled(!snapshot.rendererInitialized || !snapshot.hasTrainableModel ||
                              snapshot.trainingComplete || state.workerActive);
-        if (ImGui::Button("Capture ONE S4 Optimizer Step and Pause")) actions.captureOptimizerStep = true;
+        if (ImGui::Button("Capture One Optimizer Step and Pause")) actions.captureOptimizerStep = true;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("ACTUALLY TRAINS ONE STEP using the paused model's existing configuration, then pauses and exports pre/post state (~1.97 GB at 1.25M Gaussians). Next step must be ordinary fused, not final/ADC/reset. No automatic extra steps or layout changes.");
         ImGui::EndDisabled();
@@ -181,7 +181,7 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
             benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor &&
             benchmark.tensorGlobalPixelGrad && !benchmark.tensorRgbLatencyHiding &&
             !benchmark.pixelCullMethod && !benchmark.checkpointDiagnosticsRequested) {
-            if (ImGui::Button("Export S3-2 Diagnostic Inputs")) actions.exportScanlineDiagnosticInputs = true;
+            if (ImGui::Button("Export Scanline Inputs")) actions.exportScanlineDiagnosticInputs = true;
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("One-time frozen input download for offline scanline feasibility diagnosis; no gradient or training changes.");
         }

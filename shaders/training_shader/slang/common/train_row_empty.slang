@@ -2,7 +2,7 @@
 #define TRAIN_ROW_EMPTY_SLANG
 #include "train_pixel_culling.slang"
 
-// Experimental R0/R1 predicate: 0 = proven empty, 1 = keep, 2 = fallback/keep.
+// Experimental classification/isolated candidate predicate: 0 = proven empty, 1 = keep, 2 = fallback/keep.
 // Contract and forward-error ledger: docs/training-row-empty-contract.md.
 // Unlike the diagnostic span, no determinant division or square root is used
 // to prove exclusion. Division selects ANY tangent point, not an exact vertex.

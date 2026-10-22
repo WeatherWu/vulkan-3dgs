@@ -1,4 +1,4 @@
-// S4-3 private synthetic diagnostic only. Never selected by a training renderer.
+// scheduling private synthetic diagnostic only. Never selected by a training renderer.
 [[vk::binding(0, 0)]] StructuredBuffer<uint> originalHigh;
 [[vk::binding(1, 0)]] StructuredBuffer<uint> sortedIndices;
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint> highKeys;

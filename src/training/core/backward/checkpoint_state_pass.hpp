@@ -7,7 +7,7 @@
 
 namespace vulkan3DGS {
 
-// P1 diagnostic state producer. It never writes rendered pixels or gradients.
+// state construction diagnostic state producer. It never writes rendered pixels or gradients.
 class CheckpointStatePass {
 public:
     void initialize(vk::Device device, vk::PhysicalDevice physicalDevice,

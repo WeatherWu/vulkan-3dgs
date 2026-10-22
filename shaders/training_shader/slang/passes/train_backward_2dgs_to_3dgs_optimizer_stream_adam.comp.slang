@@ -1,4 +1,4 @@
-// S4-1R offline-only candidate. Same AoS bytes/bindings, FP32 and group256.
+// streamed-Adam offline-only candidate. Same AoS bytes/bindings, FP32 and group256.
 // Original projection/SH gradients finish BEFORE any parameter/moment update.
 #include "../common/train_backward_project_common.slang"
 #include "../common/train_optimizer_common.slang"

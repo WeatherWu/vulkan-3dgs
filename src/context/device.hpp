@@ -75,7 +75,7 @@ private:
     vk::Queue graphicsQueue_ = nullptr;
     vk::Queue presentQueue_ = nullptr;
     vk::Queue transferQueue_ = nullptr;
-    vk::Queue computeQueue_ = nullptr;  // 新增：计算队列
+    vk::Queue computeQueue_ = nullptr;  // 计算队列
     QueueFamilyIndices queueFamilyIndices_;
     PhysicalDeviceInfo selectedPhysicalDeviceInfo_;
     std::vector<PhysicalDeviceInfo> availablePhysicalDeviceInfos_;

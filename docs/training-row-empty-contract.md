@@ -1,10 +1,10 @@
-# Tensor row-empty R0 contract
+# Experimental row-empty classifier
 
-This is the shared numerical contract for the experimental R0 classification
-gate and isolated R1 backward prototype, not a performance result. The previous
-padded SPD root interval is diagnostic only. R0/R1 use a conservative tangent
-lower bound, without trusting root, determinant-division or square-root accuracy.
-The application dispatchers/defaults do not select the R1 prototype.
+This reference describes the implemented predicate and its arithmetic assumptions,
+not a completed production safety proof or a performance result. The isolated
+classifier/candidate are not selected by normal application dispatch. Stress
+validation remains unresolved; geometric coverage alone does not establish safe
+integrated execution or faster training.
 
 ## Supported domain
 
@@ -21,7 +21,7 @@ The classifier keeps the whole row on any failed precondition:
 
 This deliberately sacrifices coverage for a bounded arithmetic domain. It is
 not an epsilon parameter to tune. Non-SPD, tiny, extreme-scale and non-finite
-inputs keep the old path. An invalid image row is never classified as new work.
+inputs use ordinary sampling. An invalid image row is never classified as new work.
 
 ## Real-arithmetic lower bound
 
@@ -88,92 +88,40 @@ its underflow contract. Equality and uncertain cases keep the original sample.
 The FP32 instruction assumptions come from the
 [Vulkan precision rules](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#precision-and-operation-of-spirv-instructions).
 The guard's exp/log budget remains the one documented for pixel EarlyCull;
-R0 neither lowers that guard nor reorders retained sample arithmetic.
+The classifier neither lowers that guard nor reorders retained sample arithmetic.
 
-## Compiler and validation gates
+## Compiler and runtime checks
 
-Source `precise` alone is insufficient. Local Slang 2026.7.1 direct SPIR-V
-emits no `NoContraction` even with `-fp-mode precise`, reproducing the
-[upstream compiler issue](https://github.com/shader-slang/slang/issues/11933).
-Only RowEmpty census/candidate wrappers use Slang's `-emit-spirv-via-glsl`
-compatibility path plus `-fp-mode precise`; original training and S3-2 shader
-flags are unchanged.
-This uses the bundled downstream compiler, not a new renderer or dependency
-installation. If that backend is unavailable, compilation must fail rather
-than silently use direct emission. Runtime inspection rejects absent
-`NoContraction`, non-FP32/relaxed floating-point values or changed exp/log lowering. This
-inspection is a guard against known regressions, not a substitute for reviewing
-the arithmetic graph after compiler/helper changes.
+Row-empty wrappers use the GLSL SPIR-V emission path with precise floating-point
+mode. The runtime audit checks NoContraction, FP32 types, precision decorations
+and exp/log lowering. Source annotations alone are not a certificate.
 
-The CPU tests separately check the bound against an analytic exact-real
-clamped-vertex minimum, the original FP32 sample, a worst-direction power
-allowance and an independent long-double alpha envelope. GPU tests compare
-original sampling counts against the independent scalar oracle, and every
-rejection against the original GPU sample function. Different compiler paths
-need not produce bit-identical oracle values at every threshold, so the
-target numerical admission still requires its own zero-false-drop report.
-No integrated Tensor gradients have been computed by R0. R1's SPIR-V audit
-allows one bounded-integer case emitted by glslang: the uint32
-`SubgroupLocalInvocationId` input (SPIR-V BuiltIn 41) and direct uint32 loads
-from that input may carry `RelaxedPrecision`. On admitted native32 devices
-their values are 0..31. The audit verifies that builtin, input pointer and load
-types; it does not exempt integer arithmetic, Gaussian indices, coordinates,
-struct members or any floats. In-memory negative tests reject relaxed float
-results, relaxed integer arithmetic, and broken precision decorations.
+The audit permits RelaxedPrecision only on the native32 uint subgroup-invocation
+input and its direct loads. It does not exempt arithmetic, indices, coordinates,
+struct members or floats. Numeric changes still require target execution.
 
-## Report and next gate
+## Tools
 
-```powershell
-build/test/Release/training_checkpoint_gpu_tests.exe --row-empty-r0-capture path/to/frame.scanline.bin
+Linux commands; Windows adds .exe:
+
+```bash
+build/test/Release/training_checkpoint_gpu_tests --row-empty-r0-capture path/to/frame.scanline.bin
+build/test/Release/training_checkpoint_gpu_tests --row-empty-capture path/to/frame.scanline.bin
 ```
 
-Linux omits `.exe`. This reuses the original S3-2 binary input and writes
-`*.scanline.row_empty_r0.json`, adding suffixes on collision. It does not read
-the old JSON as if it contained per-Gaussian/pixel data. Reports retain the
-original counters plus eight geometric-row/native-wave counters; old
-`span_*` labels refer to full-or-empty row masks in this report only.
-`oracle_empty_eligible_rows_kept` is the count of no-contributor eligible rows
-that this geometric classifier keeps, NOT exclusively prefix-induced emptiness.
+Inputs use the scanline binary format, not a JSON summary. Capture identity and
+driver must match. Reports separate geometric exclusions, already-guarded work,
+kept oracle-empty rows and native-wave opportunities; nested counts are not
+additive instruction savings.
 
-Native-wave counts use actual BASIC/VOTE subgroup operations in the sampling
-census. They are not Tensor's Gaussian-reduction mapping or a prediction of
-issued instruction savings. R0 has no timing metric, no gradient output and
-no speedup estimate. IDs and driver must match the capture for admission.
-Synthetic source IDs zero produce an inconclusive report. An input error or
-false rejection stops the method; geometric eligible-pair coverage below 10%
-stops this iteration as an engineering screen. A coverage pass permits R1
-evaluation, not a claim of correctness or speed.
+The census does not emit gradients or measure training speed. The isolated
+Tensor candidate checks all projected-gradient slots, repeat behavior and
+read-only pixel/BlendState inputs before timing. It includes mask construction,
+publication and use, not just the filtered inner loop. Candidate and reference
+compiler paths differ, so a net timing difference is not attribution to one
+predicate alone. Portable batch4 checks do not substitute for actual Tensor16.
 
-## R1/R2 integration boundary
-
-`train_backward_vksplat_tensor_row_empty` uses the same predicate, unchanged
-threshold/domain and batch16. Sixteen thresholds and sixteen uint row masks
-add 128 declared shared bytes. Gaussian/threshold/mask initialization is
-published by the original load barrier; 256 threads classify Gaussian×row
-pairs, combine keep bits by shared atomic OR, then uniformly publish once.
-The sample loop retains every zero pair write, including culled rows. Reduction
-tests the same mask before reading that Gaussian row's matrix entries. Original
-relative Gaussian order, processed guards, T/suffix state, accumulation order,
-shuffle participation and original batch barriers remain unchanged.
-
-The common body also has explicit batch4/Shared test wrappers. They fit smaller
-devices and test stale pairs, mask flips, prefix/border cases and independent
-CPU gradients, but are never substituted for actual Tensor16 or its timings.
-The actual candidate and original Tensor still need target native32 validation.
-
-`--row-empty-capture` rereads the binary input, rechecks R0 on the matching
-source GPU/driver, compares all 12 output gradient slots and a baseline repeat,
-and verifies the pixel-gradient/BlendState inputs remain unchanged. Forward,
-Adam, densification and normal training are not run. Only then does it collect
-short A/B/A timestamps for the complete candidate dispatch, including mask
-construction/publication/use. An error/validation failure aborts timing.
-Candidate and baseline use different compiler backends, so a measured net
-difference is not attribution to the mask alone.
-
-Long A/B/A requires both `--timing --resources-reviewed` and a repeated short
-gain. The latter flag records operator review, never fills unknown native
-register/shared/residency measurements. The reporter uses null for unmeasured
-values. Timing policy rejects >2% A drift and requires >=5% net gain beyond
-twice the A-to-A difference before resource/multiview review. This is an
-engineering screen; it neither guarantees full-training speedup nor enables
-the application prototype automatically.
+The Tensor candidate retains relative Gaussian order, processed-prefix guards,
+T/suffix recursion, zero pair writes and original reduction participation. Masks
+add storage, classification, shared atomic OR and a publication barrier.
+Forward, Adam, densification and normal training are not executed by this tool.

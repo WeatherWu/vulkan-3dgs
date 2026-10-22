@@ -69,7 +69,7 @@ trainingPixelCullStatusName(TrainingPixelCullStatus status) noexcept {
 }
 
 // Benchmark buttons deliberately override the persisted NORMAL-training
-// request: ordinary/P1/P2 remain Off; only the S3 command requests method 1.
+// request: ordinary/state construction/checkpoint warp remain Off; only the S3 command requests method 1.
 [[nodiscard]] constexpr bool
 trainingPixelCullForStep(bool fixedBenchmark, bool benchmarkRequest,
                          TrainingPixelCullStatus trainingStatus) noexcept {

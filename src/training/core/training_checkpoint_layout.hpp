@@ -8,7 +8,7 @@
 
 namespace vulkan3DGS {
 
-// Host ABI for P0 references and opt-in P1 GPU state diagnostics. Training
+// Host ABI for CPU reference references and opt-in state construction GPU state diagnostics. Training
 // gradients still use the original Tensor path. Forward-prefix and reverse-
 // boundary layouts deliberately have separate task mappings.
 constexpr uint32_t kCheckpointBucketSize = 32u;
