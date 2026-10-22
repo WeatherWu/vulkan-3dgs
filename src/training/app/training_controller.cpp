@@ -30,7 +30,9 @@ TrainingController::~TrainingController() {
     cleanupTrainingResources();
 }
 
-void TrainingController::initializeDevice(std::optional<std::string> commandLineSelector) {
+void TrainingController::initializeDevice(std::optional<std::string> commandLineSelector,
+                                          std::optional<bool> vulkanValidationLayersEnabled) {
+    vulkanValidationLayersEnabled_ = vulkanValidationLayersEnabled;
     const bool usePersisted = !commandLineSelector && !settings_.gpuSelector.empty();
     std::optional<std::string> selector = commandLineSelector;
     if (usePersisted) selector = settings_.gpuSelector;
@@ -213,7 +215,7 @@ void TrainingController::loadDataset() {
         const uint32_t compute = *computeIndex;
         const uint32_t transfer = device.getQueueFamilyIndices().transferIndex.value_or(compute);
         training_.initialize(device.getDevice(), device.getPhysicalDevice(),
-                             device.getTransferQueue(), transfer, compute);
+                             device.getTransferQueue(), transfer, compute, vulkanValidationLayersEnabled_);
         training_.loadMipNeRF360Dataset(textBufferString(settings_.paths.dataset),
                                         static_cast<uint32_t>(settings_.initialization.downscale));
         state_.datasetLoaded = true;
@@ -238,6 +240,13 @@ void TrainingController::applyLiveSettings() {
     training_.setTensorSubgroupReduction(settings_.run.tensorSubgroupReduction);
     training_.setTensorGlobalPixelGrad(settings_.run.tensorGlobalPixelGrad);
     training_.setTensorRgbLatencyHiding(settings_.run.tensorRgbLatencyHiding);
+    training_.setTensorEarlyCull(settings_.run.tensorEarlyCull);
+    try {
+        training_.setSsimMode(static_cast<TrainingSsimMode>(settings_.run.ssimMode));
+    } catch (const std::exception& error) {
+        settings_.run.ssimMode = static_cast<int>(training_.activeSsimMode());
+        setError(error.what());
+    }
     training_.setValidationInterval(settings_.schedule.validationInterval);
 }
 
@@ -268,6 +277,8 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     training_.setTensorSubgroupReduction(config.run.tensorSubgroupReduction);
     training_.setTensorGlobalPixelGrad(config.run.tensorGlobalPixelGrad);
     training_.setTensorRgbLatencyHiding(config.run.tensorRgbLatencyHiding);
+    training_.setTensorEarlyCull(config.run.tensorEarlyCull);
+    training_.setSsimMode(static_cast<TrainingSsimMode>(config.run.ssimMode));
     training_.setValidationInterval(config.schedule.validationInterval);
 
     bool initializedModel = false;
@@ -340,7 +351,7 @@ void TrainingController::initializeTrainingIfNeeded() {
     const uint32_t compute = *computeIndex;
     const uint32_t transfer = device.getQueueFamilyIndices().transferIndex.value_or(compute);
     training_.initialize(device.getDevice(), device.getPhysicalDevice(), device.getTransferQueue(),
-                         transfer, compute);
+                         transfer, compute, vulkanValidationLayersEnabled_);
     training_.initializeTrainingRenderers(
         device.getDevice(), device.getPhysicalDevice(), device.getComputeQueue(), compute,
         std::max(training_.gaussianCount(), 1u),
@@ -379,6 +390,7 @@ void TrainingController::toggleTraining() {
         applyConfiguration(*activeRunConfig_);
         initializeTrainingIfNeeded();
         if (snapshotForUi().trainingIteration == 0u) resetTimer();
+        training_.resetTensorEarlyCullRunStats();
         startTimer();
         saveSettings();
         startWorker();
@@ -394,7 +406,8 @@ void TrainingController::toggleTraining() {
     }
 }
 
-void TrainingController::startFixedBenchmark() {
+void TrainingController::startFixedBenchmark(bool checkpointDiagnostics, bool checkpointWarp,
+                                             bool tensorEarlyCull) {
     if (state_.running) return;
     try {
         if (!state_.datasetLoaded) {
@@ -409,6 +422,9 @@ void TrainingController::startFixedBenchmark() {
         config.frameIndex = activeRunConfig_->run.benchmarkFrame;
         config.warmupSteps = activeRunConfig_->run.benchmarkWarmupSteps;
         config.measuredSteps = activeRunConfig_->run.benchmarkMeasuredSteps;
+        config.checkpointDiagnostics = checkpointDiagnostics;
+        config.checkpointWarp = checkpointWarp;
+        config.tensorEarlyCull = tensorEarlyCull;
         training_.startFixedWorkloadBenchmark(config);
         state_.running = true;
         state_.pureActive = false;
@@ -439,6 +455,8 @@ void TrainingController::exportFixedBenchmarkGradients() {
             "benchmark_gradients";
         std::string stem = "frame_" + std::to_string(benchmark.frameIndex) + "_iter_" +
                                  std::to_string(benchmark.trainingIteration) + "_" + tileName;
+        if (benchmark.pixelMode == TrainingPixelTo2DGSMode::CheckpointedWarp)
+            stem += "_checkpoint_warp32_layout2";
         if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial &&
             benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
             stem += "_batch_" + std::to_string(benchmark.adaptiveTensorChildBatch);
@@ -451,6 +469,8 @@ void TrainingController::exportFixedBenchmarkGradients() {
                 stem += benchmark.tensorRgbLatencyHiding ? "_rgb_latency" : "_rgb_baseline";
             }
         }
+        if (benchmark.pixelCullMethod == 1u) stem += "_pixel_cull_v1";
+        stem += std::string("_") + trainingSsimModeFileTag(benchmark.ssimMode);
         std::filesystem::path path = directory / (stem + ".bin");
         for (uint32_t suffix = 2u; std::filesystem::exists(path); ++suffix) {
             path = directory / (stem + "_" + std::to_string(suffix) + ".bin");
@@ -460,6 +480,54 @@ void TrainingController::exportFixedBenchmarkGradients() {
     } catch (const std::exception& error) {
         setError(error.what());
     }
+}
+
+void TrainingController::captureOptimizerStepAndPause() {
+    if (state_.running || active_) {
+        setError("Pause and join training before requesting an S4 optimizer capture.");
+        return;
+    }
+    try {
+        if (worker_.joinable()) worker_.join();
+        // Keep the existing model/configuration. Do not initialize, reset schedule, or
+        // apply newly edited UI controls as an undocumented part of this diagnostic.
+        const auto directory = std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) /
+                               "benchmark_optimizer";
+        const auto stem = "step_" + std::to_string(training_.trainingIteration() + 1u);
+        auto path = directory / (stem + ".optimizer.bin");
+        for (uint32_t suffix = 2; std::filesystem::exists(path); ++suffix)
+            path = directory / (stem + "_" + std::to_string(suffix) + ".optimizer.bin");
+        resultReady_.store(false, std::memory_order_release);
+        active_ = true;
+        stopRequested_ = false;
+        state_.running = true;
+        state_.pureActive = false;
+        publishSnapshot();
+        worker_ = std::jthread([this, path](std::stop_token stopToken) {
+            workerMain(stopToken, false, path);
+        });
+        setStatus("S4 diagnostic: trains ONE eligible ordinary step, pauses, and writes a large pre/post capture. No subsequent step is queued.");
+    } catch (const std::exception& error) {
+        stopAndJoin();
+        setError(error.what());
+    }
+}
+
+void TrainingController::exportScanlineDiagnosticInputs() {
+    if (state_.running || active_) {
+        setError("Finish training/benchmark before exporting S3-2 inputs.");
+        return;
+    }
+    try {
+        const auto& b = training_.fixedWorkloadBenchmarkStats();
+        const auto directory = std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) / "benchmark_scanline";
+        const auto stem = "frame_" + std::to_string(b.frameIndex) + "_iter_" + std::to_string(b.trainingIteration);
+        auto path = directory / (stem + ".scanline.bin");
+        for (uint32_t suffix = 2u; std::filesystem::exists(path); ++suffix)
+            path = directory / (stem + "_" + std::to_string(suffix) + ".scanline.bin");
+        training_.exportScanlineDiagnosticInputs(path);
+        setStatus("Saved S3-2 frozen diagnostic inputs: " + std::filesystem::absolute(path).string());
+    } catch (const std::exception& error) { setError(error.what()); }
 }
 
 void TrainingController::exportAdaptiveTileDiagnostics() {
@@ -560,10 +628,20 @@ void TrainingController::consumeWorkerResult() {
 
     const auto snapshot = snapshotForUi();
     state_.stepsDone = snapshot.trainingIteration;
+    LOG_INFO("Training EarlyCull run: completed={}, active={}, fallback={}, selection={}",
+             snapshot.tensorEarlyCullRun.completedSteps, snapshot.tensorEarlyCullRun.activeSteps,
+             snapshot.tensorEarlyCullRun.fallbackSteps,
+             trainingPixelCullStatusName(snapshot.tensorEarlyCullStatus));
     if (!result.error.empty()) {
         state_.pureActive = false;
         activeRunConfig_.reset();
         setError(result.error);
+    } else if (!result.optimizerCapturePath.empty()) {
+        state_.pureActive = false;
+        activeRunConfig_.reset();
+        setStatus("S4 capture saved; training paused at iteration " +
+                  std::to_string(snapshot.trainingIteration) + ": " +
+                  std::filesystem::absolute(result.optimizerCapturePath).string());
     } else if (result.completed) {
         try {
             finishTrainingRun();
@@ -732,6 +810,9 @@ TrainingUiSnapshot TrainingController::captureSnapshot() const {
     snapshot.tensorSubgroupReductionActive = training_.tensorSubgroupReductionActive();
     snapshot.tensorGlobalPixelGradActive = training_.tensorGlobalPixelGradActive();
     snapshot.tensorRgbLatencyHidingActive = training_.tensorRgbLatencyHidingActive();
+    snapshot.tensorEarlyCullStatus = training_.tensorEarlyCullStatus();
+    snapshot.tensorEarlyCullRun = training_.tensorEarlyCullRunStats();
+    snapshot.activeSsimMode = training_.activeSsimMode();
     snapshot.activePixelMode = training_.activePixelTo2DGSMode();
     snapshot.tileMode = training_.tileMode();
     snapshot.activeTileSize = training_.activeTileSize();
@@ -758,20 +839,28 @@ void TrainingController::publishSnapshot() {
     snapshotValid_ = true;
 }
 
-void TrainingController::workerMain(std::stop_token stopToken, bool pure) noexcept {
+void TrainingController::workerMain(std::stop_token stopToken, bool pure,
+                                    std::filesystem::path optimizerCapturePath) noexcept {
     try {
         TrainingWorkerResult result{};
         result.pure = pure;
         try {
-            uint32_t stepsSinceSnapshot = 0u;
-            while (!stopToken.stop_requested() && !training_.isTrainingComplete()) {
-                training_.trainStep();
-                if (!pure && ++stepsSinceSnapshot >= kTrainingSnapshotPublishInterval) {
-                    publishSnapshot();
-                    stepsSinceSnapshot = 0u;
+            if (!optimizerCapturePath.empty()) {
+                if (stopToken.stop_requested())
+                    throw std::runtime_error("S4 capture cancelled before any step was submitted");
+                training_.captureOptimizerStepAndPause(optimizerCapturePath);
+                result.optimizerCapturePath = optimizerCapturePath;
+            } else {
+                uint32_t stepsSinceSnapshot = 0u;
+                while (!stopToken.stop_requested() && !training_.isTrainingComplete()) {
+                    training_.trainStep();
+                    if (!pure && ++stepsSinceSnapshot >= kTrainingSnapshotPublishInterval) {
+                        publishSnapshot();
+                        stepsSinceSnapshot = 0u;
+                    }
                 }
+                result.completed = training_.isTrainingComplete();
             }
-            result.completed = training_.isTrainingComplete();
         } catch (const std::exception& error) {
             result.error = error.what();
         } catch (...) {

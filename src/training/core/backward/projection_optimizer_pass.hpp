@@ -3,12 +3,13 @@
 #include "training/core/backward/backward_command_utils.hpp"
 #include "training/core/backward/backward_pass_context.hpp"
 #include "vulkan/compute_pipeline.hpp"
+#include <filesystem>
 
 namespace vulkan3DGS {
 
 class ProjectionOptimizerPass {
 public:
-    void initialize(vk::Device device);
+    void initialize(vk::Device device, const std::filesystem::path& shaderDirectory = "shaders");
     void cleanup();
 
     [[nodiscard]] bool fusedEnabled() const noexcept {
@@ -28,6 +29,7 @@ private:
     vk::DescriptorSet fusedDescriptorSet_ = nullptr;
     vk::DescriptorSet optimizerDescriptorSet_ = nullptr;
     bool fusedEnabled_ = true;
+    uint64_t fusedShaderHash_ = 0;
 };
 
 } // namespace vulkan3DGS

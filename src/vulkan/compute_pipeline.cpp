@@ -46,8 +46,16 @@ void ComputePipeline::initialize(vk::Device device, const std::string& shaderPat
     
     // 创建 Compute Pipeline
     vk::ComputePipelineCreateInfo pipelineInfo{};
+    auto stage = computeShader_->getStageCreateInfo();
+    vk::PipelineShaderStageRequiredSubgroupSizeCreateInfoEXT requiredSize{};
+    if (config.requiredSubgroupSize != 0u) {
+        requiredSize.setRequiredSubgroupSize(config.requiredSubgroupSize);
+        stage.setPNext(&requiredSize);
+        if (config.requireFullSubgroups)
+            stage.setFlags(vk::PipelineShaderStageCreateFlagBits::eRequireFullSubgroupsEXT);
+    }
     pipelineInfo.setLayout(pipelineLayout_)
-                  .setStage(computeShader_->getStageCreateInfo());
+                  .setStage(stage);
     
     auto result = device_.createComputePipeline(nullptr, pipelineInfo);
     if (result.result != vk::Result::eSuccess) {

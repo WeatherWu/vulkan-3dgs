@@ -27,6 +27,10 @@ static const float BACKWARD_SSIM_GAUSSIAN_WEIGHTS[6] = {
     0.0038659201
 };
 
+#ifdef SSIM_SEPARABLE
+#include "../common/train_ssim_separable.slang"
+[[vk::binding(42, 0)]] StructuredBuffer<float4> ssimScratch;
+#else
 groupshared SsimBackwardState sharedSsimBackwardStates[BACKWARD_SSIM_SHARED_PIXEL_COUNT];
 
 float backwardSsimWindowWeight(int2 offset) {
@@ -58,8 +62,25 @@ void loadBackwardSsimNeighborhood(uint2 groupOrigin, uint localIndex) {
     }
     GroupMemoryBarrierWithGroupSync();
 }
+#endif
 
 float3 dssimDerivative(uint2 pixel, uint2 localPixel, float3 rendered, float3 target) {
+#ifdef SSIM_SEPARABLE
+    float3 base = float3(0.0);
+    float3 targetCoefficient = float3(0.0);
+    float3 renderedCoefficient = float3(0.0);
+    for (int dy = -BACKWARD_SSIM_RADIUS; dy <= BACKWARD_SSIM_RADIUS; ++dy) {
+        int y = int(pixel.y) + dy;
+        if (y < 0 || y >= int(params.height)) continue;
+        uint index = uint(y) * params.width + pixel.x;
+        float weight = SEPARABLE_SSIM_WEIGHTS[abs(dy)];
+        base += ssimScratch[index].xyz * weight;
+        targetCoefficient += ssimScratch[params.pixelCount + index].xyz * weight;
+        renderedCoefficient += ssimScratch[2u * params.pixelCount + index].xyz * weight;
+    }
+    return (base + targetCoefficient * target + renderedCoefficient * rendered) *
+           BACKWARD_SSIM_INV_WEIGHT_SUM;
+#else
     int2 samplePixel = int2(pixel);
     int2 groupOrigin = samplePixel - int2(localPixel);
     int2 minCenter = max(samplePixel - int2(BACKWARD_SSIM_RADIUS), int2(0));
@@ -83,6 +104,7 @@ float3 dssimDerivative(uint2 pixel, uint2 localPixel, float3 rendered, float3 ta
     }
 
     return derivative;
+#endif
 }
 
 [shader("compute")]
@@ -94,7 +116,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint2 groupOrigin = pixel - localPixel;
     bool active = pixel.x < params.width && pixel.y < params.height;
     uint index = active ? pixel.y * params.width + pixel.x : 0u;
+#ifndef SSIM_SEPARABLE
     loadBackwardSsimNeighborhood(groupOrigin, localIndex);
+#endif
     if (!active) {
         return;
     }

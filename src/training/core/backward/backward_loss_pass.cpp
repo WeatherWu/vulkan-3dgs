@@ -62,13 +62,39 @@ void BackwardLossPass::initialize(vk::Device device) {
     lossToPixelPipeline_.initialize(device_, "shaders/train_backward_loss_to_pixel.comp.spv",
                                     lossToPixelConfig);
 
+    ComputePipelineConfig momentsConfig{};
+    momentsConfig.descriptorBindings = {backwardStorageBinding(6), backwardStorageBinding(7),
+                                        backwardStorageBinding(42)};
+    momentsConfig.pushConstantSize = sizeof(TrainingPushConstants);
+    ComputePipelineConfig coefficientsConfig{};
+    coefficientsConfig.descriptorBindings = {backwardStorageBinding(28),
+                                             backwardStorageBinding(42)};
+    coefficientsConfig.pushConstantSize = sizeof(TrainingPushConstants);
+    lossConfig.descriptorBindings.push_back(backwardStorageBinding(42));
+    lossToPixelConfig.descriptorBindings.push_back(backwardStorageBinding(42));
+    ssimMomentsHorizontalPipeline_.initialize(
+        device_, "shaders/train_ssim_moments_horizontal.comp.spv", momentsConfig);
+    ssimCoefficientsHorizontalPipeline_.initialize(
+        device_, "shaders/train_ssim_coefficients_horizontal.comp.spv", coefficientsConfig);
+    separableLossPipeline_.initialize(device_, "shaders/train_loss_separable.comp.spv", lossConfig);
+    separableLossToPixelPipeline_.initialize(
+        device_, "shaders/train_backward_loss_to_pixel_separable.comp.spv", lossToPixelConfig);
+
     const std::vector<vk::DescriptorSet> sets = descriptorPool_.create(
-        device_, 12u, 0u,
+        device_, 29u, 0u,
         {clearPipeline_.getDescriptorSetLayout(), lossPipeline_.getDescriptorSetLayout(),
-         lossToPixelPipeline_.getDescriptorSetLayout()});
+         lossToPixelPipeline_.getDescriptorSetLayout(),
+         ssimMomentsHorizontalPipeline_.getDescriptorSetLayout(),
+         ssimCoefficientsHorizontalPipeline_.getDescriptorSetLayout(),
+         separableLossPipeline_.getDescriptorSetLayout(),
+         separableLossToPixelPipeline_.getDescriptorSetLayout()});
     clearDescriptorSet_ = sets[0];
     lossDescriptorSet_ = sets[1];
     lossToPixelDescriptorSet_ = sets[2];
+    ssimMomentsHorizontalSet_ = sets[3];
+    ssimCoefficientsHorizontalSet_ = sets[4];
+    separableLossSet_ = sets[5];
+    separableLossToPixelSet_ = sets[6];
 
     if (computeClear_) {
         LOG_WARN("Using compute backward clear because VULKAN_3DGS_COMPUTE_BACKWARD_CLEAR=1");
@@ -80,6 +106,15 @@ void BackwardLossPass::cleanup() {
     clearDescriptorSet_ = nullptr;
     lossDescriptorSet_ = nullptr;
     lossToPixelDescriptorSet_ = nullptr;
+    ssimMomentsHorizontalSet_ = nullptr;
+    ssimCoefficientsHorizontalSet_ = nullptr;
+    separableLossSet_ = nullptr;
+    separableLossToPixelSet_ = nullptr;
+    ssimMomentsHorizontalPipeline_.cleanup();
+    ssimCoefficientsHorizontalPipeline_.cleanup();
+    separableLossPipeline_.cleanup();
+    separableLossToPixelPipeline_.cleanup();
+    ssimMode_ = TrainingSsimMode::TwoDimensional;
     lossToPixelPipeline_.cleanup();
     lossPipeline_.cleanup();
     clearPipeline_.cleanup();
@@ -88,6 +123,8 @@ void BackwardLossPass::cleanup() {
 }
 
 void BackwardLossPass::recordLoss(const BackwardPassContext& context) {
+    const bool separable = ssimUsesSeparableLoss(ssimMode_);
+    if (context.pushConstants.pixelCount == 0u) return;
     if (!lossDescriptorSet_) {
         throw std::runtime_error("Loss descriptor set is not initialized");
     }
@@ -97,29 +134,34 @@ void BackwardLossPass::recordLoss(const BackwardPassContext& context) {
     const auto pixelBlendStatesInfo = context.buffers.pixelBlendStatesInfo();
     const auto ssimBackwardStatesInfo = context.buffers.ssimBackwardStatesInfo();
     const auto pixelValidationPartialsInfo = context.buffers.pixelValidationPartialsInfo();
+    const auto scratchInfo = context.buffers.ssimScratchInfo();
+    if (separable) recordSsimHorizontal(context, false);
+    const auto& pipeline = separable ? separableLossPipeline_ : lossPipeline_;
+    const auto descriptorSet = separable ? separableLossSet_ : lossDescriptorSet_;
 
-    std::array<vk::WriteDescriptorSet, 6> writes{};
-    const std::array<uint32_t, 6> bindings = {6u, 7u, 8u, 14u, 28u, 29u};
-    const std::array<const vk::DescriptorBufferInfo*, 6> infos = {
+    std::array<vk::WriteDescriptorSet, 7> writes{};
+    const uint32_t writeCount = separable ? 7u : 6u;
+    const std::array<uint32_t, 7> bindings = {6u, 7u, 8u, 14u, 28u, 29u, 42u};
+    const std::array<const vk::DescriptorBufferInfo*, 7> infos = {
         &renderedColorInfo,    &targetColorInfo,        &lossInfo,
         &pixelBlendStatesInfo, &ssimBackwardStatesInfo, &pixelValidationPartialsInfo,
+        &scratchInfo,
     };
-    for (size_t index = 0; index < writes.size(); ++index) {
+    for (size_t index = 0; index < writeCount; ++index) {
         writes[index]
-            .setDstSet(lossDescriptorSet_)
+            .setDstSet(descriptorSet)
             .setDstBinding(bindings[index])
             .setDescriptorCount(1)
             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
             .setPBufferInfo(infos[index]);
     }
-    device_.updateDescriptorSets(writes, {});
+    device_.updateDescriptorSets(
+        vk::ArrayProxy<const vk::WriteDescriptorSet>(writeCount, writes.data()), {});
 
-    context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute,
-                                       lossPipeline_.getPipeline());
+    context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.getPipeline());
     context.commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                             lossPipeline_.getPipelineLayout(), 0,
-                                             lossDescriptorSet_, {});
-    context.commandBuffer.pushConstants(lossPipeline_.getPipelineLayout(),
+                                             pipeline.getPipelineLayout(), 0, descriptorSet, {});
+    context.commandBuffer.pushConstants(pipeline.getPipelineLayout(),
                                         vk::ShaderStageFlagBits::eCompute, 0,
                                         sizeof(TrainingPushConstants), &context.pushConstants);
     if (context.pushConstants.pixelCount == 0u) {
@@ -127,6 +169,7 @@ void BackwardLossPass::recordLoss(const BackwardPassContext& context) {
     }
     context.commandBuffer.dispatch((context.pushConstants.width + 15u) / 16u,
                                    (context.pushConstants.height + 15u) / 16u, 1u);
+    if (separable) recordScratchReadComplete(context);
 
     vk::BufferMemoryBarrier lossReady{};
     lossReady.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite)
@@ -230,29 +273,36 @@ void BackwardLossPass::recordClear(const BackwardPassContext& context,
 }
 
 void BackwardLossPass::recordLossToPixel(const BackwardPassContext& context) {
+    const bool separable = ssimUsesSeparableBackward(ssimMode_);
+    if (context.pushConstants.pixelCount == 0u) return;
     const auto renderedColorInfo = context.buffers.renderedColorInfo();
     const auto targetColorInfo = context.buffers.targetColorInfo();
     const auto pixelGradsInfo = context.buffers.pixelGradsInfo();
     const auto ssimBackwardStatesInfo = context.buffers.ssimBackwardStatesInfo();
-    std::array<vk::DescriptorBufferInfo, 4> infos = {renderedColorInfo, targetColorInfo,
-                                                     pixelGradsInfo, ssimBackwardStatesInfo};
-    constexpr std::array<uint32_t, 4> bindings = {6u, 7u, 12u, 28u};
-    std::array<vk::WriteDescriptorSet, 4> writes{};
-    for (size_t index = 0; index < writes.size(); ++index) {
+    if (separable) recordSsimHorizontal(context, true);
+    const auto& pipeline = separable ? separableLossToPixelPipeline_ : lossToPixelPipeline_;
+    const auto descriptorSet =
+        separable ? separableLossToPixelSet_ : lossToPixelDescriptorSet_;
+    std::array<vk::DescriptorBufferInfo, 5> infos = {renderedColorInfo, targetColorInfo,
+                                                     pixelGradsInfo, ssimBackwardStatesInfo,
+                                                     context.buffers.ssimScratchInfo()};
+    constexpr std::array<uint32_t, 5> bindings = {6u, 7u, 12u, 28u, 42u};
+    std::array<vk::WriteDescriptorSet, 5> writes{};
+    const uint32_t writeCount = separable ? 5u : 4u;
+    for (size_t index = 0; index < writeCount; ++index) {
         writes[index]
-            .setDstSet(lossToPixelDescriptorSet_)
+            .setDstSet(descriptorSet)
             .setDstBinding(bindings[index])
             .setDescriptorCount(1)
             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
             .setPBufferInfo(&infos[index]);
     }
-    device_.updateDescriptorSets(writes, {});
-    context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute,
-                                       lossToPixelPipeline_.getPipeline());
+    device_.updateDescriptorSets(
+        vk::ArrayProxy<const vk::WriteDescriptorSet>(writeCount, writes.data()), {});
+    context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.getPipeline());
     context.commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                             lossToPixelPipeline_.getPipelineLayout(), 0,
-                                             lossToPixelDescriptorSet_, {});
-    context.commandBuffer.pushConstants(lossToPixelPipeline_.getPipelineLayout(),
+                                             pipeline.getPipelineLayout(), 0, descriptorSet, {});
+    context.commandBuffer.pushConstants(pipeline.getPipelineLayout(),
                                         vk::ShaderStageFlagBits::eCompute, 0,
                                         sizeof(TrainingPushConstants), &context.pushConstants);
     if (context.pushConstants.pixelCount == 0u) {
@@ -260,8 +310,63 @@ void BackwardLossPass::recordLossToPixel(const BackwardPassContext& context) {
     }
     context.commandBuffer.dispatch((context.pushConstants.width + 15u) / 16u,
                                    (context.pushConstants.height + 15u) / 16u, 1u);
+    if (separable) recordScratchReadComplete(context);
     recordBackwardBufferBarrier(context.commandBuffer, {pixelGradsInfo},
-                                vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+                                vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
+                                    vk::AccessFlagBits::eTransferRead);
+}
+
+void BackwardLossPass::recordSsimHorizontal(const BackwardPassContext& context, bool coefficients) {
+    if (context.pushConstants.pixelCount == 0u) return;
+    const auto scratch = context.buffers.ssimScratchInfo();
+    if (!scratch.buffer) throw std::runtime_error("Separable SSIM scratch is not allocated");
+    const auto& pipeline =
+        coefficients ? ssimCoefficientsHorizontalPipeline_ : ssimMomentsHorizontalPipeline_;
+    const auto descriptorSet =
+        coefficients ? ssimCoefficientsHorizontalSet_ : ssimMomentsHorizontalSet_;
+    const std::array<vk::DescriptorBufferInfo, 3> infos = {
+        coefficients ? context.buffers.ssimBackwardStatesInfo()
+                     : context.buffers.renderedColorInfo(),
+        scratch, context.buffers.targetColorInfo()};
+    const std::array<uint32_t, 3> bindings = {coefficients ? 28u : 6u, 42u, 7u};
+    std::array<vk::WriteDescriptorSet, 3> writes{};
+    const uint32_t writeCount = coefficients ? 2u : 3u;
+    for (size_t i = 0; i < writeCount; ++i) {
+        writes[i]
+            .setDstSet(descriptorSet)
+            .setDstBinding(bindings[i])
+            .setDescriptorCount(1)
+            .setDescriptorType(vk::DescriptorType::eStorageBuffer)
+            .setPBufferInfo(&infos[i]);
+    }
+    device_.updateDescriptorSets(
+        vk::ArrayProxy<const vk::WriteDescriptorSet>(writeCount, writes.data()), {});
+    context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.getPipeline());
+    context.commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                                             pipeline.getPipelineLayout(), 0, descriptorSet, {});
+    context.commandBuffer.pushConstants(pipeline.getPipelineLayout(),
+                                        vk::ShaderStageFlagBits::eCompute, 0,
+                                        sizeof(TrainingPushConstants), &context.pushConstants);
+    context.commandBuffer.dispatch((context.pushConstants.width + 15u) / 16u,
+                                   (context.pushConstants.height + 15u) / 16u, 1u);
+    recordBackwardBufferBarrier(context.commandBuffer, {scratch}, vk::AccessFlagBits::eShaderRead);
+}
+
+void BackwardLossPass::recordScratchReadComplete(const BackwardPassContext& context) {
+    // WAR: vertical consumers must finish before backward/next-step horizontal
+    // overwrites the same allocation. A shader-write-only barrier is insufficient.
+    const auto scratch = context.buffers.ssimScratchInfo();
+    vk::BufferMemoryBarrier barrier{};
+    barrier.setSrcAccessMask(vk::AccessFlagBits::eShaderRead)
+        .setDstAccessMask(vk::AccessFlagBits::eShaderWrite)
+        .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setBuffer(scratch.buffer)
+        .setOffset(scratch.offset)
+        .setSize(scratch.range);
+    context.commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                          vk::PipelineStageFlagBits::eComputeShader, {}, {},
+                                          barrier, {});
 }
 
 } // namespace vulkan3DGS

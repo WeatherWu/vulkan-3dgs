@@ -1,4 +1,10 @@
 #include "../common/train_backward_common.slang"
+#ifndef TRAIN_PIXEL_CULL_TEST
+#define TRAIN_PIXEL_CULL_TEST 0
+#endif
+#if TRAIN_PIXEL_CULL_TEST
+#include "../common/train_pixel_culling.slang"
+#endif
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<ProjectedGaussian> projectedGaussians;
@@ -45,7 +51,13 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
         }
 
         ProjectedGaussian gaussian = projectedGaussians[gaussianIndex];
+#if TRAIN_PIXEL_CULL_TEST
+        // Diagnostic only: per-pair threshold is intentionally not a fast path.
+        GaussianSample sample = trainEvaluatePixelCulledSample(
+            gaussian, samplePosition, trainPixelCullThreshold(gaussian.conicOpacity.w));
+#else
         GaussianSample sample = evaluateGaussianSample(gaussian, samplePosition);
+#endif
         if (!contributesToPixel(sample)) {
             continue;
         }

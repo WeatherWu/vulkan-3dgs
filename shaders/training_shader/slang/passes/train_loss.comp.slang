@@ -74,6 +74,10 @@ static const float SSIM_GAUSSIAN_WEIGHTS[6] = {
     0.0038659201
 };
 
+#ifdef SSIM_SEPARABLE
+#include "../common/train_ssim_separable.slang"
+[[vk::binding(42, 0)]] StructuredBuffer<float4> ssimScratch;
+#else
 groupshared float4 sharedRenderedColor[SSIM_SHARED_PIXEL_COUNT];
 groupshared uint sharedTargetColor[SSIM_SHARED_PIXEL_COUNT];
 
@@ -104,6 +108,7 @@ void loadSsimNeighborhood(uint2 groupOrigin, uint localIndex) {
     }
     GroupMemoryBarrierWithGroupSync();
 }
+#endif
 
 float ssimColor(uint2 localPixel, out SsimBackwardState backwardState) {
     float3 renderedMean = float3(0.0);
@@ -112,6 +117,20 @@ float ssimColor(uint2 localPixel, out SsimBackwardState backwardState) {
     float3 targetSqMean = float3(0.0);
     float3 renderedTargetMean = float3(0.0);
 
+#ifdef SSIM_SEPARABLE
+    // In this variant the caller supplies image coordinates, not tile-local ones.
+    for (int dy = -SSIM_RADIUS; dy <= SSIM_RADIUS; ++dy) {
+        int y = int(localPixel.y) + dy;
+        if (y < 0 || y >= int(params.height)) continue;
+        uint index = uint(y) * params.width + localPixel.x;
+        float weight = SEPARABLE_SSIM_WEIGHTS[abs(dy)];
+        renderedMean += ssimScratch[index].xyz * weight;
+        targetMean += ssimScratch[params.pixelCount + index].xyz * weight;
+        renderedSqMean += ssimScratch[2u * params.pixelCount + index].xyz * weight;
+        targetSqMean += ssimScratch[3u * params.pixelCount + index].xyz * weight;
+        renderedTargetMean += ssimScratch[4u * params.pixelCount + index].xyz * weight;
+    }
+#else
     for (int dy = -SSIM_RADIUS; dy <= SSIM_RADIUS; ++dy) {
         for (int dx = -SSIM_RADIUS; dx <= SSIM_RADIUS; ++dx) {
             float weight = ssimWindowWeight(int2(dx, dy));
@@ -127,6 +146,7 @@ float ssimColor(uint2 localPixel, out SsimBackwardState backwardState) {
         }
     }
 
+#endif
     renderedMean *= SSIM_INV_WEIGHT_SUM;
     targetMean *= SSIM_INV_WEIGHT_SUM;
     renderedSqMean *= SSIM_INV_WEIGHT_SUM;
@@ -169,7 +189,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
     bool active = pixel.x < params.width && pixel.y < params.height;
     uint index = active ? pixel.y * params.width + pixel.x : 0u;
     uint2 groupOrigin = groupID.xy * 16u;
+#ifndef SSIM_SEPARABLE
     loadSsimNeighborhood(groupOrigin, localIndex);
+#endif
     float pixelLoss = 0.0;
     float4 rendered = float4(0.0);
     uint processedCandidateCount = 0u;
@@ -179,7 +201,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
         SsimBackwardState backwardState;
         rendered = renderedColor[index];
         float l1 = l1Color(rendered.xyz, unpackTargetColor(targetColor[index]).xyz);
+#ifdef SSIM_SEPARABLE
+        float dssim = 1.0 - ssimColor(pixel, backwardState);
+#else
         float dssim = 1.0 - ssimColor(localPixel, backwardState);
+#endif
         ssimBackwardStates[index] = backwardState;
         float dssimWeight = clamp(params.lossDssimWeight, 0.0, 1.0);
         pixelLoss = ((1.0 - dssimWeight) * l1 + dssimWeight * dssim) /

@@ -44,6 +44,13 @@ endif()
 
 find_program(SLANGC_EXECUTABLE slangc HINTS ${SLANG_HINTS} REQUIRED)
 message(STATUS "Found slangc: ${SLANGC_EXECUTABLE}")
+execute_process(COMMAND "${SLANGC_EXECUTABLE}" -version
+    OUTPUT_VARIABLE OPTIMIZER_SLANG_VERSION ERROR_VARIABLE OPTIMIZER_SLANG_VERSION_ERROR
+    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_STRIP_TRAILING_WHITESPACE)
+if(NOT OPTIMIZER_SLANG_VERSION)
+    set(OPTIMIZER_SLANG_VERSION "${OPTIMIZER_SLANG_VERSION_ERROR}")
+endif()
+string(REGEX REPLACE "[\r\n]+" " " OPTIMIZER_SLANG_VERSION "${OPTIMIZER_SLANG_VERSION}")
 
 option(VULKAN_3DGS_TRAINING_SHADER_DEBUG_INFO
        "Embed Slang debug information in training SPIR-V for shader profiling" OFF)
@@ -72,6 +79,9 @@ set(TRAINING_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/spv")
 set(TRAINING_SHADER_COMMON_DEPS
     "${TRAINING_SHADER_COMMON_DIR}/train_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_loss_common.slang"
+    "${TRAINING_SHADER_COMMON_DIR}/train_ssim_separable.slang"
+    "${TRAINING_SHADER_COMMON_DIR}/train_checkpoint_layout.slang"
+    "${TRAINING_SHADER_COMMON_DIR}/train_pixel_culling.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_target_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_forward_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_forward_tile_common.slang"
@@ -124,6 +134,19 @@ compile_slang_shader("${SLANG_SHADER_SRC_DIR}/radix_keygen.comp.slang" compute "
 function(compile_training_shader SHADER_SRC OUTPUT_BASENAME)
     set(SHADER_SPV "${TRAINING_SHADER_SPV_DIR}/${OUTPUT_BASENAME}.spv")
     set(BUILD_SPV "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders/${OUTPUT_BASENAME}.spv")
+    # RowEmpty's interval ledger requires NoContraction. Some Slang SPIR-V backends
+    # ignore even global precise. Use the GLSL path only for RowEmpty outputs;
+    # inspect the emitted SPIR-V at runtime and leave every old shader alone.
+    set(TRAINING_SHADER_NUMERIC_FLAGS)
+    set(TRAINING_SHADER_NUMERIC_DEPENDENCY)
+    if(OUTPUT_BASENAME STREQUAL "train_row_empty_census.comp" OR
+       OUTPUT_BASENAME STREQUAL "train_backward_vksplat_tensor_row_empty.comp" OR
+       OUTPUT_BASENAME STREQUAL "train_backward_tensor_row_empty_test.comp")
+        set(TRAINING_SHADER_NUMERIC_FLAGS -fp-mode precise -emit-spirv-via-glsl)
+        set(TRAINING_SHADER_NUMERIC_DEPENDENCY "${CMAKE_CURRENT_BINARY_DIR}/training_row_empty_numeric_mode.txt")
+        file(CONFIGURE OUTPUT "${TRAINING_SHADER_NUMERIC_DEPENDENCY}"
+             CONTENT "flags=@TRAINING_SHADER_NUMERIC_FLAGS@\n" @ONLY)
+    endif()
 
     add_custom_command(
         OUTPUT ${SHADER_SPV}
@@ -135,6 +158,7 @@ function(compile_training_shader SHADER_SRC OUTPUT_BASENAME)
             -entry main
             -stage compute
             ${TRAINING_SHADER_DEBUG_FLAGS}
+            ${TRAINING_SHADER_NUMERIC_FLAGS}
             -matrix-layout-column-major
             -fvk-use-gl-layout
             -o ${SHADER_SPV}
@@ -142,6 +166,7 @@ function(compile_training_shader SHADER_SRC OUTPUT_BASENAME)
             ${SHADER_SRC}
             ${TRAINING_SHADER_COMMON_DEPS}
             "${TRAINING_SHADER_DEBUG_INFO_STAMP}"
+            ${TRAINING_SHADER_NUMERIC_DEPENDENCY}
             ${ARGN}
         COMMENT "Compiling training Slang shader ${SHADER_SRC} -> ${OUTPUT_BASENAME}.spv"
         VERBATIM
@@ -246,6 +271,12 @@ endfunction()
 
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_project.comp.slang" "train_project.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_project.comp.slang" "train_forward_project.comp")
+foreach(checkpoint_pass IN ITEMS layout prefix state tasks)
+    compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_checkpoint_${checkpoint_pass}.comp.slang"
+                            "train_checkpoint_${checkpoint_pass}.comp")
+endforeach()
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_checkpoint_warp.comp.slang"
+                        "train_backward_checkpoint_warp.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_clear.comp.slang" "train_forward_tile_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_count.comp.slang" "train_forward_tile_count.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_ranges.comp.slang"
@@ -268,6 +299,15 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang"
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_workgroup.comp.slang"
                         "train_forward_workgroup.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_loss.comp.slang" "train_loss.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_ssim_moments_horizontal.comp.slang"
+                        "train_ssim_moments_horizontal.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_ssim_coefficients_horizontal.comp.slang"
+                        "train_ssim_coefficients_horizontal.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_loss_separable.comp.slang"
+                        "train_loss_separable.comp" "${TRAINING_SHADER_PASSES_DIR}/train_loss.comp.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_loss_to_pixel_separable.comp.slang"
+                        "train_backward_loss_to_pixel_separable.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_backward_loss_to_pixel.comp.slang")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_clear.comp.slang" "train_backward_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_loss_to_pixel.comp.slang" "train_backward_loss_to_pixel.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs.comp.slang" "train_backward_pixel_to_2dgs.comp")
@@ -293,9 +333,42 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_te
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor_subgroup_global_grad_latency.comp.slang"
                         "train_backward_vksplat_tensor_subgroup_global_grad_latency.comp"
                         "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor_early_cull.comp.slang"
+                        "train_backward_vksplat_tensor_early_cull.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_pixel_culling_probe.comp.slang"
+                        "train_pixel_culling_probe.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_culling_test.comp.slang"
+                        "train_backward_pixel_culling_test.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_backward_pixel_to_2dgs.comp.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_scanline_census.comp.slang"
+                        "train_scanline_census.comp"
+                        "${TRAINING_SHADER_COMMON_DIR}/train_scanline_diagnostic.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_scanline_bounds_cost.comp.slang"
+                        "train_scanline_bounds_cost.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_scanline_census.comp.slang"
+                        "${TRAINING_SHADER_COMMON_DIR}/train_scanline_diagnostic.slang")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_row_empty_census.comp.slang"
+                        "train_row_empty_census.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_scanline_census.comp.slang"
+                        "${TRAINING_SHADER_COMMON_DIR}/train_scanline_diagnostic.slang"
+                        "${TRAINING_SHADER_COMMON_DIR}/train_row_empty.slang")
+foreach(row_empty_pass IN ITEMS train_backward_vksplat_tensor_row_empty
+                                train_backward_tensor_batch4_test train_backward_tensor_row_empty_test)
+    compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/${row_empty_pass}.comp.slang"
+                            "${row_empty_pass}.comp"
+                            "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang"
+                            "${TRAINING_SHADER_COMMON_DIR}/train_row_empty.slang")
+endforeach()
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer.comp.slang"
                         "train_backward_2dgs_to_3dgs_optimizer.comp")
+# S4-3 private diagnostic helper; no training pipeline selects it.
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_scheduling_sort_test.comp.slang"
+                        "train_scheduling_sort_test.comp")
+# S4-1R offline-only candidate; no training pipeline selects it.
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer_stream_adam.comp.slang"
+                        "train_backward_2dgs_to_3dgs_optimizer_stream_adam.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
 compile_training_shader("${TRAINING_SHADER_VALIDATION_DIR}/train_gaussian_validation.comp.slang"
                         "train_gaussian_validation.comp")

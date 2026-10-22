@@ -1,6 +1,7 @@
 #pragma once
 
 #include "training/core/training_types.hpp"
+#include "training/core/training_scheduling_diagnostics.hpp"
 
 #include <vulkan/vulkan.hpp>
 
@@ -15,7 +16,8 @@ public:
     TrainingProfilingService& operator=(const TrainingProfilingService&) = delete;
 
     void initialize(vk::Device device, vk::PhysicalDevice physicalDevice,
-                    uint32_t computeQueueFamilyIndex);
+                    uint32_t computeQueueFamilyIndex,
+                    std::optional<bool> vulkanValidationLayersEnabled = std::nullopt);
     void cleanup();
 
     void resetLastSamples();
@@ -32,6 +34,9 @@ public:
     [[nodiscard]] const TrainingProfilingStats& stats() const noexcept {
         return stats_;
     }
+    TrainingSchedulingDiagnostics* schedulingDiagnostics() const noexcept {
+        return scheduling_.get();
+    }
 
 private:
     void recordGpu(TrainingGpuProfileStage stage, float milliseconds);
@@ -41,6 +46,7 @@ private:
     float timestampPeriodNanoseconds_ = 0.0f;
     bool gpuTimestampsAvailable_ = false;
     TrainingProfilingStats stats_{};
+    std::unique_ptr<TrainingSchedulingDiagnostics> scheduling_;
 };
 
 } // namespace vulkan3DGS

@@ -32,6 +32,9 @@ struct TrainingUiSnapshot {
     bool tensorSubgroupReductionActive = false;
     bool tensorGlobalPixelGradActive = false;
     bool tensorRgbLatencyHidingActive = false;
+    TrainingPixelCullStatus tensorEarlyCullStatus = TrainingPixelCullStatus::Off;
+    TrainingPixelCullRunStats tensorEarlyCullRun{};
+    TrainingSsimMode activeSsimMode = TrainingSsimMode::TwoDimensional;
     TrainingPixelTo2DGSMode activePixelMode = TrainingPixelTo2DGSMode::Direct;
     TrainingTileMode tileMode = TrainingTileMode::Fixed16;
     uint32_t activeTileSize = 16u;
@@ -55,6 +58,7 @@ struct TrainingWorkerResult {
     bool pure = false;
     std::string error;
     std::chrono::steady_clock::time_point finishedAt{};
+    std::filesystem::path optimizerCapturePath;
 };
 
 struct TrainingLifecycleState {
@@ -93,7 +97,8 @@ public:
     TrainingController(const TrainingController&) = delete;
     TrainingController& operator=(const TrainingController&) = delete;
 
-    void initializeDevice(std::optional<std::string> commandLineSelector);
+    void initializeDevice(std::optional<std::string> commandLineSelector,
+                          std::optional<bool> vulkanValidationLayersEnabled = std::nullopt);
     void tick();
     void shutdown();
 
@@ -128,8 +133,11 @@ public:
     void loadDataset();
     void applyLiveSettings();
     void toggleTraining();
-    void startFixedBenchmark();
+    void startFixedBenchmark(bool checkpointDiagnostics = false, bool checkpointWarp = false,
+                             bool tensorEarlyCull = false);
     void exportFixedBenchmarkGradients();
+    void exportScanlineDiagnosticInputs();
+    void captureOptimizerStepAndPause();
     void exportAdaptiveTileDiagnostics();
     void exportDefaultModel();
     void exportModelTo(const std::filesystem::path& path);
@@ -144,6 +152,7 @@ public:
     void saveSettings();
 
 private:
+    std::optional<bool> vulkanValidationLayersEnabled_;
     void createTrainingDevice(std::optional<std::string> selector);
     void replaceTrainingDevice(std::optional<std::string> selector);
     void cleanupTrainingResources();
@@ -167,7 +176,8 @@ private:
 
     [[nodiscard]] TrainingUiSnapshot captureSnapshot() const;
     void publishSnapshot();
-    void workerMain(std::stop_token stopToken, bool pure) noexcept;
+    void workerMain(std::stop_token stopToken, bool pure,
+                    std::filesystem::path optimizerCapturePath = {}) noexcept;
 
     TrainingSettings settings_{};
     std::unique_ptr<const TrainingRunConfig> activeRunConfig_;

@@ -49,6 +49,8 @@ PixelTo2DGSCapabilities queryCapabilities(vk::PhysicalDevice physicalDevice) {
 TrainingPixelTo2DGSMode
 resolvePixelTo2DGSMode(TrainingPixelTo2DGSMode requested,
                        const PixelTo2DGSCapabilities& capabilities) noexcept {
+    if (requested == TrainingPixelTo2DGSMode::CheckpointedWarp)
+        return TrainingPixelTo2DGSMode::Direct; // P2 is selected by its explicit benchmark request.
     if (requested == TrainingPixelTo2DGSMode::Auto) {
         return capabilities.subgroup ? TrainingPixelTo2DGSMode::Auto
                                      : TrainingPixelTo2DGSMode::Direct;
@@ -173,6 +175,7 @@ PixelTo2DGSDispatcher::variantForTileSize(uint32_t tileSize) {
 void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice physicalDevice) {
     cleanup();
     device_ = device;
+    physicalDevice_ = physicalDevice;
     capabilities_ = queryCapabilities(physicalDevice);
 
     ComputePipelineConfig config{};
@@ -194,6 +197,14 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
             device_, "shaders/train_backward_vksplat_tensor_subgroup_global_grad.comp.spv", config);
         tensorRgbLatencyPipeline_.initialize(
             device_, "shaders/train_backward_vksplat_tensor_subgroup_global_grad_latency.comp.spv", config);
+        // Existing >=45 KiB Tensor gate also covers method 1's 33604 bytes.
+        try {
+            tensorEarlyCullPipeline_.initialize(
+                device_, "shaders/train_backward_vksplat_tensor_early_cull.comp.spv", config);
+        } catch (const std::exception& error) {
+            tensorEarlyCullPipeline_.cleanup();
+            LOG_WARN("EarlyCull experiment unavailable; original Tensor retained: {}", error.what());
+        }
     }
     constexpr std::array<uint32_t, 2> adaptiveTileSizes = {kTrainingTileSize8, kTrainingTileSize16};
     for (size_t index = 0; index < adaptiveTileSizes.size(); ++index) {
@@ -245,6 +256,8 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
         layouts.push_back(tensorSubgroupPipeline_.getDescriptorSetLayout());
         layouts.push_back(tensorGlobalPixelGradPipeline_.getDescriptorSetLayout());
         layouts.push_back(tensorRgbLatencyPipeline_.getDescriptorSetLayout());
+        if (tensorEarlyCullSupported())
+            layouts.push_back(tensorEarlyCullPipeline_.getDescriptorSetLayout());
     }
     if (capabilities_.vkSplatPerSplat) {
         for (const ComputePipeline& pipeline : adaptiveSpatialPerSplatPipelines_) {
@@ -277,6 +290,7 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
         tensorSubgroupDescriptorSet_ = sets[index++];
         tensorGlobalPixelGradDescriptorSet_ = sets[index++];
         tensorRgbLatencyDescriptorSet_ = sets[index++];
+        if (tensorEarlyCullSupported()) tensorEarlyCullDescriptorSet_ = sets[index++];
     }
     if (capabilities_.vkSplatPerSplat) {
         for (vk::DescriptorSet& descriptorSet : adaptiveSpatialPerSplatDescriptorSets_) {
@@ -309,7 +323,35 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
              supportsTensorSubgroupReduction(capabilities_) ? "available" : "unavailable");
 }
 
+void PixelTo2DGSDispatcher::prepareCheckpointDiagnostics(TrainingBuffers& buffers, uint32_t itemCount,
+                                                         bool warp) {
+    if (!supportsTensorSubgroupReduction(capabilities_))
+        throw std::runtime_error("Checkpoint P1 diagnostics require the subgroup32 Tensor baseline");
+    if (!checkpointState_) {
+        auto next = std::make_unique<CheckpointStatePass>();
+        next->initialize(device_, physicalDevice_);
+        checkpointState_ = std::move(next);
+    }
+    if (warp && !checkpointBackward_) {
+        auto next = std::make_unique<CheckpointBackwardPass>();
+        next->initialize(device_, physicalDevice_);
+        checkpointBackward_ = std::move(next);
+    }
+    buffers.ensureCheckpointCapacity(itemCount);
+}
+
+void PixelTo2DGSDispatcher::recordCheckpointDiagnostics(const BackwardPassContext& context, bool resetRun) {
+    if (!checkpointState_) throw std::runtime_error("Checkpoint P1 diagnostic pass is unavailable");
+    checkpointState_->record(context.commandBuffer, context.pushConstants,
+                             context.buffers.checkpointResources(), context.profilingQueryPool, resetRun);
+}
+
 void PixelTo2DGSDispatcher::cleanup() {
+    if (checkpointBackward_) checkpointBackward_->cleanup();
+    checkpointBackward_.reset();
+    if (checkpointState_) checkpointState_->cleanup();
+    checkpointState_.reset();
+    physicalDevice_ = nullptr;
     descriptorPool_.reset();
     tensorSubgroupPipeline_.cleanup();
     tensorSubgroupDescriptorSet_ = nullptr;
@@ -317,6 +359,8 @@ void PixelTo2DGSDispatcher::cleanup() {
     tensorGlobalPixelGradDescriptorSet_ = nullptr;
     tensorRgbLatencyPipeline_.cleanup();
     tensorRgbLatencyDescriptorSet_ = nullptr;
+    tensorEarlyCullPipeline_.cleanup();
+    tensorEarlyCullDescriptorSet_ = nullptr;
     for (ComputePipeline& pipeline : adaptiveSpatialPerSplatPipelines_) {
         pipeline.cleanup();
     }
@@ -345,6 +389,37 @@ TrainingPixelTo2DGSMode PixelTo2DGSDispatcher::activeMode() const noexcept {
 }
 
 void PixelTo2DGSDispatcher::record(const BackwardPassContext& context) {
+    if (context.tensorEarlyCull &&
+        (context.checkpointWarp || !tensorEarlyCullSupported() ||
+         context.pushConstants.tileSize != kTrainingTileSize16 || adaptiveSpatialTiles_ ||
+         !tensorGlobalPixelGradActive(context.pushConstants.tileSize) ||
+         tensorRgbLatencyHidingActive(context.pushConstants.tileSize)))
+        throw std::runtime_error("EarlyCull requires the frozen Fixed16 Tensor Subgroup/Global Baseline path");
+    if (!context.checkpointWarp) { recordSelected(context); return; }
+    if (!checkpointBackward_) throw std::runtime_error("Checkpoint warp prototype is not prepared");
+    const auto resources = context.buffers.checkpointResources();
+    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
+                                    TrainingGpuProfileStage::TileLocalBackward, false);
+    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
+                                    TrainingGpuProfileStage::CheckpointWarpBackward, false);
+    checkpointBackward_->record(context.commandBuffer, context.pushConstants, resources,
+                                 context.buffers.pixelGradsInfo(), context.buffers.projectedGradsInfo());
+    vk::MemoryBarrier memory{vk::AccessFlagBits::eShaderWrite,
+        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
+        vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eTransferRead};
+    context.commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect |
+        vk::PipelineStageFlagBits::eTransfer, {}, memory, {}, {});
+    recordSelected(context, resources.descriptors[11].buffer,
+                    offsetof(TrainingCheckpointControl, fallback));
+    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
+                                    TrainingGpuProfileStage::CheckpointWarpBackward, true);
+    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
+                                    TrainingGpuProfileStage::TileLocalBackward, true);
+}
+
+void PixelTo2DGSDispatcher::recordSelected(const BackwardPassContext& context, vk::Buffer indirect,
+                                          vk::DeviceSize offset) {
     const TrainingPixelTo2DGSMode mode = activeMode();
     const bool adaptiveSpatial = context.pushConstants.tileSize == 32u && adaptiveSpatialTiles_;
     if (adaptiveSpatial) {
@@ -386,6 +461,10 @@ void PixelTo2DGSDispatcher::record(const BackwardPassContext& context) {
             pipeline = &tensorRgbLatencyPipeline_;
             descriptorSet = tensorRgbLatencyDescriptorSet_;
         }
+        if (context.tensorEarlyCull) {
+            pipeline = &tensorEarlyCullPipeline_;
+            descriptorSet = tensorEarlyCullDescriptorSet_;
+        }
     }
     const auto projectedInfo = context.buffers.projectedInfo();
     const auto tileItemsInfo = context.buffers.tileItemsInfo();
@@ -415,15 +494,16 @@ void PixelTo2DGSDispatcher::record(const BackwardPassContext& context) {
                                         sizeof(TrainingPushConstants), &context.pushConstants);
     if (context.pushConstants.width == 0u || context.pushConstants.height == 0u) return;
 
-    const bool profileTileLocal = mode == TrainingPixelTo2DGSMode::VkSplatPerSplat ||
-                                  mode == TrainingPixelTo2DGSMode::VkSplatTensor;
+    const bool profileTileLocal = !context.checkpointWarp &&
+        (mode == TrainingPixelTo2DGSMode::VkSplatPerSplat || mode == TrainingPixelTo2DGSMode::VkSplatTensor);
     if (profileTileLocal) {
         writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
                                         TrainingGpuProfileStage::TileLocalBackward, false);
     }
     const uint32_t tileSize = variant.tileSize;
-    context.commandBuffer.dispatch((context.pushConstants.width + tileSize - 1u) / tileSize,
-                                   (context.pushConstants.height + tileSize - 1u) / tileSize, 1u);
+    if (indirect) context.commandBuffer.dispatchIndirect(indirect, offset);
+    else context.commandBuffer.dispatch((context.pushConstants.width + tileSize - 1u) / tileSize,
+                                         (context.pushConstants.height + tileSize - 1u) / tileSize, 1u);
     if (profileTileLocal) {
         writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
                                         TrainingGpuProfileStage::TileLocalBackward, true);

@@ -74,6 +74,8 @@ struct TrainingRunSettings {
     bool tensorSubgroupReduction = false;
     bool tensorGlobalPixelGrad = false;
     bool tensorRgbLatencyHiding = false;
+    bool tensorEarlyCull = false; // Normal training only; benchmark commands override this.
+    int ssimMode = 0; // 0 = 2D, 1 = full separable, 2 = separable backward only.
     uint32_t benchmarkStepsPerFrame = 1;
     uint32_t benchmarkFrame = 0;
     uint32_t benchmarkWarmupSteps = 200;

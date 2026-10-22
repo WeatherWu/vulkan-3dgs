@@ -73,8 +73,28 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
         if (ImGui::Button("Start Fixed Benchmark")) {
             actions.startFixedBenchmark = true;
         }
+        if (ImGui::Button("Run P1 State Diagnostic")) {
+            actions.startCheckpointDiagnostic = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Benchmarks checkpoint state generation; gradients use the original Tensor path.");
+        if (ImGui::Button("Run P2 Warp Benchmark")) actions.startCheckpointWarp = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Tests checkpointed warp gradients on this frozen model/frame.");
+        if (ImGui::Button("Run S3 EarlyCull Benchmark")) actions.startTensorEarlyCull = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Experimental backward-only exp culling. Requires Tensor Subgroup/Global Baseline; forward and normal training are unchanged.");
     }
     if (!hasDatasetPath) {
+        ImGui::EndDisabled();
+    }
+
+    if (!state.trainingRunning) {
+        ImGui::BeginDisabled(!snapshot.rendererInitialized || !snapshot.hasTrainableModel ||
+                             snapshot.trainingComplete || state.workerActive);
+        if (ImGui::Button("Capture ONE S4 Optimizer Step and Pause")) actions.captureOptimizerStep = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("ACTUALLY TRAINS ONE STEP using the paused model's existing configuration, then pauses and exports pre/post state (~1.97 GB at 1.25M Gaussians). Next step must be ordinary fused, not final/ADC/reset. No automatic extra steps or layout changes.");
         ImGui::EndDisabled();
     }
 
@@ -122,6 +142,12 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
         settings.run.benchmarkMeasuredSteps = std::max(settings.run.benchmarkMeasuredSteps, 1u);
     }
     const auto& benchmark = snapshot.fixedBenchmark;
+    if (benchmark.checkpointDiagnosticsRequested) {
+        ImGui::Text("Checkpoint %s: %u built, %u skipped, %u GPU fallbacks; flags=%u",
+                    benchmark.checkpointWarpRequested ? "P2 warp" : "P1 state",
+                    benchmark.checkpointDiagnosticSteps, benchmark.checkpointSkippedSteps,
+                    benchmark.checkpointFallbackCount, benchmark.checkpointErrorFlags);
+    }
     if (benchmark.active || benchmark.complete || benchmark.completedWarmupSteps > 0u ||
         benchmark.completedMeasuredSteps > 0u) {
         ImGui::Text("Fixed benchmark frame %u, warmup %u/%u, measured %u/%u, %s",
@@ -132,8 +158,11 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
             benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
             ImGui::Text("Benchmark child Tensor batch %u", benchmark.adaptiveTensorChildBatch);
         }
+        ImGui::Text("Benchmark SSIM: %s", trainingSsimModeName(benchmark.ssimMode));
+        ImGui::Text("Benchmark backward pixel cull: %s", benchmark.pixelCullMethod == 1u
+                    ? "EarlyCull FP32 guarded v1" : "Off");
         if (benchmark.tileMode == TrainingTileMode::Fixed16 &&
-            benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
+            benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor && !benchmark.checkpointWarpRequested) {
             ImGui::Text("Benchmark Tensor reduction: %s",
                         benchmark.tensorSubgroupReduction ? "Subgroup" : "Shared");
             ImGui::Text("Benchmark Tensor pixel grad: %s",
@@ -147,6 +176,14 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
     if (benchmark.complete && !state.trainingRunning) {
         if (ImGui::Button("Export Benchmark Gradients")) {
             actions.exportFixedBenchmarkGradients = true;
+        }
+        if (benchmark.tileMode == TrainingTileMode::Fixed16 &&
+            benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor &&
+            benchmark.tensorGlobalPixelGrad && !benchmark.tensorRgbLatencyHiding &&
+            !benchmark.pixelCullMethod && !benchmark.checkpointDiagnosticsRequested) {
+            if (ImGui::Button("Export S3-2 Diagnostic Inputs")) actions.exportScanlineDiagnosticInputs = true;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("One-time frozen input download for offline scanline feasibility diagnosis; no gradient or training changes.");
         }
         if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial) {
             if (ImGui::Button("Export Adaptive Tile Diagnostics")) {

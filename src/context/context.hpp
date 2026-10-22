@@ -25,7 +25,8 @@ public:
 
     friend class vulkan3DGS::Device;
     
-    void initialize(GLFWwindow* window, std::optional<std::string> gpuSelector = std::nullopt);
+    void initialize(GLFWwindow* window, std::optional<std::string> gpuSelector = std::nullopt,
+                    bool validationLayersEnabled = true);
     void cleanup();
     
     // 查询是否已初始化
@@ -58,7 +59,7 @@ private:
 
     std::unique_ptr<vulkan3DGS::Device> device_;
     
-    bool enableValidationLayers_ = true;  // 启用验证层以调试Pipeline创建问题
+    bool enableValidationLayers_ = true;  // Startup choice; availability may disable the request.
 
     const std::vector<const char*> validationLayers_ = {
         "VK_LAYER_KHRONOS_validation"

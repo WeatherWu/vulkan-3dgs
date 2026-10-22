@@ -3,6 +3,7 @@
 /data
 /vcpkg_installed
 /.**
+/skills
 /tools
 /nsight**
 !/.clang-format
@@ -27,3 +28,5 @@ benchmark_tiles/
 
 plan.md
 analysis.json
+frame_0_**
+s4_**.json

@@ -1,6 +1,7 @@
 #include "training/core/training_step_executor.hpp"
 
 #include "utils/logger.hpp"
+#include "training/core/training_optimizer_capture_gpu.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -59,6 +60,34 @@ void TrainingStepExecutor::cleanup() {
     computeQueueFamilyIndex_ = 0;
 }
 
+void TrainingStepExecutor::synchronizeDiagnosticDownloads(vk::Queue downloadQueue) {
+    if (!initialized() || !downloadQueue)
+        throw std::runtime_error("Initialize the training executor before diagnostic downloads");
+    const auto command = commandPool_.allocateCommandBuffer();
+    command.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    vk::MemoryBarrier visible{vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite,
+                               vk::AccessFlagBits::eTransferRead};
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                             vk::PipelineStageFlagBits::eTransfer, {}, visible, {}, {});
+    command.end();
+    auto fence = device_.createFenceUnique({});
+    vk::SubmitInfo computeSubmit; computeSubmit.setCommandBuffers(command);
+    if (downloadQueue == computeQueue_) {
+        computeQueue_.submit(computeSubmit, *fence);
+        (void)device_.waitForFences(*fence, VK_TRUE, UINT64_MAX);
+    } else {
+        auto ready = device_.createSemaphoreUnique({});
+        computeSubmit.setSignalSemaphores(*ready);
+        computeQueue_.submit(computeSubmit, *fence);
+        const vk::PipelineStageFlags stage = vk::PipelineStageFlagBits::eTransfer;
+        vk::SubmitInfo acquire; acquire.setWaitSemaphores(*ready).setWaitDstStageMask(stage);
+        downloadQueue.submit(acquire);
+        downloadQueue.waitIdle();
+        (void)device_.waitForFences(*fence, VK_TRUE, UINT64_MAX);
+    }
+    commandPool_.freeCommandBuffer(command);
+}
+
 TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionRequest request) {
     if (!initialized()) {
         throw std::runtime_error("Training step executor is not initialized");
@@ -66,6 +95,35 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
 
     using Clock = std::chrono::steady_clock;
     TrainingStepExecutionResult result{};
+    SchedulingStepSample scheduling;
+    scheduling.metadata = {
+        .iteration = request.pushConstants.validationIteration,
+        .frame = request.frameIndex,
+        .gaussians = request.trainableGaussianCount,
+        .width = request.pushConstants.width,
+        .height = request.pushConstants.height,
+        .tileSize = request.pushConstants.tileSize,
+        .activeSHDegree = request.pushConstants.activeSHDegree,
+        .ssimMode = request.ssimMode,
+        .pixelMode = request.pixelMode,
+        .compositeMode = request.compositeMode,
+        .uploadWaitValue = request.uploadWaitValue,
+        .fixedBenchmark = request.fixedBenchmark,
+        .adc = request.runDensification,
+        .validation = request.pushConstants.validationEnabled != 0u,
+        .opacityReset = request.runDensification &&
+                        request.densificationPushConstants.resetOpacity != 0u,
+        .optimizerEnabled = request.pushConstants.optimizerEnabled != 0u,
+        .optimizerCapture = request.optimizerCapture != nullptr,
+    };
+    auto* schedulingDiagnostics = request.profiling.schedulingDiagnostics();
+    if (schedulingDiagnostics && !schedulingDiagnostics->wantsStep(scheduling.metadata))
+        schedulingDiagnostics = nullptr;
+    const auto milliseconds = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    const bool checkpointReadbackRequested =
+        request.checkpointDiagnostics && request.pushConstants.validationEnabled != 0u;
     vk::CommandBufferBeginInfo beginInfo{};
     beginInfo.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
@@ -75,10 +133,12 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
         prepareCommandBuffer_.resetQueryPool(request.profiling.queryPool(), 0,
                                              kTrainingGpuTimestampQueryCount);
     }
+    if (schedulingDiagnostics) schedulingDiagnostics->recordPrepareBegin(prepareCommandBuffer_);
     request.forward.setTrainingBuffers(request.buffers, prepareCommandBuffer_,
                                        request.pushConstants);
     request.forward.prepareTileItems();
     request.buffers.recordTileItemCountReadback(prepareCommandBuffer_);
+    if (schedulingDiagnostics) schedulingDiagnostics->recordPrepareEnd(prepareCommandBuffer_);
     prepareCommandBuffer_.end();
 
     vk::SubmitInfo prepareSubmit{};
@@ -87,8 +147,18 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
     LOG_DEBUG("Submitting training prepare pass for iteration {}",
               request.pushConstants.trainingIteration);
     device_.resetFences(prepareFence_);
+    // Prepare tile coverage already updates maxScreenRadius. A later allocation/
+    // recording failure must not be reported as an entirely untouched model.
+    if (request.optimizerCapture) request.optimizerCapture->markPrepareSubmitted();
+    const auto prepareCallStart = schedulingDiagnostics ? Clock::now() : Clock::time_point{};
     computeQueue_.submit(prepareSubmit, prepareFence_);
+    const auto prepareWaitStart = schedulingDiagnostics ? Clock::now() : Clock::time_point{};
     (void)device_.waitForFences(prepareFence_, VK_TRUE, UINT64_MAX);
+    const auto prepareWaitEnd = schedulingDiagnostics ? Clock::now() : Clock::time_point{};
+    if (schedulingDiagnostics) {
+        scheduling.prepareSubmitCallMs = milliseconds(prepareCallStart, prepareWaitStart);
+        scheduling.prepareFenceWaitMs = milliseconds(prepareWaitStart, prepareWaitEnd);
+    }
     LOG_DEBUG("Training prepare pass completed for iteration {}",
               request.pushConstants.trainingIteration);
     request.profiling.recordCpu(
@@ -101,6 +171,9 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
     request.profiling.recordCpu(
         TrainingCpuProfileStage::TileCountReadback,
         std::chrono::duration<float, std::milli>(Clock::now() - tileReadbackStart).count());
+    const auto capacityStart = schedulingDiagnostics ? Clock::now() : Clock::time_point{};
+    if (schedulingDiagnostics)
+        scheduling.countReadMs = milliseconds(tileReadbackStart, capacityStart);
     const uint64_t childBudget = request.pushConstants.tileSize == 32u
                                      ? static_cast<uint64_t>(result.tileItemCount) / 4u
                                      : 0u;
@@ -109,6 +182,7 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
         throw std::runtime_error("Adaptive training tile item capacity exceeds uint32 range");
     }
     if (requiredItemCapacity > request.buffers.tileItemCapacity()) {
+        scheduling.metadata.resized = true;
         const auto resizeStart = Clock::now();
         const uint64_t doubled = static_cast<uint64_t>(request.buffers.tileItemCapacity()) * 2ull;
         const uint32_t capacity = static_cast<uint32_t>(
@@ -117,9 +191,32 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
         LOG_INFO("Resizing training tile item buffer from {} to {} entries",
                  request.buffers.tileItemCapacity(), capacity);
         request.buffers.resizeTileItems(capacity);
+        if (schedulingDiagnostics) scheduling.resizeMs = milliseconds(resizeStart, Clock::now());
         request.profiling.recordCpu(
             TrainingCpuProfileStage::TileBufferResize,
             std::chrono::duration<float, std::milli>(Clock::now() - resizeStart).count());
+    }
+    if (schedulingDiagnostics) {
+        scheduling.capacityCheckMs = milliseconds(capacityStart, Clock::now());
+        scheduling.metadata.tileItems = result.tileItemCount;
+        scheduling.metadata.capacity = request.buffers.tileItemCapacity();
+    }
+
+    bool checkpointReady = false;
+    if (request.checkpointDiagnostics) {
+        const auto start = Clock::now();
+        try {
+            request.backward.prepareCheckpointDiagnostics(request.buffers, result.tileItemCount,
+                                                           request.checkpointWarp);
+            checkpointReady = true;
+        } catch (const std::exception& error) {
+            LOG_WARN("Checkpoint {} setup skipped; original Tensor remains active: {}",
+                     request.checkpointWarp ? "P2" : "P1", error.what());
+        }
+        request.profiling.recordCpu(TrainingCpuProfileStage::CheckpointCapacity,
+            std::chrono::duration<float, std::milli>(Clock::now() - start).count());
+    } else {
+        request.buffers.releaseCheckpointWorkspace();
     }
 
     if (request.runDensification) {
@@ -147,11 +244,20 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
     const auto mainRecordStart = Clock::now();
     mainCommandBuffer_.reset();
     mainCommandBuffer_.begin(beginInfo);
+    if (schedulingDiagnostics) schedulingDiagnostics->recordMainBegin(mainCommandBuffer_);
     request.forward.setTrainingBuffers(request.buffers, mainCommandBuffer_, request.pushConstants);
     LOG_DEBUG("Recording training main pass for iteration {}",
               request.pushConstants.trainingIteration);
     request.forward.renderPreparedTiles(result.tileItemCount);
     request.backward.setTrainingBuffers(request.buffers, mainCommandBuffer_, request.pushConstants);
+    request.backward.setCheckpointWarp(checkpointReady && request.checkpointWarp);
+    request.backward.setTensorEarlyCull(request.tensorEarlyCull);
+    request.backward.setOptimizerCapture(request.optimizerCapture);
+    struct ClearCaptureObserver {
+        GaussianBackwardRenderer& renderer;
+        ~ClearCaptureObserver() { renderer.setOptimizerCapture(nullptr); }
+    } clearCaptureObserver{request.backward};
+    if (checkpointReady) request.backward.recordCheckpointDiagnostics(request.checkpointResetCounters);
     request.backward.backward();
 
     if (request.runDensification) {
@@ -176,7 +282,13 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
         request.validation.recordCopy(
             mainCommandBuffer_, request.buffers.validationFinalResultBuffer(), *validationTicket);
     }
+    const bool readCheckpoint = checkpointReady && checkpointReadbackRequested;
+    if (readCheckpoint) request.buffers.recordCheckpointReadback(mainCommandBuffer_);
     mainCommandBuffer_.end();
+    if (schedulingDiagnostics) {
+        scheduling.mainRecordMs = milliseconds(mainRecordStart, Clock::now());
+        scheduling.metadata.validation = request.pushConstants.validationEnabled != 0u;
+    }
     request.profiling.recordCpu(
         TrainingCpuProfileStage::MainRecord,
         std::chrono::duration<float, std::milli>(Clock::now() - mainRecordStart).count());
@@ -193,26 +305,54 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
     }
 
     const auto mainSubmitStart = Clock::now();
+    // Mark conservatively before submit: a queue/device failure cannot be called rollback.
+    if (request.optimizerCapture) request.optimizerCapture->markSubmitted();
     LOG_DEBUG("Submitting training main pass for iteration {} with image upload timeline value {}",
               request.pushConstants.trainingIteration, request.uploadWaitValue);
+    Clock::time_point mainCallStart{}, mainCallEnd{};
     if (validationTicket) {
         const vk::Fence validationFence = request.validation.submissionFence(*validationTicket);
         device_.resetFences(validationFence);
+        if (schedulingDiagnostics) mainCallStart = Clock::now();
         computeQueue_.submit(mainSubmit, validationFence);
+        if (schedulingDiagnostics) mainCallEnd = Clock::now();
         request.validation.markSubmitted(*validationTicket);
         (void)device_.waitForFences(validationFence, VK_TRUE, UINT64_MAX);
     } else {
         device_.resetFences(mainFence_);
+        if (schedulingDiagnostics) mainCallStart = Clock::now();
         computeQueue_.submit(mainSubmit, mainFence_);
+        if (schedulingDiagnostics) mainCallEnd = Clock::now();
         (void)device_.waitForFences(mainFence_, VK_TRUE, UINT64_MAX);
     }
+    if (request.optimizerCapture) request.optimizerCapture->markCompleted();
     request.profiling.recordCpu(
         TrainingCpuProfileStage::MainSubmit,
         std::chrono::duration<float, std::milli>(Clock::now() - mainSubmitStart).count());
 
     const bool gpuProfilingWasAvailable = request.profiling.gpuTimestampsAvailable();
     result.gpuProfilingDisabled = gpuProfilingWasAvailable && !request.profiling.collectGpu();
+    if (schedulingDiagnostics) {
+        scheduling.postFenceToMainSubmitMs = milliseconds(prepareWaitEnd, mainCallStart);
+        scheduling.mainSubmitCallMs = milliseconds(mainCallStart, mainCallEnd);
+        schedulingDiagnostics->finishStep(scheduling);
+    }
     result.optimizerUpdated = request.pushConstants.optimizerEnabled != 0u;
+    result.checkpointDiagnosticsRan = checkpointReady;
+    if (readCheckpoint) {
+        const auto diag = request.buffers.checkpointDiagnostics();
+        result.checkpointReadbackValid = true;
+        result.checkpointFallbacks = diag.run[0];
+        result.checkpointFlags = diag.run[1];
+        result.checkpointTasks = diag.totals[1];
+        LOG_INFO("Checkpoint {} layout=2: slots={} tasks={} flags={} runFlags={} fallbacks={} states(expected/written)={}/{}; warp={}",
+                 request.checkpointWarp ? "P2" : "P1", diag.totals[0], diag.totals[1], diag.totals[2],
+                 diag.run[1], diag.run[0], diag.totals[3], diag.diagnostics[0], diag.run[3]);
+        if ((!request.checkpointWarp && diag.run[1] != 0u) ||
+            (request.checkpointWarp && ((diag.run[1] & ~63u) != 0u ||
+                (diag.totals[1] != 0u && diag.fallback[3] == 0u && diag.run[3] != 32u))))
+            throw std::runtime_error("Checkpoint GPU contract failed; inspect diagnostic flags");
+    }
 
     if (validationTicket && request.pushConstants.tileSize == 32u) {
         const auto adaptiveStats = request.buffers.adaptiveChildStats();

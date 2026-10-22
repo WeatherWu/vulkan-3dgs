@@ -35,6 +35,15 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         if (!canEdit) ImGui::BeginDisabled();
 
         static constexpr const char* trainingModes[] = {"Sequential", "3DGS Random"};
+        static constexpr const char* ssimModes[] = {
+            "2D (Baseline)", "Separable (Full, Experimental)",
+            "2D Loss + Separable Backward (Experimental)"};
+        if (ImGui::Combo("SSIM Mode", &run.ssimMode, ssimModes, IM_ARRAYSIZE(ssimModes))) {
+            actions.ssimModeChanged = true;
+        }
+        if (snapshot.rendererInitialized) {
+            ImGui::Text("Active SSIM: %s", trainingSsimModeName(snapshot.activeSsimMode));
+        }
         ImGui::Combo("Mode", &schedule.imageSelectionMode, trainingModes,
                      IM_ARRAYSIZE(trainingModes));
         schedule.imageSelectionMode = std::clamp(schedule.imageSelectionMode, 0, 1);
@@ -72,7 +81,8 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
             actions.forwardCompositeChanged = true;
         }
         static constexpr const char* tileModes[] = {"Fixed 8x8", "Fixed 16x16", "Adaptive Spatial"};
-        ImGui::Combo("Training Tile", &run.tileMode, tileModes, IM_ARRAYSIZE(tileModes));
+        if (ImGui::Combo("Training Tile", &run.tileMode, tileModes, IM_ARRAYSIZE(tileModes)))
+            actions.tileModeChanged = true;
         run.tileMode = std::clamp(run.tileMode, 0, 2);
         if (run.tileMode == static_cast<int>(TrainingTileMode::AdaptiveSpatial)) {
             ImGui::InputScalar("Adaptive Split Threshold", ImGuiDataType_U32,
@@ -127,6 +137,16 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         } else if (run.tensorSubgroupReduction) {
             ImGui::TextDisabled("Tensor subgroup reduction only applies to Fixed16 + VkSplat Tensor.");
         }
+        if (ImGui::Checkbox("Tensor EarlyCull (Training, Experimental)", &run.tensorEarlyCull))
+            actions.tensorEarlyCullChanged = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Normal/Pure training only. Requires Fixed16 / Workgroup Shared / Tensor Subgroup + Global / RGB Baseline. Benchmark buttons select their own path.");
+        ImGui::TextWrapped("Training EarlyCull selection: %s",
+                           trainingPixelCullStatusName(snapshot.tensorEarlyCullStatus));
+        ImGui::Text("EarlyCull run steps: %llu active, %llu fallback / %llu completed",
+                    static_cast<unsigned long long>(snapshot.tensorEarlyCullRun.activeSteps),
+                    static_cast<unsigned long long>(snapshot.tensorEarlyCullRun.fallbackSteps),
+                    static_cast<unsigned long long>(snapshot.tensorEarlyCullRun.completedSteps));
         if (snapshot.rendererInitialized) {
             if (snapshot.tileMode == TrainingTileMode::Fixed16 &&
                 snapshot.activePixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {

@@ -53,17 +53,23 @@ add_library(vulkan_3dgs_core STATIC
     training/core/gaussian_training.cpp
     training/core/training_validation_service.cpp
     training/core/training_profiling_service.cpp
+    training/core/training_scheduling_diagnostics.cpp
     training/core/training_frame_scheduler.cpp
     training/core/training_model_io.cpp
     training/core/training_image_runtime.cpp
     training/core/training_step_executor.cpp
     training/core/training_buffers.cpp
+    training/core/training_scanline_capture.cpp
+    training/core/training_optimizer_capture.cpp
+    training/core/training_optimizer_capture_gpu.cpp
     training/core/training_pipeline.cpp
     training/core/gaussian_forward_renderer.cpp
     training/core/gaussian_backward_renderer.cpp
     training/core/backward/backward_command_utils.cpp
     training/core/backward/backward_loss_pass.cpp
     training/core/backward/pixel_to_2dgs_dispatcher.cpp
+    training/core/backward/checkpoint_state_pass.cpp
+    training/core/backward/checkpoint_backward_pass.cpp
     training/core/backward/projection_optimizer_pass.cpp
     training/core/backward/backward_validation_pass.cpp
     training/core/gaussian_densification_renderer.cpp
@@ -105,6 +111,10 @@ target_include_directories(vulkan_3dgs_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/third_party/vulkan_radix_sort/include
 )
+target_compile_definitions(vulkan_3dgs_core PRIVATE
+    OPTIMIZER_SHADER_COMPILER="Slang ${OPTIMIZER_SLANG_VERSION}, direct SPIR-V, debug=${VULKAN_3DGS_TRAINING_SHADER_DEBUG_INFO}"
+    TRAINING_CPP_BUILD_CONFIG="$<CONFIG>"
+    TRAINING_CPP_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
 # 包含目录（私有依赖）
 target_include_directories(vulkan_3dgs_core PRIVATE

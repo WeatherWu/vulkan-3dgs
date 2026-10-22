@@ -133,13 +133,20 @@ void TrainingPanel::dispatch(TrainingController& controller,
         actions.settings.tensorReductionChanged ||
         actions.settings.tensorPixelGradSourceChanged ||
         actions.settings.tensorRgbScheduleChanged ||
+        actions.settings.tensorEarlyCullChanged || actions.settings.tileModeChanged ||
+        actions.settings.ssimModeChanged ||
         actions.settings.subgroupUtilizationChanged ||
         actions.settings.forwardCompositeChanged || actions.settings.validationIntervalChanged) {
         controller.applyLiveSettings();
     }
     if (actions.toggleTraining) controller.toggleTraining();
     if (actions.startFixedBenchmark) controller.startFixedBenchmark();
+    else if (actions.startCheckpointDiagnostic) controller.startFixedBenchmark(true);
+    else if (actions.startCheckpointWarp) controller.startFixedBenchmark(true, true);
+    else if (actions.startTensorEarlyCull) controller.startFixedBenchmark(false, false, true);
     if (actions.exportFixedBenchmarkGradients) controller.exportFixedBenchmarkGradients();
+    if (actions.exportScanlineDiagnosticInputs) controller.exportScanlineDiagnosticInputs();
+    if (actions.captureOptimizerStep) controller.captureOptimizerStepAndPause();
     if (actions.exportAdaptiveTileDiagnostics) controller.exportAdaptiveTileDiagnostics();
 
     if (actions.browseOutput) {

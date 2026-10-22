@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <filesystem>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -18,6 +19,7 @@
 #include "training/core/training_tile_layout.hpp"
 #include "training/core/training_profiling_service.hpp"
 #include "training/core/training_validation_service.hpp"
+#include "training/core/training_pixel_culling_policy.hpp"
 #include "render/renderer.hpp"
 
 namespace vulkan3DGS {
@@ -31,7 +33,8 @@ public:
                     vk::PhysicalDevice physicalDevice,
                     vk::Queue transferQueue,
                     uint32_t transferQueueFamilyIndex,
-                    uint32_t computeQueueFamilyIndex);
+                    uint32_t computeQueueFamilyIndex,
+                    std::optional<bool> vulkanValidationLayersEnabled = std::nullopt);
     void cleanup();
     void resize(uint32_t gaussianCount, TrainingExtent extent);
     void initializeTrainingRenderers(vk::Device device,
@@ -47,6 +50,9 @@ public:
     void initializeModelFromDataset(const TrainingInitializationConfig& config = {});
     bool exportToPLY(const std::filesystem::path& path);
     void exportFixedBenchmarkGradients(const std::filesystem::path& path);
+    void exportScanlineDiagnosticInputs(const std::filesystem::path& path);
+    // Explicit mutation: exactly one eligible ordinary step, then exclusive export, no next step.
+    void captureOptimizerStepAndPause(const std::filesystem::path& path);
     void exportAdaptiveTileDiagnostics(const std::filesystem::path& path);
     void setTrainingFrameIndex(size_t frameIndex);
     void startFixedWorkloadBenchmark(const TrainingFixedBenchmarkConfig& config);
@@ -59,6 +65,12 @@ public:
     void setTensorSubgroupReduction(bool enabled);
     void setTensorGlobalPixelGrad(bool enabled);
     void setTensorRgbLatencyHiding(bool enabled);
+    void setTensorEarlyCull(bool enabled) { tensorEarlyCull_ = enabled; }
+    TrainingPixelCullStatus tensorEarlyCullStatus() const;
+    void resetTensorEarlyCullRunStats();
+    const TrainingPixelCullRunStats& tensorEarlyCullRunStats() const { return pixelCullRunStats_; }
+    void setSsimMode(TrainingSsimMode mode);
+    TrainingSsimMode activeSsimMode() const;
     bool tensorRgbLatencyHidingActive() const;
     bool tensorGlobalPixelGradActive() const;
     bool tensorSubgroupReductionSupported() const;
@@ -140,6 +152,7 @@ private:
     glm::mat4 createProjectionMatrix(const TrainingCameraFrame& frame) const;
 
     bool initialized_ = false;
+    std::optional<bool> vulkanValidationLayersEnabled_;
     bool rendererInitialized_ = false;
     vk::Device device_ = nullptr;
     vk::PhysicalDevice physicalDevice_ = nullptr;
@@ -163,6 +176,10 @@ private:
     TrainingOptimizerConfig optimizerConfig_{};
     TrainingFixedBenchmarkStats fixedBenchmarkStats_{};
     uint32_t fixedBenchmarkCompletedSteps_ = 0;
+    bool checkpointDiagnosticsRequested_ = false;
+    bool checkpointWarpRequested_ = false;
+    bool benchmarkTensorEarlyCullRequested_ = false;
+    TrainingPixelCullRunStats pixelCullRunStats_{};
     uint32_t trainingIteration_ = 0;
     uint32_t optimizerStep_ = 0;
     uint32_t validationInterval_ = 100;
@@ -177,7 +194,11 @@ private:
     bool tensorSubgroupReduction_ = false;
     bool tensorGlobalPixelGrad_ = false;
     bool tensorRgbLatencyHiding_ = false;
+    bool tensorEarlyCull_ = false;
+    TrainingSsimMode ssimMode_ = TrainingSsimMode::TwoDimensional;
     float sceneExtent_ = 1.0f;
+    TrainingOptimizerCaptureSession* optimizerCapture_ = nullptr;
+    bool optimizerCaptureStateUncertain_ = false;
 
 };
 

@@ -1,7 +1,10 @@
 #include "training/core/backward/pixel_to_2dgs_dispatcher.hpp"
+#include "training/core/gaussian_training.hpp"
+#include "training/core/training_pixel_culling_policy.hpp"
 
 #include <cstdio>
 #include <array>
+#include <string_view>
 
 using namespace vulkan3DGS;
 
@@ -18,6 +21,8 @@ bool testFallbacks() {
            resolvePixelTo2DGSMode(TrainingPixelTo2DGSMode::VkSplatPerSplat, unavailable) ==
                TrainingPixelTo2DGSMode::Direct &&
            resolvePixelTo2DGSMode(TrainingPixelTo2DGSMode::VkSplatTensor, unavailable) ==
+               TrainingPixelTo2DGSMode::Direct &&
+           resolvePixelTo2DGSMode(TrainingPixelTo2DGSMode::CheckpointedWarp, unavailable) ==
                TrainingPixelTo2DGSMode::Direct &&
            resolvePixelTo2DGSMode(TrainingPixelTo2DGSMode::WorkgroupShared, unavailable) ==
                TrainingPixelTo2DGSMode::WorkgroupShared;
@@ -140,6 +145,79 @@ bool testTensorRgbLatencyPolicy() {
     return true;
 }
 
+bool testTrainingPixelCullPolicy() {
+    using Status = TrainingPixelCullStatus;
+    for (uint32_t flags = 0u; flags < 16u; ++flags) {
+        for (uint32_t mode = 0u; mode <= 7u; ++mode) {
+            for (auto tile : {TrainingTileMode::Fixed8, TrainingTileMode::Fixed16,
+                              TrainingTileMode::AdaptiveSpatial}) {
+                for (auto forward : {TrainingForwardCompositeMode::Direct,
+                                     TrainingForwardCompositeMode::WorkgroupShared}) {
+                    const TrainingPixelCullContext context{
+                        .rendererReady = (flags & 1u) != 0u,
+                        .pipelineAvailable = (flags & 2u) != 0u,
+                        .tileMode = tile, .forwardMode = forward,
+                        .pixelMode = static_cast<TrainingPixelTo2DGSMode>(mode),
+                        .globalPixelGrad = (flags & 4u) != 0u,
+                        .rgbLatencyHiding = (flags & 8u) != 0u,
+                    };
+                    if (resolveTrainingPixelCull(false, context) != Status::Off) return false;
+                    const bool expected = flags == 7u && mode == 6u &&
+                        tile == TrainingTileMode::Fixed16 &&
+                        forward == TrainingForwardCompositeMode::WorkgroupShared;
+                    const auto status = resolveTrainingPixelCull(true, context);
+                    if ((status == Status::Active) != expected) return false;
+                    if (std::string_view(trainingPixelCullStatusName(status)).empty()) return false;
+                    if (trainingPixelCullForStep(false, false, status) != expected ||
+                        trainingPixelCullForStep(false, true, status) != expected ||
+                        trainingPixelCullForStep(true, false, status) ||
+                        !trainingPixelCullForStep(true, true, status)) return false;
+                }
+            }
+        }
+    }
+    TrainingPixelCullContext context{true, true, TrainingTileMode::Fixed16,
+        TrainingForwardCompositeMode::WorkgroupShared, TrainingPixelTo2DGSMode::VkSplatTensor,
+        true, false};
+    const auto expect = [&](Status expected) { return resolveTrainingPixelCull(true, context) == expected; };
+    context.rendererReady = false;
+    if (!expect(Status::RendererNotReady)) return false;
+    context.rendererReady = true;
+    context.tileMode = TrainingTileMode::AdaptiveSpatial;
+    if (!expect(Status::RequiresFixed16)) return false;
+    context.tileMode = TrainingTileMode::Fixed16;
+    context.forwardMode = TrainingForwardCompositeMode::Direct;
+    if (!expect(Status::RequiresWorkgroupForward)) return false;
+    context.forwardMode = TrainingForwardCompositeMode::WorkgroupShared;
+    context.pixelMode = TrainingPixelTo2DGSMode::Direct;
+    if (!expect(Status::RequiresTensor)) return false;
+    context.pixelMode = TrainingPixelTo2DGSMode::VkSplatTensor;
+    context.globalPixelGrad = false;
+    if (!expect(Status::RequiresSubgroupGlobal)) return false;
+    context.globalPixelGrad = true;
+    context.rgbLatencyHiding = true;
+    if (!expect(Status::RequiresBaselineRgb)) return false;
+    context.rgbLatencyHiding = false;
+    context.pipelineAvailable = false;
+    if (!expect(Status::PipelineUnavailable)) return false;
+
+    TrainingPixelCullRunStats stats;
+    stats.record(Status::Off);
+    stats.record(Status::Active);
+    stats.record(Status::PipelineUnavailable);
+    if (stats.completedSteps != 3u || stats.activeSteps != 1u || stats.fallbackSteps != 1u) return false;
+    stats = {};
+    if (stats.completedSteps || stats.activeSteps || stats.fallbackSteps) return false;
+    GaussianTraining training;
+    if (training.tensorEarlyCullStatus() != Status::Off) return false;
+    training.setTensorEarlyCull(true);
+    if (training.tensorEarlyCullStatus() != Status::RendererNotReady) return false;
+    training.resetTensorEarlyCullRunStats();
+    if (training.tensorEarlyCullRunStats().completedSteps != 0u) return false;
+    training.setTensorEarlyCull(false);
+    return training.tensorEarlyCullStatus() == Status::Off;
+}
+
 bool testTensorSegmentReduction() {
     // CPU invariant test of the shader's actual-lane mapping, independent of
     // subgroup scheduling/rank allocation order. GPU equivalence is tested
@@ -192,6 +270,7 @@ int main() {
         !testAdaptiveSpatialRequiresOptimizedBackward() || !testTensorSubgroupPolicy() ||
         !testTensorGlobalPixelGradPolicy() ||
         !testTensorRgbLatencyPolicy() ||
+        !testTrainingPixelCullPolicy() ||
         !testTensorSegmentReduction()) {
         std::fputs("Backward dispatch policy tests failed\n", stderr);
         return 1;

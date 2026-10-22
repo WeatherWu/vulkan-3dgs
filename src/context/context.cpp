@@ -70,7 +70,8 @@ void Context::initializeVulkanLoader() {
     LOG_DEBUG("Vulkan dynamic loader initialized");
 }
 
-void Context::initialize(GLFWwindow* window, std::optional<std::string> gpuSelector) {
+void Context::initialize(GLFWwindow* window, std::optional<std::string> gpuSelector,
+                         bool validationLayersEnabled) {
     // 防止重复初始化导致设备丢失
     if (device_ != nullptr) {
         LOG_WARN("Context already initialized, skipping duplicate initialization");
@@ -78,6 +79,7 @@ void Context::initialize(GLFWwindow* window, std::optional<std::string> gpuSelec
     }
     
     window_ = window;
+    enableValidationLayers_ = validationLayersEnabled;
     
     createInstance();
     

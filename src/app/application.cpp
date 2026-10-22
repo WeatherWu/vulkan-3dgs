@@ -31,7 +31,7 @@ bool hasExtension(const std::filesystem::path& path, const std::string& extensio
 } // namespace
 
 Application::Application(const std::string& title, int width, int height, RenderMode mode,
-                         std::optional<std::string> gpuSelector)
+                         std::optional<std::string> gpuSelector, bool validationLayersEnabled)
     : currentMode_(mode) {
 #ifdef _DEBUG
     Logger::get_instance().set_level(LogLevel::DEBUG_VULKAN_3DGS);
@@ -46,12 +46,18 @@ Application::Application(const std::string& title, int width, int height, Render
 
     window_ = std::make_unique<Window>(title, width, height);
     vulkanContext_ = &Context::Instance();
-    vulkanContext_->initialize(window_->get_handle());
+    vulkanContext_->initialize(window_->get_handle(), std::nullopt, validationLayersEnabled);
+    LOG_INFO("Vulkan validation layers: requested={}, enabled={} (application instance configuration)",
+             validationLayersEnabled, vulkanContext_->isValidationLayersEnabled());
+    if (!vulkanContext_->isValidationLayersEnabled()) {
+        LOG_WARN("Vulkan validation layers are disabled; use --validation on for correctness checks.");
+    }
 
     renderer_ = createRenderer(currentMode_);
     renderer_->initialize(window_->get_handle());
     configureRenderer();
-    trainingController_.initializeDevice(std::move(gpuSelector));
+    trainingController_.initializeDevice(std::move(gpuSelector),
+                                          vulkanContext_->isValidationLayersEnabled());
 
     window_->set_resize_callback([this](int framebufferWidth, int framebufferHeight) {
         if (framebufferWidth <= 0 || framebufferHeight <= 0) return;

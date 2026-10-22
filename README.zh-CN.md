@@ -60,6 +60,8 @@ cmake --build build --config Release
 
 未指定 `--gpu` 时，程序自动选择通过训练适用性检查的独立显卡。
 
+Debug和Release默认都请求开启Vulkan验证层。性能测量使用`--validation off`，正确性检查使用`--validation on`；训练数值检查不变。启动日志显示请求值及实际启用状态，无需修改源码。
+
 Ubuntu 示例：
 
 ```bash

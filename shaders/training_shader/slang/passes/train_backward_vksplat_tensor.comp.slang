@@ -1,5 +1,18 @@
 #include "../common/train_backward_common.slang"
 
+#ifndef TRAIN_TENSOR_PIXEL_EARLY_CULL
+#define TRAIN_TENSOR_PIXEL_EARLY_CULL 0
+#endif
+#ifndef TRAIN_TENSOR_ROW_EMPTY
+#define TRAIN_TENSOR_ROW_EMPTY 0
+#endif
+#if TRAIN_TENSOR_ROW_EMPTY
+#include "../common/train_row_empty.slang"
+#endif
+#if TRAIN_TENSOR_PIXEL_EARLY_CULL
+#include "../common/train_pixel_culling.slang"
+#endif
+
 #ifndef TRAIN_TENSOR_SUBGROUP_REDUCTION
 #define TRAIN_TENSOR_SUBGROUP_REDUCTION 0
 #endif
@@ -8,6 +21,20 @@
 #endif
 #ifndef TRAIN_TENSOR_RGB_LATENCY_HIDING
 #define TRAIN_TENSOR_RGB_LATENCY_HIDING 0
+#endif
+#ifdef TRAIN_TENSOR_TEST_BATCH
+#if TRAIN_TENSOR_TEST_BATCH != 4 || TRAIN_TILE_SIZE != 16 || TRAIN_ADAPTIVE_TILES || TRAIN_TENSOR_SUBGROUP_REDUCTION || TRAIN_TENSOR_GLOBAL_PIXEL_GRAD || TRAIN_TENSOR_PIXEL_EARLY_CULL
+#error Test-only batch4 is restricted to the portable Shared fixture path
+#endif
+#endif
+#if TRAIN_TENSOR_ROW_EMPTY && (TRAIN_TENSOR_PIXEL_EARLY_CULL || TRAIN_TENSOR_RGB_LATENCY_HIDING || TRAIN_TILE_SIZE != 16 || TRAIN_ADAPTIVE_TILES)
+#error RowEmpty requires Fixed16 Baseline and must not combine with EarlyCull
+#endif
+#if TRAIN_TENSOR_ROW_EMPTY && !defined(TRAIN_TENSOR_TEST_BATCH) && (!TRAIN_TENSOR_SUBGROUP_REDUCTION || !TRAIN_TENSOR_GLOBAL_PIXEL_GRAD)
+#error Production-size RowEmpty requires Subgroup/Global
+#endif
+#if TRAIN_TENSOR_PIXEL_EARLY_CULL && (!TRAIN_TENSOR_GLOBAL_PIXEL_GRAD || TRAIN_TENSOR_RGB_LATENCY_HIDING)
+#error Pixel EarlyCull requires the Fixed16 Subgroup Global Baseline variant
 #endif
 #if TRAIN_TENSOR_RGB_LATENCY_HIDING && !TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
 #error RGB latency hiding requires the Global pixel-gradient variant
@@ -29,7 +56,12 @@
 static const uint VKSPLAT_TENSOR_BATCH_SIZE = TRAIN_TENSOR_CHILD_BATCH;
 static const uint VKSPLAT_TENSOR_REDUCTION_WIDTH = 64u / VKSPLAT_TENSOR_BATCH_SIZE;
 #else
+#ifdef TRAIN_TENSOR_TEST_BATCH
+// Explicit fixture wrapper only; never selected by an application dispatcher.
+static const uint VKSPLAT_TENSOR_BATCH_SIZE = TRAIN_TENSOR_TEST_BATCH;
+#else
 static const uint VKSPLAT_TENSOR_BATCH_SIZE = 16u;
+#endif
 static const uint VKSPLAT_TENSOR_REDUCTION_WIDTH = 16u;
 #endif
 static const uint VKSPLAT_TILE_PIXEL_COUNT = TRAIN_TILE_SIZE * TRAIN_TILE_SIZE;
@@ -55,6 +87,13 @@ RWStructuredBuffer<ProjectedGaussianGrad> projectedGrads;
 StructuredBuffer<PixelBlendState> pixelBlendStates;
 
 groupshared ProjectedGaussian sharedGaussians[VKSPLAT_TENSOR_BATCH_SIZE];
+#if TRAIN_TENSOR_ROW_EMPTY
+groupshared float sharedRowThreshold[VKSPLAT_TENSOR_BATCH_SIZE];
+groupshared uint sharedRowKeep[VKSPLAT_TENSOR_BATCH_SIZE];
+#endif
+#if TRAIN_TENSOR_PIXEL_EARLY_CULL
+groupshared float sharedCullThresholds[VKSPLAT_TENSOR_BATCH_SIZE];
+#endif
 groupshared float2 sharedPairDerivatives[
     VKSPLAT_TENSOR_BATCH_SIZE * VKSPLAT_TILE_PIXEL_COUNT];
 #if TRAIN_TENSOR_SUBGROUP_REDUCTION
@@ -298,17 +337,46 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
                 zeroGaussian.color = float4(0.0);
                 sharedGaussians[localIndex] = zeroGaussian;
             }
+#if TRAIN_TENSOR_PIXEL_EARLY_CULL
+            sharedCullThresholds[localIndex] = trainPixelCullThreshold(
+                sharedGaussians[localIndex].conicOpacity.w);
+#endif
+#if TRAIN_TENSOR_ROW_EMPTY
+            sharedRowThreshold[localIndex] = trainRowEmptyThreshold(sharedGaussians[localIndex]);
+            sharedRowKeep[localIndex] = 0u;
+#endif
         }
         GroupMemoryBarrierWithGroupSync();
 
+#if TRAIN_TENSOR_ROW_EMPTY
+        uint rowGaussian = localIndex / 16u;
+        uint row = localIndex % 16u;
+        if (rowGaussian < batchCount) {
+            float lowerBound;
+            uint decision = trainRowEmptyClassify(sharedGaussians[rowGaussian],
+                sharedRowThreshold[rowGaussian], tileOrigin, row, lowerBound);
+            if (decision != 0u) InterlockedOr(sharedRowKeep[rowGaussian], 1u << row);
+        }
+        // Uniform publication; no lane skips any original batch barrier.
+        GroupMemoryBarrierWithGroupSync();
+#endif
         for (uint reverseIndex = 0u; reverseIndex < batchCount; ++reverseIndex) {
             uint gaussianLocalIndex = batchCount - 1u - reverseIndex;
             uint itemOffset = batchStart + gaussianLocalIndex;
             float2 pairDerivative = float2(0.0);
+#if TRAIN_TENSOR_ROW_EMPTY
+            bool keepRow = (sharedRowKeep[gaussianLocalIndex] & (1u << localPixel.y)) != 0u;
+            if (keepRow && validPixel && itemOffset < processedCount) {
+#else
             if (validPixel && itemOffset < processedCount) {
+#endif
                 ProjectedGaussian gaussian = sharedGaussians[gaussianLocalIndex];
-                GaussianSample sample = evaluateGaussianSample(
-                    gaussian, pixelCenter(pixel));
+#if TRAIN_TENSOR_PIXEL_EARLY_CULL
+                GaussianSample sample = trainEvaluatePixelCulledSample(
+                    gaussian, pixelCenter(pixel), sharedCullThresholds[gaussianLocalIndex]);
+#else
+                GaussianSample sample = evaluateGaussianSample(gaussian, pixelCenter(pixel));
+#endif
                 if (contributesToPixel(sample)) {
                     float oneMinusAlpha = max(1.0 - sample.alpha, 1e-6);
                     transmittanceBefore /= oneMinusAlpha;
@@ -342,6 +410,12 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
             for (uint pixelRank = reductionLane;
                  pixelRank < VKSPLAT_TILE_PIXEL_COUNT;
                  pixelRank += VKSPLAT_TENSOR_REDUCTION_WIDTH) {
+#if TRAIN_TENSOR_ROW_EMPTY
+                // The matching zero writes above are intentionally retained.
+                // Both halves of a subgroup may have different Gaussian masks.
+                if ((sharedRowKeep[gaussianLocalIndex] & (1u << (pixelRank / 16u))) == 0u)
+                    continue;
+#endif
                 float2 pairDerivative = sharedPairDerivatives[
                     gaussianLocalIndex * VKSPLAT_TILE_PIXEL_COUNT + pixelRank];
                 if (pairDerivative.x != 0.0 || pairDerivative.y != 0.0) {

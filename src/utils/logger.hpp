@@ -32,6 +32,7 @@ public:
     }
     
     void set_level(LogLevel level) { level_ = level; }
+    [[nodiscard]] LogLevel level() const noexcept { return level_; }
     
     template<typename... Args>
     void log(LogLevel level, const std::string& format, Args&&... args) {

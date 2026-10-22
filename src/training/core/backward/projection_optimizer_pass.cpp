@@ -1,6 +1,8 @@
 #include "training/core/backward/projection_optimizer_pass.hpp"
 
 #include "utils/logger.hpp"
+#include "utils/file_utils.hpp"
+#include "training/core/training_optimizer_capture_gpu.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -28,7 +30,7 @@ bool forceSeparateProjectionOptimizer() {
 
 } // namespace
 
-void ProjectionOptimizerPass::initialize(vk::Device device) {
+void ProjectionOptimizerPass::initialize(vk::Device device, const std::filesystem::path& shaderDirectory) {
     cleanup();
     device_ = device;
     fusedEnabled_ = !forceSeparateProjectionOptimizer();
@@ -55,11 +57,15 @@ void ProjectionOptimizerPass::initialize(vk::Device device) {
     };
     optimizerConfig.pushConstantSize = sizeof(TrainingPushConstants);
 
-    projectionPipeline_.initialize(device_, "shaders/train_backward_2dgs_to_3dgs.comp.spv",
+    const auto shaderPath = [&](const char* name) {
+        return FileUtils::resolvePath((shaderDirectory / name).string());
+    };
+    projectionPipeline_.initialize(device_, shaderPath("train_backward_2dgs_to_3dgs.comp.spv"),
                                    projectionConfig);
-    fusedPipeline_.initialize(device_, "shaders/train_backward_2dgs_to_3dgs_optimizer.comp.spv",
+    fusedPipeline_.initialize(device_, shaderPath("train_backward_2dgs_to_3dgs_optimizer.comp.spv"),
                               fusedConfig);
-    optimizerPipeline_.initialize(device_, "shaders/train_optimizer.comp.spv", optimizerConfig);
+    fusedShaderHash_ = optimizerShaderHash(shaderPath("train_backward_2dgs_to_3dgs_optimizer.comp.spv"));
+    optimizerPipeline_.initialize(device_, shaderPath("train_optimizer.comp.spv"), optimizerConfig);
     const std::vector<vk::DescriptorSet> sets = descriptorPool_.create(
         device_, 15u, 2u,
         {projectionPipeline_.getDescriptorSetLayout(), fusedPipeline_.getDescriptorSetLayout(),
@@ -141,6 +147,9 @@ void ProjectionOptimizerPass::recordProjectionAndOptimize(const BackwardPassCont
     std::array<vk::DescriptorBufferInfo, 7> infos = {
         gaussianParamsInfo,      adamStatesInfo,         projectedInfo, projectedGradsInfo,
         densificationStatesInfo, gaussianTileRangesInfo, cameraInfo};
+    if (context.optimizerCapture)
+        context.optimizerCapture->recordPre(context.commandBuffer, infos, context.pushConstants,
+                                             context.buffers.uploadedCamera(), fusedShaderHash_);
     constexpr std::array<uint32_t, 7> bindings = {0u, 2u, 3u, 13u, 16u, 32u, 11u};
     constexpr std::array<vk::DescriptorType, 7> types = {
         vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,

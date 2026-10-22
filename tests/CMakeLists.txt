@@ -26,12 +26,94 @@ function(configure_vulkan_3dgs_test target)
     add_test(NAME ${target} COMMAND $<TARGET_FILE:${target}>)
 endfunction()
 
+add_executable(application_command_line_tests application_command_line_tests.cpp)
+target_include_directories(application_command_line_tests PRIVATE ../src)
+configure_vulkan_3dgs_test(application_command_line_tests)
+add_test(NAME application_validation_help
+    COMMAND $<TARGET_FILE:vulkan_3dgs_app> --validation off --help)
+set_tests_properties(application_validation_help PROPERTIES
+    PASS_REGULAR_EXPRESSION "--validation on[|]off")
+
 add_executable(image_cache_tests image_cache_tests.cpp)
 target_link_libraries(image_cache_tests PRIVATE vulkan_3dgs_core)
 configure_vulkan_3dgs_test(image_cache_tests)
 
 add_executable(training_ssim_tests training_ssim_tests.cpp)
+target_include_directories(training_ssim_tests PRIVATE ../src)
 configure_vulkan_3dgs_test(training_ssim_tests)
+
+add_executable(training_pixel_culling_tests training_pixel_culling_tests.cpp)
+configure_vulkan_3dgs_test(training_pixel_culling_tests)
+add_executable(training_scanline_tests training_scanline_tests.cpp)
+target_link_libraries(training_scanline_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_scanline_tests)
+add_executable(training_row_empty_tests training_row_empty_tests.cpp)
+target_link_libraries(training_row_empty_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_row_empty_tests)
+
+add_executable(training_optimizer_tests training_optimizer_tests.cpp)
+target_link_libraries(training_optimizer_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_optimizer_tests)
+
+add_executable(training_scheduling_tests training_scheduling_tests.cpp)
+target_link_libraries(training_scheduling_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_scheduling_tests)
+
+# Explicit S4-3 private diagnostics, not a hardware-dependent CTest.
+file(SHA256 "${CMAKE_SOURCE_DIR}/third_party/vulkan_radix_sort/include/vk_radix_sort.h"
+    SCHEDULING_SORTER_HASH)
+add_executable(training_scheduling_gpu_tests training_scheduling_gpu_tests.cpp)
+target_link_libraries(training_scheduling_gpu_tests PRIVATE vulkan_3dgs_core)
+target_compile_definitions(training_scheduling_gpu_tests PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    SCHEDULING_RUNTIME_DIR="${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    SCHEDULING_SORTER_HASH="${SCHEDULING_SORTER_HASH}")
+set_target_properties(training_scheduling_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+foreach(scheduling_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${scheduling_config}" scheduling_config_upper)
+    set_target_properties(training_scheduling_gpu_tests PROPERTIES
+        "RUNTIME_OUTPUT_DIRECTORY_${scheduling_config_upper}"
+        "${CMAKE_CURRENT_BINARY_DIR}/${scheduling_config}")
+endforeach()
+
+# Explicit independent S4 runner: no checkpoint/scanline suite or Tensor capability gate.
+add_executable(training_optimizer_gpu_tests training_optimizer_gpu_tests.cpp)
+target_link_libraries(training_optimizer_gpu_tests PRIVATE vulkan_3dgs_core)
+target_compile_definitions(training_optimizer_gpu_tests PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    OPTIMIZER_RUNTIME_DIR="${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+set_target_properties(training_optimizer_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+foreach(optimizer_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${optimizer_config}" optimizer_config_upper)
+    set_target_properties(training_optimizer_gpu_tests PROPERTIES
+        "RUNTIME_OUTPUT_DIRECTORY_${optimizer_config_upper}" "${CMAKE_CURRENT_BINARY_DIR}/${optimizer_config}")
+endforeach()
+
+add_executable(training_checkpoint_tests training_checkpoint_tests.cpp)
+target_include_directories(training_checkpoint_tests PRIVATE ../src)
+# This suite checks reference/layout contracts and the rejection regression.
+# The new reverse-boundary CPU admission gate is registered independently.
+# The old --candidate-gate remains an expected failure and is run manually.
+configure_vulkan_3dgs_test(training_checkpoint_tests)
+add_test(NAME training_checkpoint_reverse_boundary_gate
+    COMMAND $<TARGET_FILE:training_checkpoint_tests> --reverse-boundary-gate)
+
+# Explicit GPU diagnostic target: hardware/runtime availability is not a CPU CTest prerequisite.
+add_executable(training_checkpoint_gpu_tests training_checkpoint_gpu_tests.cpp)
+target_link_libraries(training_checkpoint_gpu_tests PRIVATE vulkan_3dgs_core)
+target_compile_definitions(training_checkpoint_gpu_tests PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    CHECKPOINT_RUNTIME_DIR="${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+set_target_properties(training_checkpoint_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+foreach(checkpoint_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${checkpoint_config}" checkpoint_config_upper)
+    set_target_properties(training_checkpoint_gpu_tests PROPERTIES
+        "RUNTIME_OUTPUT_DIRECTORY_${checkpoint_config_upper}"
+        "${CMAKE_CURRENT_BINARY_DIR}/${checkpoint_config}")
+endforeach()
 
 add_executable(training_validation_tests training_validation_tests.cpp)
 target_link_libraries(training_validation_tests PRIVATE vulkan_3dgs_core)

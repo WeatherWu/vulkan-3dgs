@@ -30,7 +30,8 @@ class Application {
 public:
     Application(const std::string& title, int width, int height,
                 RenderMode mode = RenderMode::GaussianGraphics,
-                std::optional<std::string> gpuSelector = std::nullopt);
+                std::optional<std::string> gpuSelector = std::nullopt,
+                bool validationLayersEnabled = true);
     virtual ~Application();
 
     void run();

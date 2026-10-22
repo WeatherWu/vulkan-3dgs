@@ -1,8 +1,11 @@
 #include "training/app/training_settings.hpp"
+#include "training/core/training_ssim_mode.hpp"
 
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <utility>
 
 using namespace vulkan3DGS;
 
@@ -22,6 +25,8 @@ TrainingSettings populatedSettings() {
     settings.run.tensorSubgroupReduction = true;
     settings.run.tensorGlobalPixelGrad = true;
     settings.run.tensorRgbLatencyHiding = true;
+    settings.run.tensorEarlyCull = true;
+    settings.run.ssimMode = 2;
     settings.run.pureTraining = true;
     settings.optimizer.positionLearningRate = 0.012345f;
     settings.densification.maxGaussians = 7654321;
@@ -46,6 +51,8 @@ bool testRoundTrip(const std::filesystem::path& path) {
         loaded.run.tensorSubgroupReduction &&
         loaded.run.tensorGlobalPixelGrad &&
         loaded.run.tensorRgbLatencyHiding &&
+        loaded.run.tensorEarlyCull &&
+        loaded.run.ssimMode == 2 &&
         loaded.run.pureTraining &&
         loaded.optimizer.positionLearningRate ==
             source.optimizer.positionLearningRate &&
@@ -58,6 +65,8 @@ bool testValidationAndImmutableRunConfig() {
     if (TrainingSettings{}.run.tensorSubgroupReduction) return false;
     if (TrainingSettings{}.run.tensorGlobalPixelGrad) return false;
     if (TrainingSettings{}.run.tensorRgbLatencyHiding) return false;
+    if (TrainingSettings{}.run.tensorEarlyCull) return false;
+    if (TrainingSettings{}.run.ssimMode != 0) return false;
     TrainingSettings settings = populatedSettings();
     if (!TrainingSettingsStore::validate(settings)) return false;
 
@@ -69,6 +78,8 @@ bool testValidationAndImmutableRunConfig() {
     settings.run.tensorSubgroupReduction = false;
     settings.run.tensorGlobalPixelGrad = false;
     settings.run.tensorRgbLatencyHiding = false;
+    settings.run.tensorEarlyCull = false;
+    settings.run.ssimMode = 0;
     settings.optimizer.positionLearningRate = 99.0f;
     if (config.datasetPath != "dataset with spaces" ||
         config.outputPath != std::filesystem::path("output dir") / "model.ply" ||
@@ -78,6 +89,8 @@ bool testValidationAndImmutableRunConfig() {
         !config.run.tensorSubgroupReduction ||
         !config.run.tensorGlobalPixelGrad ||
         !config.run.tensorRgbLatencyHiding ||
+        !config.run.tensorEarlyCull ||
+        config.run.ssimMode != 2 ||
         config.optimizer.positionLearningRate != 0.012345f ||
         config.densification.gradientMode != 1) {
         return false;
@@ -91,6 +104,10 @@ bool testValidationAndImmutableRunConfig() {
 
     settings = populatedSettings();
     settings.run.adaptiveTensorChildBatch = 12u;
+    if (TrainingSettingsStore::validate(settings).valid) return false;
+
+    settings = populatedSettings();
+    settings.run.ssimMode = 3;
     if (TrainingSettingsStore::validate(settings).valid) return false;
 
     settings = populatedSettings();
@@ -125,6 +142,8 @@ bool testLegacyKeys(const std::filesystem::path& path) {
         !loaded.run.tensorSubgroupReduction &&
         !loaded.run.tensorGlobalPixelGrad &&
         !loaded.run.tensorRgbLatencyHiding &&
+        !loaded.run.tensorEarlyCull &&
+        loaded.run.ssimMode == 0 &&
         loaded.optimizer.positionLearningRate == 0.00042f &&
         loaded.densification.fromIteration == 321 &&
         loaded.densification.gradientMode == 0 &&
@@ -143,7 +162,70 @@ bool testLegacyGlobalConfigUsesBaselineRgb(const std::filesystem::path& path) {
     TrainingSettings loaded{};
     TrainingSettingsStore::load(path, loaded);
     return loaded.run.tensorSubgroupReduction && loaded.run.tensorGlobalPixelGrad &&
-           !loaded.run.tensorRgbLatencyHiding;
+           !loaded.run.tensorRgbLatencyHiding && !loaded.run.tensorEarlyCull;
+}
+
+bool testEarlyCullConfig(const std::filesystem::path& path) {
+    for (const auto& entry : {std::pair{"tensor_early_cull 0\n", false},
+             std::pair{"tensor_early_cull 1\n", true},
+             std::pair{"tensor_early_cull 99\n", false},
+             std::pair{"tensor_early_cull -1\n", false},
+             std::pair{"tensor_early_cull invalid\n", false},
+             std::pair{"tensor_early_cull 1\ntensor_early_cull invalid\n", false}}) {
+        { std::ofstream output(path, std::ios::trunc); output << entry.first; }
+        TrainingSettings loaded{};
+        TrainingSettingsStore::load(path, loaded);
+        if (loaded.run.tensorEarlyCull != entry.second) return false;
+    }
+    for (bool enabled : {false, true}) {
+        TrainingSettings source{};
+        source.run.tensorEarlyCull = enabled;
+        TrainingSettingsStore::save(path, source);
+        TrainingSettings loaded{};
+        TrainingSettingsStore::load(path, loaded);
+        if (loaded.run.tensorEarlyCull != enabled) return false;
+        std::ifstream saved(path);
+        const std::string contents((std::istreambuf_iterator<char>(saved)), {});
+        if (contents.find(std::string("tensor_early_cull ") + (enabled ? "1" : "0")) == std::string::npos)
+            return false;
+    }
+    return true;
+}
+
+bool testSsimModesAndMigration(const std::filesystem::path& path) {
+    for (int mode : {0, 1, 2}) {
+        TrainingSettings source = populatedSettings();
+        source.run.ssimMode = mode;
+        TrainingSettingsStore::save(path, source);
+        TrainingSettings loaded{};
+        TrainingSettingsStore::load(path, loaded);
+        if (loaded.run.ssimMode != mode) return false;
+        std::ifstream saved(path);
+        const std::string contents((std::istreambuf_iterator<char>(saved)), {});
+        if (contents.find("separable_ssim ") != std::string::npos ||
+            contents.find("ssim_mode " + std::to_string(mode)) == std::string::npos) return false;
+    }
+    for (const auto& entry : {
+             std::pair{"separable_ssim 0\n", 0},
+             std::pair{"separable_ssim 1\n", 1},
+             std::pair{"separable_ssim 1\nssim_mode 2\n", 2},
+             std::pair{"ssim_mode 2\nseparable_ssim 0\n", 2},
+             std::pair{"ssim_mode 99\nseparable_ssim 1\n", 0},
+             std::pair{"ssim_mode invalid\nseparable_ssim 1\n", 0},
+             std::pair{"separable_ssim 1\nssim_mode invalid\n", 0},
+             std::pair{"ssim_mode -1\n", 0}}) {
+        { std::ofstream output(path, std::ios::trunc); output << entry.first; }
+        TrainingSettings loaded{};
+        TrainingSettingsStore::load(path, loaded);
+        if (loaded.run.ssimMode != entry.second) return false;
+    }
+    using Mode = TrainingSsimMode;
+    return ssimScratchPlaneCount(Mode::TwoDimensional) == 0u &&
+           ssimScratchPlaneCount(Mode::Separable) == 5u &&
+           ssimScratchPlaneCount(Mode::BackwardSeparable) == 3u &&
+           !ssimUsesSeparableLoss(Mode::BackwardSeparable) &&
+           ssimUsesSeparableBackward(Mode::BackwardSeparable) &&
+           std::string(trainingSsimModeFileTag(Mode::BackwardSeparable)) == "ssim_backward_separable";
 }
 
 bool testClamp() {
@@ -181,12 +263,15 @@ int main() {
     const bool legacyKeys = testLegacyKeys(path);
     const bool legacyGlobal = testLegacyGlobalConfigUsesBaselineRgb(path);
     const bool clamp = testClamp();
+    const bool ssimModes = testSsimModesAndMigration(path);
+    const bool earlyCull = testEarlyCullConfig(path);
     std::filesystem::remove(path);
-    if (!roundTrip || !validation || !legacyKeys || !legacyGlobal || !clamp) {
+    if (!roundTrip || !validation || !legacyKeys || !legacyGlobal || !clamp || !ssimModes || !earlyCull) {
         std::cerr << "Training settings tests failed: roundTrip=" << roundTrip
                   << ", validation=" << validation << ", legacyKeys=" << legacyKeys
                   << ", legacyGlobal=" << legacyGlobal
-                  << ", clamp=" << clamp << '\n';
+                  << ", clamp=" << clamp << ", ssimModes=" << ssimModes
+                  << ", earlyCull=" << earlyCull << '\n';
         return 1;
     }
     return 0;

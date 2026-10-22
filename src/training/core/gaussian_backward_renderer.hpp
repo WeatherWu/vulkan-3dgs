@@ -22,6 +22,8 @@ public:
     void setTrainingBuffers(const TrainingBuffers& trainingBuffers, vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void setProfilingQueryPool(vk::QueryPool queryPool);
+    void setSsimMode(TrainingSsimMode mode) { lossPass_.setSsimMode(mode); }
+    [[nodiscard]] TrainingSsimMode activeSsimMode() const { return lossPass_.activeSsimMode(); }
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
         pixelDispatcher_.setRequestedMode(mode);
     }
@@ -71,6 +73,19 @@ public:
         return pixelDispatcher_.adaptiveSpatialModeSupported();
     }
     void backward() override;
+    void prepareCheckpointDiagnostics(TrainingBuffers& buffers, uint32_t itemCount, bool warp = false) {
+        pixelDispatcher_.prepareCheckpointDiagnostics(buffers, itemCount, warp);
+    }
+    void recordCheckpointDiagnostics(bool resetRun) {
+        pixelDispatcher_.recordCheckpointDiagnostics(context(), resetRun);
+    }
+    void setCheckpointWarp(bool enabled) { checkpointWarp_ = enabled; }
+    void setTensorEarlyCull(bool enabled) { tensorEarlyCull_ = enabled; }
+    void setOptimizerCapture(TrainingOptimizerCaptureSession* capture) { optimizerCapture_ = capture; }
+    bool fusedOptimizerEnabled() const { return projectionOptimizer_.fusedEnabled(); }
+    [[nodiscard]] bool tensorEarlyCullSupported() const {
+        return pixelDispatcher_.tensorEarlyCullSupported();
+    }
     void gradientDescent() override;
 
     [[nodiscard]] bool isInitialized() const override {
@@ -100,6 +115,9 @@ private:
     vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
     bool initialized_ = false;
+    bool checkpointWarp_ = false;
+    bool tensorEarlyCull_ = false;
+    TrainingOptimizerCaptureSession* optimizerCapture_ = nullptr;
 };
 
 } // namespace vulkan3DGS

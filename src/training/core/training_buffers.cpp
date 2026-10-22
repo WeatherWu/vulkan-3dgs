@@ -7,9 +7,11 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <string_view>
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -93,7 +95,106 @@ void TrainingBuffers::initialize(vk::Device device,
     }
 }
 
+void TrainingBuffers::ensureCheckpointCapacity(uint32_t tileItemCount) {
+    const auto allocationStart = std::chrono::steady_clock::now();
+    auto capacity = makeTrainingCheckpointCapacity(tileItemCount, extent_.width, extent_.height);
+    const auto limits = physicalDevice_.getProperties().limits;
+    if (!capacity.fitsDescriptorRange(limits.maxStorageBufferRange) ||
+        capacity.slotCapacity * kCheckpointTilePixels > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("Checkpoint workspace exceeds descriptor/index limits");
+    if (checkpoint_ && checkpoint_->capacity.tileCount == capacity.tileCount &&
+        checkpoint_->capacity.slotCapacity >= capacity.slotCapacity &&
+        checkpoint_->capacity.taskCapacity >= capacity.taskCapacity) return;
+    if (checkpoint_) {
+        capacity.slotCapacity = std::max(capacity.slotCapacity, checkpoint_->capacity.slotCapacity);
+        capacity.taskCapacity = std::max(capacity.taskCapacity, checkpoint_->capacity.taskCapacity);
+        capacity.bankElements = capacity.slotCapacity * kCheckpointBankPixels;
+        capacity.bankBytes = capacity.bankElements * 16u;
+        capacity.taskBytes = capacity.taskCapacity * sizeof(TrainingCheckpointTask);
+    }
+    const uint64_t scratchBytes =
+        uint64_t(checkpointScratchElements(static_cast<uint32_t>(capacity.tileCount))) * 8u;
+    const uint64_t bytes = std::max<uint64_t>(capacity.bankBytes, 16u) * 4u +
+                           std::max<uint64_t>(capacity.metadataBytes, 32u) +
+                           std::max<uint64_t>(capacity.taskBytes, 16u) +
+                           std::max<uint64_t>(scratchBytes, 8u) +
+                           2u * sizeof(TrainingCheckpointControl);
+    // Account for existing allocations (including the old workspace during a
+    // transactional replacement) through the driver's current heap usage.
+    bool supportsBudget = false;
+    for (const auto& extension : physicalDevice_.enumerateDeviceExtensionProperties())
+        supportsBudget |= std::string_view(extension.extensionName.data()) ==
+                          VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    if (supportsBudget) {
+        vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+        vk::PhysicalDeviceMemoryProperties2 memory{};
+        memory.pNext = &budget;
+        physicalDevice_.getMemoryProperties2(&memory);
+        uint64_t bestAvailable = 0;
+        for (uint32_t i = 0; i < memory.memoryProperties.memoryHeapCount; ++i) {
+            if (!(memory.memoryProperties.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal))
+                continue;
+            const uint64_t free = budget.heapBudget[i] > budget.heapUsage[i]
+                                      ? budget.heapBudget[i] - budget.heapUsage[i] : 0u;
+            const uint64_t reserve = std::max<uint64_t>(512u * 1024u * 1024u,
+                                                       budget.heapBudget[i] * 15u / 100u);
+            bestAvailable = std::max(bestAvailable, free > reserve ? free - reserve : 0u);
+        }
+        if (bytes > bestAvailable)
+            throw std::runtime_error("Checkpoint diagnostic workspace exceeds available VRAM budget");
+    }
+    auto next = std::make_unique<CheckpointWorkspace>();
+    next->capacity = capacity;
+    createStorageBuffer(next->metadata, std::max<uint64_t>(capacity.metadataBytes, 32u));
+    createStorageBuffer(next->scratch, std::max<uint64_t>(scratchBytes, 8u));
+    createStorageBuffer(next->tasks, std::max<uint64_t>(capacity.taskBytes, 16u));
+    for (auto& bank : next->banks)
+        createStorageBuffer(bank, std::max<uint64_t>(capacity.bankBytes, 16u));
+    next->control.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
+                         sizeof(TrainingCheckpointControl),
+                         vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                             vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndirectBuffer,
+                         vk::MemoryPropertyFlagBits::eDeviceLocal,
+                         {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+    next->readback.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
+                          sizeof(TrainingCheckpointControl), vk::BufferUsageFlagBits::eTransferDst,
+                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                          {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+    checkpoint_ = std::move(next);
+    LOG_INFO("Checkpoint P1 diagnostic workspace: {} logical buffer bytes, {} slots, {} tasks (layout 2), CPU allocation {} ms",
+             bytes, capacity.slotCapacity, capacity.taskCapacity,
+             std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - allocationStart).count());
+}
+
+TrainingCheckpointResources TrainingBuffers::checkpointResources() const {
+    if (!checkpoint_) throw std::runtime_error("Checkpoint diagnostic workspace is unavailable");
+    TrainingCheckpointResources resources{};
+    resources.capacity = checkpoint_->capacity;
+    resources.descriptors = {projectedInfo(), tileItemsInfo(), tileRangesInfo(), pixelBlendStatesInfo(),
+        checkpoint_->metadata.getDescriptorInfo(), checkpoint_->scratch.getDescriptorInfo(),
+        checkpoint_->banks[0].getDescriptorInfo(), checkpoint_->banks[1].getDescriptorInfo(),
+        checkpoint_->banks[2].getDescriptorInfo(), checkpoint_->banks[3].getDescriptorInfo(),
+        checkpoint_->tasks.getDescriptorInfo(), checkpoint_->control.getDescriptorInfo()};
+    return resources;
+}
+
+void TrainingBuffers::recordCheckpointReadback(vk::CommandBuffer command) {
+    if (!checkpoint_) return;
+    command.copyBuffer(checkpoint_->control.getBuffer(), checkpoint_->readback.getBuffer(),
+                        vk::BufferCopy{0, 0, sizeof(TrainingCheckpointControl)});
+    vk::MemoryBarrier memory{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead};
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
+                            {}, memory, {}, {});
+}
+
+TrainingCheckpointControl TrainingBuffers::checkpointDiagnostics() {
+    TrainingCheckpointControl result{};
+    if (checkpoint_) checkpoint_->readback.download(&result, sizeof(result));
+    return result;
+}
+
 void TrainingBuffers::cleanup() {
+    releaseCheckpointWorkspace();
     clearTargetColorDescriptor();
     if (densificationStatsReadbackMapped_ && densificationStatsReadback_.getMemory() && device_) {
         device_.unmapMemory(densificationStatsReadback_.getMemory());
@@ -121,6 +222,7 @@ void TrainingBuffers::cleanup() {
     pixelBlendStates_.cleanup();
     pixelGrads_.cleanup();
     ssimBackwardStates_.cleanup();
+    ssimScratch_.cleanup();
     targetColor_.cleanup();
     renderedColor_.cleanup();
     gaussianTilePrefixScratch_.cleanup();
@@ -159,6 +261,8 @@ void TrainingBuffers::cleanup() {
 }
 
 void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
+    if (extent.width != extent_.width || extent.height != extent_.height)
+        releaseCheckpointWorkspace();
     clearTargetColorDescriptor();
     if (!device_) {
         throw std::runtime_error("TrainingBuffers must be initialized before resize");
@@ -204,6 +308,7 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     targetColor_.cleanup();
     pixelGrads_.cleanup();
     ssimBackwardStates_.cleanup();
+    ssimScratch_.cleanup();
     pixelValidationPartials_.cleanup();
     gaussianValidationPartials_.cleanup();
     densifiedGaussianValidationPartials_.cleanup();
@@ -295,6 +400,27 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     gaussianWorkspaceCapacity_ = safeGaussianCount;
     densificationCapacity_ = 0;
     extent_ = {safeWidth, safeHeight};
+}
+
+void TrainingBuffers::configureSsimScratch(TrainingSsimMode mode) {
+    if (!validTrainingSsimMode(mode)) throw std::invalid_argument("Invalid SSIM mode");
+    const uint32_t planes = ssimScratchPlaneCount(mode);
+    if (planes == 0u) {
+        ssimScratch_.cleanup();
+        return;
+    }
+    if (!device_ || extent_.width == 0u || extent_.height == 0u) return;
+    const vk::DeviceSize pixels = static_cast<vk::DeviceSize>(extent_.width) * extent_.height;
+    const vk::DeviceSize bytes = pixels * planes * sizeof(glm::vec4);
+    if (bytes > physicalDevice_.getProperties().limits.maxStorageBufferRange ||
+        pixels > std::numeric_limits<uint32_t>::max() / planes) {
+        throw std::runtime_error("Separable SSIM scratch exceeds maxStorageBufferRange or shader indexing limit");
+    }
+    if (ssimScratch_.getSize() != bytes) {
+        Buffer scratch;
+        createStorageBuffer(scratch, bytes);
+        ssimScratch_ = std::move(scratch);
+    }
 }
 
 void TrainingBuffers::resizeTileItems(uint32_t tileItemCapacity) {
@@ -488,6 +614,26 @@ std::vector<ProjectedGaussianGrad> TrainingBuffers::downloadProjectedGrads(uint3
     return gradients;
 }
 
+TrainingScanlineCapture TrainingBuffers::downloadScanlineCapture(const TrainingScanlineHeader& header) {
+    (void)trainingScanlineCaptureBytes(header);
+    if (header.width != extent_.width || header.height != extent_.height ||
+        header.gaussianCount > gaussianCapacity_ || header.itemCount > tileItemCapacity_)
+        throw std::runtime_error("S3-2 capture exceeds current training buffer capacities");
+    TrainingScanlineCapture data;
+    data.header = header;
+    data.projected.resize(header.gaussianCount);
+    data.items.resize(header.itemCount);
+    data.ranges.resize(header.tileCount);
+    data.blends.resize(size_t(header.width) * header.height);
+    if (!data.projected.empty()) projected_.download(data.projected.data(), data.projected.size() * sizeof(ProjectedGaussian));
+    if (!data.items.empty()) tileItemsSorted_.download(data.items.data(), data.items.size() * sizeof(uint32_t));
+    tileRanges_.download(data.ranges.data(), data.ranges.size() * sizeof(glm::uvec4));
+    pixelBlendStates_.download(data.blends.data(), data.blends.size() * sizeof(PixelBlendState));
+    data.pixelGrads = downloadPixelGrads(static_cast<uint32_t>(data.blends.size()));
+    validateTrainingScanlineCapture(data);
+    return data;
+}
+
 std::vector<TrainingAdaptiveTileDiagnostic> TrainingBuffers::downloadAdaptiveTileDiagnostics(
     uint32_t parentItemCount) {
     if (parentItemCount > tileItemCapacity_) {
@@ -575,6 +721,18 @@ std::vector<uint8_t> TrainingBuffers::downloadAdaptiveChildMembership(
     return membership;
 }
 
+std::vector<PixelGrad> TrainingBuffers::downloadPixelGrads(uint32_t pixelCount) {
+    const uint64_t capacity = static_cast<uint64_t>(extent_.width) * extent_.height;
+    if (pixelCount > capacity) {
+        throw std::runtime_error("Pixel gradient download exceeds buffer capacity");
+    }
+    std::vector<PixelGrad> result(pixelCount);
+    if (pixelCount != 0u) {
+        pixelGrads_.download(result.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(PixelGrad));
+    }
+    return result;
+}
+
 std::vector<float> TrainingBuffers::downloadLoss(uint32_t pixelCount) {
     const uint64_t capacity = static_cast<uint64_t>(extent_.width) * static_cast<uint64_t>(extent_.height);
     if (pixelCount > capacity) {
@@ -625,6 +783,7 @@ void TrainingBuffers::uploadTargetColor(const uint8_t* pixels, uint32_t width, u
 
 void TrainingBuffers::uploadCamera(const TrainingForwardCamera& camera) {
     camera_.upload(&camera, sizeof(TrainingForwardCamera));
+    uploadedCamera_ = camera;
 }
 
 void TrainingBuffers::recordTileItemCountReadback(vk::CommandBuffer commandBuffer) {

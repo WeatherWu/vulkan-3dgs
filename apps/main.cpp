@@ -1,4 +1,5 @@
 #include "app/application.hpp"
+#include "app/command_line_options.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -7,6 +8,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -14,39 +17,12 @@
 
 namespace {
 
-struct CommandLineOptions {
-    std::optional<std::string> gpuSelector;
-    bool showHelp = false;
-};
-
 void printUsage(const char* executable) {
-    std::cout << "Usage: " << executable << " [--gpu <index|name|uuid>]\n"
+    std::cout << "Usage: " << executable << " [--gpu <index|name|uuid>] [--validation <on|off>]\n"
               << "  --gpu VALUE  Select a training GPU by Vulkan index, name, or UUID.\n"
+              << "  --validation on|off  Request Vulkan validation layers (default: on).\n"
+              << "                       Use off for timing; training numeric checks are unchanged.\n"
               << "  -h, --help   Show this help.\n";
-}
-
-CommandLineOptions parseCommandLine(int argc, char** argv) {
-    CommandLineOptions options;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument = argv[index];
-        if (argument == "-h" || argument == "--help") {
-            options.showHelp = true;
-        } else if (argument == "--gpu") {
-            if (++index >= argc || std::string(argv[index]).empty()) {
-                throw std::invalid_argument("--gpu requires an index, device name, or UUID");
-            }
-            options.gpuSelector = argv[index];
-        } else if (argument.rfind("--gpu=", 0) == 0) {
-            const std::string value = argument.substr(std::strlen("--gpu="));
-            if (value.empty()) {
-                throw std::invalid_argument("--gpu requires an index, device name, or UUID");
-            }
-            options.gpuSelector = value;
-        } else {
-            throw std::invalid_argument("Unknown command-line option: " + argument);
-        }
-    }
-    return options;
 }
 
 #ifndef _WIN32
@@ -81,7 +57,9 @@ int main(int argc, char** argv) {
 #endif
 
     try {
-        const CommandLineOptions options = parseCommandLine(argc, argv);
+        std::vector<std::string_view> arguments;
+        for (int index = 1; index < argc; ++index) arguments.emplace_back(argv[index]);
+        const auto options = vulkan3DGS::parseApplicationCommandLine(arguments);
         if (options.showHelp) {
             printUsage(argv[0]);
             return 0;
@@ -91,7 +69,8 @@ int main(int argc, char** argv) {
                                     1280,
                                     720,
                                     vulkan3DGS::RenderMode::GaussianGraphics,
-                                    options.gpuSelector);
+                                    options.gpuSelector,
+                                    options.validationLayersEnabled);
         app.run();
     } catch (const std::exception& error) {
         std::cerr << "Fatal error: " << error.what() << std::endl;

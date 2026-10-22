@@ -1,5 +1,6 @@
 #include "training/app/training_settings.hpp"
 #include "training/core/training_tile_layout.hpp"
+#include "training/core/training_ssim_mode.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -54,6 +55,8 @@ const std::unordered_set<std::string>& trainingKeys() {
                                                       "tensor_subgroup_reduction",
                                                       "tensor_global_pixel_grad",
                                                       "tensor_rgb_latency_hiding",
+                                                      "separable_ssim",
+                                                      "ssim_mode",
                                                       "total_iterations",
                                                       "steps_per_frame",
                                                       "validation_interval",
@@ -131,6 +134,7 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
     std::ifstream input(path);
     if (!input.is_open()) return;
 
+    bool explicitSsimMode = false;
     std::string line;
     while (std::getline(input, line)) {
         std::istringstream row(line);
@@ -188,6 +192,19 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
         else if (key == "tensor_rgb_latency_hiding") {
             int value = 0;
             if (row >> value) settings.run.tensorRgbLatencyHiding = value != 0;
+        }
+        else if (key == "tensor_early_cull") {
+            int value = 0;
+            settings.run.tensorEarlyCull = (row >> value) && value == 1;
+        }
+        else if (key == "separable_ssim") {
+            int value = 0;
+            if ((row >> value) && !explicitSsimMode) settings.run.ssimMode = value != 0 ? 1 : 0;
+        }
+        else if (key == "ssim_mode") {
+            int value = 0;
+            explicitSsimMode = true;
+            settings.run.ssimMode = (row >> value) ? value : 0;
         }
         else if (key == "steps_per_frame")
             row >> settings.run.benchmarkStepsPerFrame;
@@ -309,6 +326,8 @@ void TrainingSettingsStore::write(std::ostream& output, const TrainingSettings& 
     output << "tensor_subgroup_reduction " << (run.tensorSubgroupReduction ? 1 : 0) << '\n';
     output << "tensor_global_pixel_grad " << (run.tensorGlobalPixelGrad ? 1 : 0) << '\n';
     output << "tensor_rgb_latency_hiding " << (run.tensorRgbLatencyHiding ? 1 : 0) << '\n';
+    output << "tensor_early_cull " << (run.tensorEarlyCull ? 1 : 0) << '\n';
+    output << "ssim_mode " << run.ssimMode << '\n';
     output << "steps_per_frame " << run.benchmarkStepsPerFrame << '\n';
     output << "benchmark_frame " << run.benchmarkFrame << '\n';
     output << "benchmark_warmup " << run.benchmarkWarmupSteps << '\n';
@@ -380,6 +399,9 @@ TrainingSettingsValidation TrainingSettingsStore::validate(const TrainingSetting
     }
 
     const auto& run = settings.run;
+    if (!validTrainingSsimMode(static_cast<TrainingSsimMode>(run.ssimMode))) {
+        return invalid("SSIM mode is invalid");
+    }
     if (run.pixelTo2DGSMode < 0 || run.pixelTo2DGSMode > 6) {
         return invalid("Pixel-to-2DGS mode is invalid");
     }
@@ -469,6 +491,9 @@ TrainingRunConfig makeTrainingRunConfig(const TrainingSettings& settings) {
 }
 
 void TrainingSettingsStore::clamp(TrainingSettings& settings) {
+    if (!validTrainingSsimMode(static_cast<TrainingSsimMode>(settings.run.ssimMode))) {
+        settings.run.ssimMode = 0;
+    }
     settings.initialization.downscale = std::clamp(settings.initialization.downscale, 1, 16);
     settings.schedule.imageSelectionMode = std::clamp(settings.schedule.imageSelectionMode, 0, 1);
     settings.run.pixelTo2DGSMode = std::clamp(settings.run.pixelTo2DGSMode, 0, 6);

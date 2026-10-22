@@ -2,10 +2,13 @@
 
 #include <array>
 #include <optional>
+#include <memory>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
 #include "training/core/training_types.hpp"
+#include "training/core/training_checkpoint_resources.hpp"
+#include "training/core/training_scanline_capture.hpp"
 #include "vulkan/buffer.hpp"
 
 namespace vulkan3DGS {
@@ -20,6 +23,13 @@ public:
     void cleanup();
 
     void resize(uint32_t gaussianCount, TrainingExtent extent);
+    // Call only with no in-flight training commands. Scratch is opt-in and reusable.
+    void configureSsimScratch(TrainingSsimMode mode);
+    void ensureCheckpointCapacity(uint32_t tileItemCount);
+    void releaseCheckpointWorkspace() noexcept { checkpoint_.reset(); }
+    [[nodiscard]] TrainingCheckpointResources checkpointResources() const;
+    void recordCheckpointReadback(vk::CommandBuffer command);
+    [[nodiscard]] TrainingCheckpointControl checkpointDiagnostics();
     void resizeTileItems(uint32_t tileItemCapacity);
     void ensureTileSortStorage(uint32_t tileItemCapacity, vk::DeviceSize sortStorageSize, vk::BufferUsageFlags sortStorageUsage);
     void ensureDensificationCapacity(uint32_t gaussianCapacity);
@@ -27,6 +37,8 @@ public:
     void uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount);
     std::vector<GaussianTrainParam> downloadGaussianParams(uint32_t gaussianCount);
     std::vector<ProjectedGaussianGrad> downloadProjectedGrads(uint32_t gaussianCount);
+    std::vector<PixelGrad> downloadPixelGrads(uint32_t pixelCount);
+    TrainingScanlineCapture downloadScanlineCapture(const TrainingScanlineHeader& header);
     std::vector<TrainingAdaptiveTileDiagnostic> downloadAdaptiveTileDiagnostics(
         uint32_t parentItemCount);
     std::vector<uint32_t> downloadAdaptiveChildMasks(uint32_t parentItemCount);
@@ -43,6 +55,7 @@ public:
         targetColorDescriptorOverride_.reset();
     }
     void uploadCamera(const TrainingForwardCamera& camera);
+    const TrainingForwardCamera& uploadedCamera() const { return uploadedCamera_; }
     void recordTileItemCountReadback(vk::CommandBuffer commandBuffer);
     void recordDensificationStatsReadback(vk::CommandBuffer commandBuffer);
     uint32_t requiredTileItemCount();
@@ -112,6 +125,7 @@ public:
     }
     vk::DescriptorBufferInfo pixelGradsInfo() const { return pixelGrads_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo ssimBackwardStatesInfo() const { return ssimBackwardStates_.getDescriptorInfo(); }
+    vk::DescriptorBufferInfo ssimScratchInfo() const { return ssimScratch_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo pixelValidationPartialsInfo() const { return pixelValidationPartials_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo gaussianValidationPartialsInfo() const { return gaussianValidationPartials_.getDescriptorInfo(); }
     vk::DescriptorBufferInfo densifiedGaussianValidationPartialsInfo() const { return densifiedGaussianValidationPartials_.getDescriptorInfo(); }
@@ -131,6 +145,12 @@ public:
     vk::DescriptorBufferInfo cameraInfo() const { return camera_.getDescriptorInfo(); }
 
 private:
+    struct CheckpointWorkspace {
+        TrainingCheckpointCapacity capacity{};
+        Buffer metadata, scratch, tasks, control, readback;
+        std::array<Buffer, 4> banks;
+    };
+    std::unique_ptr<CheckpointWorkspace> checkpoint_;
     void createStorageBuffer(Buffer& buffer, vk::DeviceSize size);
     void createUniformBuffer(Buffer& buffer, vk::DeviceSize size);
     void createZeroedStorageBuffer(Buffer& buffer, vk::DeviceSize size);
@@ -174,6 +194,7 @@ private:
     std::optional<vk::DescriptorBufferInfo> targetColorDescriptorOverride_;
     Buffer pixelGrads_;
     Buffer ssimBackwardStates_;
+    Buffer ssimScratch_;
     Buffer pixelValidationPartials_;
     Buffer gaussianValidationPartials_;
     Buffer densifiedGaussianValidationPartials_;
@@ -192,6 +213,7 @@ private:
     void* densificationStatsReadbackMapped_ = nullptr;
     Buffer previewInstances_;
     Buffer camera_;
+    TrainingForwardCamera uploadedCamera_{};
 };
 
 } // namespace vulkan3DGS

@@ -4,6 +4,9 @@
 #include "training/core/backward/backward_pass_context.hpp"
 #include "training/core/training_tile_layout.hpp"
 #include "vulkan/compute_pipeline.hpp"
+#include "training/core/backward/checkpoint_state_pass.hpp"
+#include "training/core/backward/checkpoint_backward_pass.hpp"
+#include <memory>
 
 #include <array>
 
@@ -89,8 +92,15 @@ public:
         return capabilities_;
     }
     void record(const BackwardPassContext& context);
+    [[nodiscard]] bool tensorEarlyCullSupported() const noexcept {
+        return static_cast<bool>(tensorEarlyCullPipeline_.getPipeline());
+    }
+    void prepareCheckpointDiagnostics(TrainingBuffers& buffers, uint32_t itemCount, bool warp = false);
+    void recordCheckpointDiagnostics(const BackwardPassContext& context, bool resetRun);
 
 private:
+    void recordSelected(const BackwardPassContext& context, vk::Buffer indirect = nullptr,
+                        vk::DeviceSize offset = 0u);
     struct TilePipelineVariant {
         uint32_t tileSize = kTrainingTileSize16;
         ComputePipeline directPipeline;
@@ -120,6 +130,9 @@ private:
                                        uint32_t tileSize);
 
     vk::Device device_ = nullptr;
+    vk::PhysicalDevice physicalDevice_ = nullptr;
+    std::unique_ptr<CheckpointStatePass> checkpointState_;
+    std::unique_ptr<CheckpointBackwardPass> checkpointBackward_;
     std::array<TilePipelineVariant, 2> tileVariants_{};
     ComputePipeline tensorSubgroupPipeline_;
     vk::DescriptorSet tensorSubgroupDescriptorSet_ = nullptr;
@@ -127,6 +140,8 @@ private:
     vk::DescriptorSet tensorGlobalPixelGradDescriptorSet_ = nullptr;
     ComputePipeline tensorRgbLatencyPipeline_;
     vk::DescriptorSet tensorRgbLatencyDescriptorSet_ = nullptr;
+    ComputePipeline tensorEarlyCullPipeline_;
+    vk::DescriptorSet tensorEarlyCullDescriptorSet_ = nullptr;
     std::array<ComputePipeline, 2> adaptiveSpatialPerSplatPipelines_{};
     std::array<ComputePipeline, 2> adaptiveSpatialTensorPipelines_{};
     std::array<ComputePipeline, 2> adaptiveTensorLargeChildPipelines_{};

@@ -81,6 +81,7 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
             "Prepare submit/wait", "Tile count readback", "Tile buffer resize",
             "Main command record", "Main submit/wait",    "Validation",
             "Densify adopt",       "Total step",
+            "Checkpoint capacity",
         };
         static constexpr const char* gpuStageNames[] = {
             "Gaussian projection",
@@ -105,6 +106,10 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
             "Adaptive child range install (inside sort/ranges)",
             "Adaptive parent backward (inside Pixel to 2DGS)",
             "Adaptive child backward (inside Pixel to 2DGS)",
+            "Checkpoint layout",
+            "Checkpoint state build",
+            "Checkpoint tasks",
+            "Checkpoint warp backward (inside Pixel to 2DGS)",
         };
         static_assert(sizeof(cpuStageNames) / sizeof(cpuStageNames[0]) ==
                       kTrainingCpuProfileStageCount);

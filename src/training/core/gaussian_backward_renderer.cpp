@@ -36,6 +36,9 @@ void GaussianBackwardRenderer::cleanup() {
     profilingQueryPool_ = nullptr;
     pushConstants_ = {};
     initialized_ = false;
+    checkpointWarp_ = false;
+    tensorEarlyCull_ = false;
+    optimizerCapture_ = nullptr;
 }
 
 void GaussianBackwardRenderer::setTrainingBuffers(const TrainingBuffers& trainingBuffers,
@@ -116,7 +119,7 @@ bool GaussianBackwardRenderer::readyForRecording(const char* operation) const {
 }
 
 BackwardPassContext GaussianBackwardRenderer::context() const {
-    return {*trainingBuffers_, commandBuffer_, pushConstants_, profilingQueryPool_};
+    return {*trainingBuffers_, commandBuffer_, pushConstants_, profilingQueryPool_, checkpointWarp_, tensorEarlyCull_, optimizerCapture_};
 }
 
 void GaussianBackwardRenderer::writeProfilingTimestamp(TrainingGpuProfileStage stage,

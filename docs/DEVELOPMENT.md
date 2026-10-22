@@ -39,6 +39,50 @@ The application is written to `build/bin/<Config>/vulkan-3dgs.exe` on Windows
 and `build/bin/<Config>/vulkan-3dgs` elsewhere. Generated shaders are copied to
 `build/bin/<Config>/shaders/`.
 
+### Runtime validation control
+
+Use `vulkan-3dgs --validation off` for performance runs and
+`vulkan-3dgs --validation on` for correctness checks. The default is `on` in
+Debug and Release; `--validation=off` / `--validation=on` are also accepted.
+Invalid, missing or duplicate validation values fail before window creation.
+Existing `--gpu` selection remains independent. This is a startup-only option,
+not a persisted UI setting; it changes neither training numeric checks, logger
+level nor shader compilation flags.
+
+The option passes from the CLI through `Application` to `Context` before
+instance creation. Enabled state after the layer-availability check still
+flows into scheduling report metadata. An unavailable requested layer retains
+the existing warning-and-disable behavior; `on` is not a strict availability
+gate. Startup logs show requested/enabled state, describing application instance
+configuration rather than externally forced Vulkan loader overrides. Independent
+GPU diagnostic tools retain their own `--require-validation` gate.
+
+### S4 optimizer diagnostics (experimental)
+
+`Capture ONE S4 Optimizer Step and Pause` trains exactly one eligible ordinary
+fused step on an already paused model, then exports pre-state and original
+post-reference. It is not a read-only export or an optimization. See the
+[S4 capture/replay guide](optimizer-diagnostics.md) for resource limits, failure
+semantics, strict device/shader matching, validation commands and native evidence.
+The explicit offline `--candidate-r1` streamed-Adam prototype preserves AoS and
+original math. Target 3090 replay passes bitwise but fails performance admission;
+local AMD multi-step bitwise differences remain unresolved. It is not selectable
+in training. The guide records the target native evidence, strict
+synthetic/replay gates and separate bounded profiling window. S4-1M layout
+migration and S4-2 training integration remain unimplemented.
+
+### S4-3 scheduling diagnostics (experimental)
+
+The opt-in bounded scheduling sampler and independent direct/GPU-count sort
+probe audit prepare-to-main gaps and capacity-dependent sort costs. They retain
+the original training submissions, fences and CPU count/capacity handling;
+GPU-driven training is not enabled. See the [scheduling diagnostic guide](scheduling-diagnostics.md)
+for startup environment variables, validation/cost commands and interpretation.
+Timing schema v2 additionally records GPU prepare duration, actual application
+validation-layer configuration, C++ build/compiler/macros and logger levels.
+Per-step training validation is distinct from Vulkan validation; unknown instance
+configuration is null. No validation/logging settings or scheduling are changed.
+
 ## Architecture
 
 ```text
@@ -310,9 +354,409 @@ compiler/driver observations, and `# Warp` is a theoretical residency bound.
 ### Loss and SSIM
 
 The loss pass computes L1/DSSIM and stores `SsimBackwardState`; loss-to-pixel
-consumes those coefficients. Both still traverse two-dimensional 11x11
-neighborhoods with zero padding and fixed normalization. Separable SSIM and
-checkpointed warp backward are not implemented.
+consumes those coefficients. The default path traverses two-dimensional 11x11
+neighborhoods with zero padding and fixed normalization.
+
+`SSIM Mode` is a stopped-only A/B control, persisted as `ssim_mode`:
+
+| Value | Mode | Loss | Loss to pixel | Scratch |
+| ---: | --- | --- | --- | ---: |
+| 0 (default) | 2D (Baseline) | Original 2D | Original 2D | None |
+| 1 | Separable (Full, Experimental) | Horizontal moments + vertical loss | Horizontal coefficients + vertical gradient | 80 B/pixel |
+| 2 | 2D Loss + Separable Backward (Experimental) | Original 2D | Horizontal coefficients + vertical gradient | 48 B/pixel |
+
+Mode 2 reuses the original `SsimBackwardState` and executes three dispatches;
+it never dispatches the separable forward-moment or vertical-loss variant.
+SSIM constants, L1/DSSIM weighting, zero padding, normalization and validation
+are unchanged; separable accumulation order differs. `BackwardLossPass` owns
+pipeline selection and includes every dispatch/barrier in `Loss` and `Loss to
+pixel` timings. `TrainingBuffers` allocates three or five float4 planes as
+needed, replaces storage safely on mode changes, and releases it in baseline
+mode or on resize. Allocation checks `maxStorageBufferRange` and shader indexing
+limits. At 1559x1039 hybrid/full scratch costs about 74.1/123.6 MiB.
+
+Legacy `separable_ssim=0/1` loads as modes 0/1; a present `ssim_mode` takes
+precedence regardless of line order. Saving emits only `ssim_mode`; unknown
+persisted values return to baseline and invalid API/config modes are rejected.
+The full-separable prototype has not demonstrated an end-to-end gain. Hybrid
+GPU correctness and speed remain unverified: compare current v9 pixel/projected
+gradients with 0/1 first, then time Baseline/Hybrid/Baseline with 200/1000.
+CPU tests do not establish a GPU speedup. Checkpointed warp backward is an
+opt-in frozen-benchmark prototype.
+
+### Checkpointed backward P0 gate
+
+`training_checkpoint_layout.hpp` defines the experimental CPU layout/capacity
+contract. `tests/training_checkpoint_reference.hpp` and
+`tests/training_checkpoint_tests.cpp` implement the current scalar forward,
+Tensor reverse reference, rejected prefix-state derivative, and reverse-boundary
+state builder/replay. Layout 1 represents forward prefixes; layout 2 represents
+reverse `(suffixColor, transmittance)` at the far edge of each 32-item bucket.
+
+The original FP32 `C - prefixColor` candidate fails the existing projected
+gradient tolerance in a nonnegative-HDR occlusion case: a dim contribution is
+rounded out of final RGB and the reconstructed residual gives an incorrect
+opacity gradient. Double agreement does not establish FP32 readiness. The
+reverse-boundary CPU candidate passes the existing FP32 tolerance. Review also
+added the production contract's `processedCount <= rangeCount` guard. Actual
+mode 7 is currently available only through the P2 benchmark command.
+
+```powershell
+cmake --build build --config Debug --target training_checkpoint_tests
+build/test/Debug/training_checkpoint_tests.exe --reverse-boundary-gate
+```
+
+The reverse-boundary gate has its own CTest entry. The old `--candidate-gate`
+continues to report `EXPECTED REJECTION` and exit 1 for the unsafe prefix
+candidate. CPU admission does not establish GPU correctness or performance.
+
+### Checkpoint P1 state diagnostics
+
+P1 adds opt-in GPU slot/task prefixes and reverse state construction while
+the original Tensor dispatch still computes training gradients. Resources are
+owned by `TrainingBuffers`; `CheckpointStatePass` belongs to
+`PixelTo2DGSDispatcher`. Bindings 43/44 hold metadata/prefix scratch, 45–48
+hold four 64-pixel state banks, 49 holds tasks, and 50 holds the 96-byte
+control/diagnostic block. Capacity uses the existing prepare readback's true
+tile-item count, is reused at its high-water mark, and is checked against
+descriptor/index limits and available driver memory budget. Replacement is
+transactional. Normal training releases the diagnostic workspace.
+
+Select Fixed16 / Workgroup Shared / VkSplat Tensor / Subgroup / Global /
+RGB Baseline, then click `Run P1 State Diagnostic`. The normal `Start Fixed
+Benchmark` button provides the baseline on the same frozen model/frame.
+The UI reports built/skipped measured steps. Other combinations are rejected;
+resource failure logs a skipped diagnostic
+and continues the original Tensor path. A skipped run cannot supply P1 cost
+evidence. No additional count readback or queue wait occurs each step.
+
+The profiler reports `Checkpoint layout`, `Checkpoint state build`, and
+`Checkpoint tasks`; sum these for added GPU cost H and compare with the
+ordinary benchmark's original Tensor backward B. `Checkpoint capacity` records CPU
+preparation/allocation. The final measured step copies only 96 diagnostic
+bytes through the existing submission/wait and logs slot/task counts, error
+flags, and expected/written pixel-state counts. Nonzero flags or mismatched
+counts fail the diagnostic. V8 exports identify whether checkpoint state was
+built; P1 still records actual Tensor mode 6. Retain the run log.
+Pipeline setup and workspace allocation also log their CPU durations separately
+so that warmup resets do not hide startup costs.
+
+Run the explicit headless GPU check separately from CPU CTest:
+
+```powershell
+cmake --build build --config Debug --target training_checkpoint_gpu_tests
+build/test/Debug/training_checkpoint_gpu_tests.exe
+```
+
+This target checks unchanged forward outputs, reachable and poisoned unreachable
+states, metadata/tasks, edge pixels, prefix blocks, HDR occlusion, repeated IDs,
+and capacity-overflow suppression. It enables Vulkan validation when installed.
+The GPU tool now also checks P2 gradients against an independent CPU reverse
+reference and a supported GPU reference. It uses Tensor Subgroup/Global when
+the device meets the original Tensor gate; otherwise it uses Direct. On a
+non-native32 device it explicitly enables supported subgroup-size control to
+test the same P2 shader at subgroup32. State construction now stops at B(32)
+and skips tiles with maximum processed prefix <=32: no bucket reads B(0).
+The independent CPU state oracle retains its complete reverse traversal.
+
+### Checkpoint P2 warp benchmark
+
+`Run P2 Warp Benchmark` uses the same frozen model/frame and P1 state builder,
+then replaces the Tensor gradient dispatch with 128-thread groups containing
+four independent subgroup32 tasks. Each lane owns one Gaussian and nine
+gradient accumulators. Pixel suffix/T and loss gradients move between lanes;
+32-pixel cooperative prefetch seeds the pipeline. Only subgroup registration
+uses a workgroup barrier; the inner loop uses shuffles and no shared derivative
+matrix. Production entry requires native subgroup32 and the P1 baseline settings.
+This is a benchmark command, not a persisted training setting or Auto choice.
+
+The control block appends Tensor fallback arguments and cumulative run counters.
+Construction errors suppress the new dispatch and launch the original Tensor
+over the full image. Counters reset at benchmark start and at the first measured
+step, survive intermediate steps, and are read only after the existing final
+submission wait. Consumer contract errors invalidate the frozen benchmark.
+Runs with skipped steps, GPU fallbacks, or error flags cannot export a capture
+labelled as a clean checkpoint run. `Checkpoint warp backward` includes the
+conditional fallback dispatch and gradient barrier, and is nested in
+`Pixel to 2DGS`; do not add both timings.
+
+Use 0/1 ordinary/P2/ordinary captures before timing. Completed pure P2 captures
+record actual pixel mode 7, bucket 32, state layout 2, task count, built state,
+and zero fallbacks; Tensor-specific flags are false. Names contain
+`_checkpoint_warp32_layout2`. Comparison requires the updated local script:
+
+```powershell
+python -B scripts/compare_projected_gradients.py baseline.bin p2.bin --allow-pixel-mode-change
+```
+
+Then use 200/1000 on the same frozen workload and compare
+`Checkpoint layout + Checkpoint state build + Checkpoint tasks + Pixel to 2DGS`
+with the ordinary Tensor `Pixel to 2DGS`. The reported P1 workload costs
+1.37 ms versus a 2.99 ms Tensor baseline: P2 backward must be below 1.62 ms
+to break even, or about 1.24 ms for the plan's 10% composite/backward target.
+Re-measure H after the producer's redundant near-bucket work was removed.
+These were pre-P2 acceptance budgets. Subsequent target screenshots passed the
+frozen gradient check (relative L2 `3.71882e-7`, zero mismatched/non-finite
+components), but measured H=1.18 ms and backward=3.02 ms, totaling 4.20 ms
+against Tensor's 2.94 ms. Total step increased 8.83 to 10.16 ms. The direct
+reverse-prepass route is stopped; retain the disabled experiment and tests,
+without promoting it to normal training or running a full-training acceptance.
+
+### Pixel-level EarlyCull experiment
+
+`Run S3 EarlyCull Benchmark` is a one-shot frozen backward-only experiment.
+Select Fixed16 / Workgroup Shared / Tensor / Subgroup / Global / RGB Baseline;
+keep the same SSIM mode in both captures. It cannot combine with checkpoint
+diagnostics. Auto, forward sampling, batch16, the pair matrix, reduction order
+and defaults remain unchanged. The variant precomputes sixteen
+FP32 thresholds per batch, adding 64 shared bytes (33604 total by declaration),
+and no global workspace, prepass, new descriptor or queue wait.
+
+Method 1 only culls finite opacity in `[1/255,1]` and original power in `[-80,0]`.
+It uses `power < log(alphaMin/opacity)-2^-10`; the boundary band and unsupported
+inputs execute the old sampling. Retained pairs use the original power/exp,
+alpha and gradient expressions. Under the non-RelaxedPrecision FP32
+[Vulkan instruction bounds](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#precision-and-operation-of-spirv-instructions),
+division contributes under `3e-7` relative error, log/subtraction under `3e-6`
+absolute error here, and exp plus alpha multiplication under `2.1e-5` relative
+error. A conservative combined log-domain allowance of `2^-13` also covers
+exp2 lowering; the exact `2^-10` guard is eight times this allowance. All
+intermediates are normal in the optimization domain. This is a bounded method,
+not an adjustable epsilon or permission to lower precision; target compiler/GPU
+boundary tests and frozen gradients remain required.
+
+```powershell
+cmake --build build --config Debug
+ctest --test-dir build -C Debug --output-on-failure
+build/test/Debug/training_checkpoint_gpu_tests.exe --pixel-culling-only
+python -B scripts/compare_projected_gradients.py baseline.bin early_cull.bin
+```
+
+The explicit GPU tool checks synthetic classifications around thresholds and
+fallback inputs, reports eligible/old-exp/rejected pairs and fully rejected
+native subgroups, then compares forward/BlendState and all twelve gradient
+slots. It uses Tensor where native subgroup32 and its original resource gate
+are available, otherwise a test-only Direct variant using the same sample
+helper. Direct is not a Tensor runtime/performance validation. The synthetic
+probe requires compute subgroup VOTE; the application variant does not add
+that requirement. These synthetic counts are not target-scene savings.
+
+Use ordinary/S3 0/1 captures first, then uninstrumented 200/1000 ordinary/S3/
+ordinary timing only after correctness passes. `Pixel to 2DGS` already includes
+threshold work; do not add it twice. Compare combined stages and Total step,
+not exp counts alone. V9 records actual method 0/1 and names the candidate
+`_pixel_cull_v1`. A reported target frozen pair passed (relative L2 `5.7464e-8`,
+maximum absolute difference `4.76837e-7`, zero mismatched/non-finite/missing
+components; forward/pixel differences zero). The two supplied timing images,
+interpreted as Off/On, show Pixel-to-2DGS 3.14/3.12 ms and Total step 9.05/8.88 ms.
+Unmodified sort/composite stages also vary; this is not a stable full-training
+speedup claim. Scanline spans and forward culling remain unimplemented.
+
+### EarlyCull full-training trial
+
+`Tensor EarlyCull (Training, Experimental)` is a stopped-only checkbox,
+persisted as `tensor_early_cull 0/1` and defaulting to **off**. Older files without
+the key keep the default; malformed/unknown explicit values disable it. It
+applies to normal and Pure training, including optimizer and densification
+steps, only when the actual Fixed16/Workgroup Shared/Tensor/Subgroup/Global/
+Baseline path and its EarlyCull pipeline are available. Otherwise keep the
+existing selected path, without modifying other settings; `Training EarlyCull`
+shows the reason. Math, Adam/ADC schedules, precision and shaders are unchanged
+by this integration.
+
+The immutable run config owns the request. The domain resolves a per-step CPU
+policy before existing recording; no added buffer, pass or readback is needed.
+`EarlyCull run steps` shows successful ordinary steps, active steps and requested
+but inactive fallback steps. Counters reset on each Start/Resume Training, not
+per frame or validation; benchmark steps never increment them. Start and final/
+pause logs record selection and counters. Pure mode publishes final detailed
+counts; partial runs therefore report only the latest Start/Resume segment.
+
+Benchmark commands remain independent: `Start Fixed Benchmark` and P1/P2 force
+culling off regardless of this checkbox; `Run S3 EarlyCull Benchmark` requests
+method 1 explicitly and still rejects incompatible configurations. V9 and its
+actual-path labels are unchanged. Starting ordinary training after a benchmark
+restores the persisted normal-training selection, not the previous button's
+override.
+
+The reported full 30000-step trial now shows a regression, so keep this control
+off except for explicitly justified reproduction. Do not repeat full runs as
+part of S3-2. For interpreting past/future independently justified A/B runs,
+preserve initialization, seed, split/resolution, SSIM, Adam/ADC and Tensor
+settings and use different output paths. Resuming an already trained model is
+not a matched fresh A/B. Counters from an uninterrupted supported On run should
+be 30000 active and zero fallback; counts do not prove speed or held-out quality.
+The feature remains unpromoted and outside the stable skill.
+
+### S3-2 scanline feasibility diagnostics
+
+This is an offline census and cost screen, not a scanline backward kernel.
+The reported 30000-step EarlyCull trial regressed Pixel-to-2DGS from 2.77 to
+2.91 ms and Total step from 9.92 to 10.03 ms (Off/On). Keep that experiment
+off; do not repeat full training to validate this diagnostic.
+
+1. On a frozen model, run **ordinary** `Start Fixed Benchmark`, warmup 0 /
+   measured 1, Fixed16 / Workgroup Shared / Tensor / Subgroup / Global /
+   RGB Baseline. Then click `Export S3-2 Diagnostic Inputs`. P1/P2 and S3
+   EarlyCull captures are rejected. The normal-training checkbox does not
+   affect this benchmark's path.
+2. The explicit export writes `Output Folder/benchmark_scanline/*.scanline.bin`.
+   It downloads projected Gaussians, **sorted** items/ranges, per-pixel
+   BlendState and pixel gradients; a 1.2-million-Gaussian frame is roughly
+   120 MB. It adds a stopped-only compute-to-download synchronization (with
+   a semaphore bridge for a different transfer queue), not a hot-path pass or
+   readback. Model, Adam, gradients and normal benchmark profiling are not
+   modified. Existing captures are not overwritten.
+3. Run the standalone GPU test runner on the captured input, with other GPU
+   load stopped where possible. Linux uses the executable without `.exe`.
+
+   ```powershell
+   build/test/Release/training_checkpoint_gpu_tests.exe --scanline-capture path/to/frame.scanline.bin
+   ```
+
+   The runner prefers the capture's vendor/device IDs, writes a sibling
+   `.json` report with numeric suffixes on collision, and never writes training
+   gradients back. Start with frame 0; only add a few different views if the
+   first result shows useful structure. No 200/1000 or 30000-step run is needed.
+
+The separate `V3DSCN01` v1 input format has an 88-byte little-endian header
+(magic plus 20 uint32), followed by 48-byte projected Gaussians, uint32 sorted
+items, 16-byte tile ranges, 16-byte BlendStates and 16-byte pixel gradients.
+Header fields are version, Gaussian count, iteration, frame, width, height,
+item count, tile count, composite mode, pixel mode, subgroup, Global, RGB
+schedule, SSIM, pixel-cull method, source vendor/device/driver, and two reserved
+zeros. Only original Tensor Subgroup/Global/Baseline method 0 is accepted.
+This file is not a model/optimizer checkpoint or a v9 gradient capture.
+The reader checks exact length, metadata, dimensions, ranges and per-tile
+counter bounds before GPU execution. Frame counters aggregate with uint64.
+
+Read the report in this order:
+
+- `eligible_pairs` excludes edge pixels, invalid IDs, `itemOffset >= processedCount`
+  and the already trimmed maximum-prefix suffix. `already_guarded_pairs` and
+  `already_trimmed_suffix_items` are existing savings, not new scanline gains.
+- `oracle_empty_*` uses the original GPU power/exp/alpha predicate, not the
+  proposed bounds. It counts rows, Gaussian **tile-items** and reverse batches
+  that contain eligible pairs but no alpha contributors. Batch16 is aligned
+  from each tile's maximum processed prefix exactly like Tensor, not from
+  offset zero. Alpha contributions, not zero loss gradients, define the oracle.
+- `span_*` measures what a guarded SPD row interval actually recognizes.
+  Unsupported opacity/conics, ill-conditioning, non-finite arithmetic and
+  near tangency retain the full row. The candidate expands the root interval
+  outward, including at least one pixel of padding, and checks every proposed
+  rejection against the original predicate. **Any false rejection rejects this
+  candidate.** Zero observed errors is not production FP32/gradient admission.
+- Row, Gaussian and batch pair-weighted opportunities are nested, not additive.
+  A logical empty row is not automatically a native-subgroup-uniform skip.
+  Only an integrated design could remove derivative-matrix work or barriers.
+- `bounds_proxy_not_net_overhead_*` measures a separate batch16 bounds-only
+  dispatch, including its staging/barriers/checksum but excluding mask use.
+  The oracle census time is excluded. A supported native32 device also times
+  the original Tensor before/after, with 2 warmup and 8 samples each. Missing
+  timings are null. No-Tensor devices still validate census but cannot establish
+  target Tensor profitability; cross-device IDs or >15% baseline drift are
+  inconclusive.
+
+`integration_resource_screen` also flags a separate risk: adding a naive 1024 B
+span table plus 256 B of coefficients to the reported 33540 B Tensor baseline
+would require 104460 B for three groups, exceeding the 100 KiB raw shared-memory
+model for [Ampere 8.6](https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html#occupancy).
+This is an arithmetic inference, not measured Vulkan residency; do not copy
+CUDA-specific reservation/carveout rules into Vulkan. A future prototype must
+budget native register/shared allocation and must not assume the standalone
+bounds-only kernel preserves the original Tensor's residency.
+
+`verdict` is a screen, not a speedup prediction: stop for invalid spans/input,
+no eligible work, no recognized work, or weak recognition (both whole-row and
+old-exp pair fractions <10%, and whole-batch fraction <5%). A bounds proxy
+above 25% of the matched Tensor baseline also stops this candidate as an
+engineering screen, not an impossibility proof. Other outcomes require review
+before a limited integrated prototype. `estimated_speedup` deliberately stays
+null and `production_kernel_implemented` false. Do not lower guards or add the
+nested fractions to make the result look profitable.
+
+```powershell
+build/test/Debug/training_scanline_tests.exe
+build/test/Debug/training_checkpoint_gpu_tests.exe --scanline-only
+```
+
+CPU checks cover capture I/O, truncation, invalid metadata/ranges, existing
+guards and reverse batch alignment. Synthetic GPU checks compare all oracle
+counters with an independent scalar reference and require zero false drops;
+they include edge tiles, HDR, repeated/invalid IDs, alpha-min equality,
+thin/indefinite conics, long lists and oracle-empty interior batches. These
+tests do not substitute for a report from the target scene.
+
+### S3-3 compact row-mask admission
+
+R0 is a separate offline census. The target RTX 3090 frame-0 R0 report passed
+with 13.16% geometric eligible-pair coverage, zero false drops, and matching
+GPU/driver. This differs from S3-2's 45.89% row coverage, which also included
+prefix-induced empty eligible sets. R1's isolated Tensor row-mask kernel and
+R2's offline comparison runner are implemented, but target Tensor16 gradients,
+native resources and performance still require validation.
+
+```powershell
+build/test/Release/training_checkpoint_gpu_tests.exe --row-empty-r0-capture path/to/frame.scanline.bin
+```
+
+Linux omits `.exe`. Reuse the binary capture, not the old JSON. The runner
+writes a unique sibling `*.row_empty_r0.json`; it never writes training
+gradients or times the census as a candidate kernel. The report separates
+geometric empty rows, already-guarded rows, kept oracle-empty rows and actual
+native-wave opportunities. Native waves use compute BASIC/VOTE and do not
+describe Tensor's different Gaussian-reduction mapping.
+
+The tangent lower bound retains uncertain inputs and uses the existing bounded
+opacity/power exp/log contract. See the [numerical domain and error ledger](training-row-empty-contract.md).
+Only RowEmpty census/candidate outputs use Slang's precise GLSL compatibility
+backend. Normal shader flags are unchanged. R1 adds a 64-byte row mask and
+64-byte threshold cache, refreshes both per batch, preserves zero pair writes
+and existing barriers, and skips empty rows on both sampling and reduction.
+Declared storage is 33668 bytes versus 33540, not measured native residency.
+The FP32 audit rejects relaxed floats; its sole bounded-integer exception is
+the subgroup lane builtin and its direct uint32 loads. New dependency
+installation and silent compiler/capability fallback are not allowed.
+
+Run synthetic validation first, then evaluate the unchanged binary capture
+on its source device (Linux omits `.exe`):
+
+```powershell
+build/test/Release/training_checkpoint_gpu_tests.exe --scanline-only
+build/test/Release/training_checkpoint_gpu_tests.exe --row-empty-capture path/to/frame.scanline.bin
+```
+
+The second command writes a unique `*.row_empty_r2.json`. It requires native32
+and the original Tensor capability gate, matching source GPU/driver, a fresh
+R0 census with zero false drops and at least 10% coverage, then compares all
+12 gradient slots against original Tensor and a baseline repeat. Pixel
+gradients/BlendStates are downloaded once outside timing to check they remain
+unchanged; forward is not rerun. Errors abort timing. Only after correctness
+passes does it collect short 2-warmup/8-measured A/B/A GPU timestamps. All
+classification, mask use and trailing gradient barriers are inside the
+candidate interval; allocation, clearing, census and downloads are outside
+both intervals. Compiler backends differ, so this measures the net candidate,
+not an isolated mask-only benefit. No time is inferred from the R0 fractions.
+
+If the short test gains and Nsight native register/shared/residency review
+does not show a disqualifying regression, stop profiling and run:
+
+```powershell
+build/test/Release/training_checkpoint_gpu_tests.exe --row-empty-capture path/to/frame.scanline.bin --timing --resources-reviewed
+```
+
+The resource flag is an operator attestation, not an automatic measurement.
+Long 200/1000 A/B/A runs only if the repeated short screen still gains. More
+than 2% baseline drift is inconclusive; less than 5% net gain, or gain no
+greater than twice the A-to-A difference, fails this engineering gate. A pass
+still needs resource/multiview review, not automatic normal-training enablement.
+The runner never substitutes Direct or portable batch4 for target Tensor16.
+On small-shared-memory devices, synthetic tests explicitly use batch4/Shared
+wrappers to exercise the same mask/matrix/barrier code, comparing against an
+unculled batch4 kernel and an independent scalar backward. These are not
+Tensor16 performance or native-subgroup validation. Stable skill instructions,
+training defaults and the v9 export format remain unchanged; no 30000-step run
+or application benchmark integration is authorized by a short-test result.
 
 ### Projection and optimizer
 
@@ -355,6 +799,10 @@ All training shaders use descriptor set 0. Important bindings are:
 | 32/33 | Per-Gaussian tile range and prefix scratch |
 | 34/35/36/37 | Adaptive split flags, child counts, item masks, child offsets |
 | 38/39/40/41 | Adaptive parent prefixes, block scratch/offsets, active parents, child dispatch metadata |
+| 42 | Optional SSIM scratch, three (hybrid) or five (full) float4 planes |
+| 43/44 | Optional P1 checkpoint tile metadata and uint2 prefix scratch |
+| 45–48 | Optional P1 checkpoint state banks, 64 pixel ranks per bank |
+| 49/50 | Optional checkpoint bucket tasks and 96-byte control/fallback/run block |
 
 Binding numbers and C++/Slang struct layouts are ABI. Update C++ descriptor
 writes, Slang `[[vk::binding(N, 0)]]`, and static assertions together.
@@ -414,12 +862,27 @@ training benchmark; use Pure Training for wall-clock comparisons.
 `Export Benchmark Gradients` writes under the configured output directory's
 `benchmark_gradients/`. Fixed16 Tensor names identify reduction, pixel-gradient
 source, and Global RGB schedule; Adaptive Tensor names identify child batch.
-Existing names receive numeric suffixes. The writer uses format v5: an 80-byte
-little-endian header with magic `V3DGGRD1`, 16 uint32 fields and loss/alpha
-float32 values, followed by 12 float32 gradient components and one membership
-byte per Gaussian. The comparator accepts v1–v5, reports actual paths, and
+All names also identify `_ssim_2d`, `_ssim_separable`, or
+`_ssim_backward_separable`; existing names receive numeric suffixes.
+The writer uses format v9: a 108-byte little-endian header with magic
+`V3DGGRD1`, 23 uint32 fields and loss/alpha float32 values. Five fields follow
+the v7 SSIM mode: checkpoint bucket size, state layout version, task count,
+state-built flag, and fallback count. Baselines without checkpoint state use
+zero checkpoint fields. V9 appends the actual backward pixel-culling method
+(0 Off, 1 guarded FP32 EarlyCull) after the v8 checkpoint fields. Method 1
+requires Tensor Subgroup/Global/Baseline without checkpoint state. V8 retains
+its 104-byte layout. V6/v7 retain their 84-byte layouts; v6 SSIM accepts
+only 0/1, and v7 adds 2=2D loss + separable backward. Mode 1 still means full
+separable. Pixel mode 7 requires v8 or newer, Fixed16/Workgroup Shared, built
+bucket32/layout2 state, and no fallback.
+Payload is 12 float32 projected-gradient components per Gaussian, then one
+membership byte per Gaussian, then `width*height` float4 pixel gradients
+(RGB active, W padding). The comparator accepts v1–v9, reports actual paths, and
 checks repeat captures retain the same path. Inspect mismatch counts, not
-only exit status; do not loosen tolerance merely to pass.
+only exit status; do not loosen tolerance merely to pass. V6+ pairs additionally
+report pixel-gradient errors using `--pixel-atol=1e-9` and the existing relative
+tolerance; older pairs explicitly report pixel data unavailable. Non-finite
+forward loss/alpha is rejected.
 
 `Export Adaptive Tile Diagnostics` writes a CSV and companion mask file under
 `benchmark_tiles/`. Adaptive construction timings are nested in sort/ranges;
@@ -518,10 +981,14 @@ and preserves actionable diagnostics and exit codes.
   exactly.
 - Each training iteration still waits for prepare and main submissions.
 - Tile sorting uses two stable 32-bit radix passes rather than one packed key.
-- Loss and loss-to-pixel remain separate passes.
-- Separable SSIM, checkpointed warp backward, pixel-level EarlyCull/scanline
-  prototypes, GPU SoA/AoSoA parameter storage, and GPU-driven count/sort are
-  future optimization directions, not current behavior.
+- Loss and loss-to-pixel remain separate stages; full/hybrid SSIM use four/three
+  dispatches and extra scratch bandwidth. Hybrid still needs target-GPU validation.
+- Checkpointed warp backward remains a stopped performance experiment;
+  backward EarlyCull has default-off reproduction controls and a passed
+  target frozen pair, but its reported full-training trial regressed;
+  quality equivalence remains unverified. S3-2 is offline diagnosis only.
+  Scanline spans, GPU SoA/AoSoA storage, and GPU-driven count/sort
+  are future work, not current behavior.
 - Pixel backward kernel selection is manual; Auto does not choose VkSplat.
 - RGB latency hiding has no demonstrated stable speedup; all Tensor A/B
   switches remain default-off and do not change Adaptive kernels.

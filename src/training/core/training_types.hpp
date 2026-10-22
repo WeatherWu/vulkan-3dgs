@@ -1,5 +1,7 @@
 #pragma once
 
+#include "training/core/training_ssim_mode.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -76,6 +78,7 @@ enum class TrainingPixelTo2DGSMode : uint32_t {
     TileGaussianAtomic = 4,
     VkSplatPerSplat = 5,
     VkSplatTensor = 6,
+    CheckpointedWarp = 7, // Actual P2 benchmark path; not a persisted training selection yet.
 };
 
 enum class TrainingForwardCompositeMode : uint32_t {
@@ -104,11 +107,22 @@ struct TrainingFixedBenchmarkConfig {
     uint32_t frameIndex = 0;
     uint32_t warmupSteps = 200;
     uint32_t measuredSteps = 1000;
+    bool checkpointDiagnostics = false;
+    bool checkpointWarp = false;
+    bool tensorEarlyCull = false; // One-shot frozen benchmark only; not persisted.
 };
 
 struct TrainingFixedBenchmarkStats {
     bool active = false;
     bool complete = false;
+    bool checkpointDiagnosticsRequested = false;
+    bool checkpointWarpRequested = false;
+    uint32_t pixelCullMethod = 0u; // Actual backward method: 0 Off, 1 guarded FP32 EarlyCull.
+    uint32_t checkpointDiagnosticSteps = 0;
+    uint32_t checkpointSkippedSteps = 0;
+    uint32_t checkpointTaskCount = 0;
+    uint32_t checkpointFallbackCount = 0;
+    uint32_t checkpointErrorFlags = 0;
     uint32_t frameIndex = 0;
     uint32_t warmupSteps = 0;
     uint32_t measuredSteps = 0;
@@ -124,6 +138,7 @@ struct TrainingFixedBenchmarkStats {
     bool tensorSubgroupReduction = false; // Actual path used by this benchmark.
     bool tensorGlobalPixelGrad = false;   // Actual pixel-gradient source (false = Shared).
     bool tensorRgbLatencyHiding = false;  // Actual Global RGB scheduling variant.
+    TrainingSsimMode ssimMode = TrainingSsimMode::TwoDimensional; // Actual loss/backward path.
 };
 
 struct TrainingAdaptiveTileDiagnostic {
@@ -261,6 +276,7 @@ enum class TrainingCpuProfileStage : uint32_t {
     Validation,
     DensificationAdopt,
     Total,
+    CheckpointCapacity,
     Count,
 };
 
@@ -287,6 +303,10 @@ enum class TrainingGpuProfileStage : uint32_t {
     AdaptiveChildRangeInstall,
     AdaptiveParentBackward,
     AdaptiveChildBackward,
+    CheckpointLayout,
+    CheckpointStateBuild,
+    CheckpointTasks,
+    CheckpointWarpBackward,
     Count,
 };
 

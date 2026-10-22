@@ -1,6 +1,8 @@
 #include "gaussian_training.hpp"
 
 #include "utils/logger.hpp"
+#include "utils/file_utils.hpp"
+#include "training/core/training_optimizer_capture_gpu.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -55,7 +57,8 @@ void GaussianTraining::initialize(vk::Device device,
                                   vk::PhysicalDevice physicalDevice,
                                   vk::Queue transferQueue,
                                   uint32_t transferQueueFamilyIndex,
-                                  uint32_t computeQueueFamilyIndex) {
+                                  uint32_t computeQueueFamilyIndex,
+                                  std::optional<bool> vulkanValidationLayersEnabled) {
     if (initialized_) {
         return;
     }
@@ -65,6 +68,7 @@ void GaussianTraining::initialize(vk::Device device,
     transferQueue_ = transferQueue;
     transferQueueFamilyIndex_ = transferQueueFamilyIndex;
     computeQueueFamilyIndex_ = computeQueueFamilyIndex;
+    vulkanValidationLayersEnabled_ = vulkanValidationLayersEnabled;
     buffers_.initialize(device,
                         physicalDevice,
                         transferQueue,
@@ -104,18 +108,22 @@ void GaussianTraining::cleanup() {
     validationService_.resetStats();
     fixedBenchmarkStats_ = {};
     fixedBenchmarkCompletedSteps_ = 0;
+    pixelCullRunStats_ = {};
     device_ = nullptr;
     physicalDevice_ = nullptr;
     transferQueue_ = nullptr;
     transferQueueFamilyIndex_ = 0;
     computeQueueFamilyIndex_ = 0;
     initialized_ = false;
+    vulkanValidationLayersEnabled_.reset();
 }
 
 void GaussianTraining::resize(uint32_t gaussianCount, TrainingExtent extent) {
     buffers_.resize(gaussianCount, extent);
+    buffers_.configureSsimScratch(ssimMode_);
     trainableGaussianCount_ = gaussianCount;
     optimizerStep_ = 0;
+    optimizerCaptureStateUncertain_ = false;
     sceneExtent_ = std::max(sceneExtent_, 1.0f);
 }
 
@@ -166,6 +174,7 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
         gaussianBackward->setTensorSubgroupReduction(tensorSubgroupReduction_);
         gaussianBackward->setTensorGlobalPixelGrad(tensorGlobalPixelGrad_);
         gaussianBackward->setTensorRgbLatencyHiding(tensorRgbLatencyHiding_);
+        gaussianBackward->setSsimMode(ssimMode_);
         gaussianBackward->setAdaptiveSpatialTiles(
             tileMode_ == TrainingTileMode::AdaptiveSpatial);
         if (tileMode_ == TrainingTileMode::AdaptiveSpatial &&
@@ -190,7 +199,84 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
     rendererInitialized_ = true;
 }
 
+void GaussianTraining::captureOptimizerStepAndPause(const std::filesystem::path& path) {
+    auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get());
+    if (!initialized_ || !rendererInitialized_ || !stepExecutor_.initialized() || !hasDataset() ||
+        !hasTrainableModel() || !renderer || !renderer->fusedOptimizerEnabled())
+        throw std::runtime_error("S4 capture requires an initialized, paused dataset/model and "
+                                 "original fused optimizer");
+    const uint64_t next = uint64_t(trainingIteration_) + 1;
+    if (fixedBenchmarkStats_.active || isTrainingComplete() ||
+        (frameScheduler_.totalIterations() && next >= frameScheduler_.totalIterations()) ||
+        shouldRunDensification() ||
+        next % std::max(densificationConfig_.opacityResetInterval, 1u) == 0)
+        throw std::runtime_error("S4 capture rejected: next step is "
+                                 "benchmark/final/ADC/opacity-reset; no step was advanced");
+    if (optimizerCaptureStateUncertain_ || optimizerCapture_)
+        throw std::runtime_error(
+            "S4 capture requires model reinitialization after uncertain submission");
+    OptimizerCaptureHeader header{};
+    header.gaussianCount = trainableGaussianCount_;
+    header.capacity = buffers_.gaussianCapacity();
+    header.pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode());
+    header.ssimMode = static_cast<uint32_t>(activeSsimMode());
+    header.tileMode = static_cast<uint32_t>(tileMode_);
+    header.compositeMode = static_cast<uint32_t>(forwardCompositeMode_);
+    header.tensorFlags =
+        uint32_t(tensorSubgroupReductionActive()) | (uint32_t(tensorGlobalPixelGradActive()) << 1) |
+        (uint32_t(tensorRgbLatencyHidingActive()) << 2) |
+        (uint32_t(tensorEarlyCullStatus() == TrainingPixelCullStatus::Active) << 3);
+    fillOptimizerCaptureIdentity(header, physicalDevice_,
+                                 FileUtils::resolvePath("shaders/train_backward_2dgs_to_3dgs_optimizer.comp.spv"));
+    TrainingOptimizerCaptureSession capture(device_, physicalDevice_, stepExecutor_.computeQueue(),
+                                            computeQueueFamilyIndex_, header, path);
+    const uint32_t before = trainingIteration_;
+    const auto schedulerBefore = frameScheduler_;
+    optimizerCapture_ = &capture;
+    try {
+        trainStep();
+        optimizerCapture_ = nullptr;
+        if (trainingIteration_ != before + 1 || !capture.completed())
+            throw std::runtime_error("S4 capture did not complete exactly one normal step");
+        // No further training/reset/ADC is submitted while the worker owns this export.
+        capture.save({buffers_.gaussianParamsInfo(), buffers_.adamStatesInfo(),
+                      buffers_.densificationStatesInfo()});
+    } catch (const std::exception& error) {
+        optimizerCapture_ = nullptr;
+        if (capture.submitted() && !capture.completed()) {
+            try {
+                stepExecutor_.computeQueue().waitIdle();
+            } catch (...) {}
+        }
+        if (!capture.submitted()) frameScheduler_ = schedulerBefore;
+        optimizerCaptureStateUncertain_ = capture.submitted() && trainingIteration_ == before;
+        throw std::runtime_error(
+            std::string(error.what()) +
+            "; S4 step submitted=" + (capture.submitted() ? "yes" : "no") +
+            ", optimizer submitted=" + (capture.optimizerSubmitted() ? "yes" : "no") +
+            ", GPU completed=" + (capture.completed() ? "yes" : "no") + ", iteration advanced=" +
+            (trainingIteration_ == before + 1 ? "yes (do not repeat Adam)" : "no") +
+            (optimizerCaptureStateUncertain_
+                 ? "; resume blocked: reinitialize model, no rollback was performed"
+                 : ""));
+    } catch (...) {
+        optimizerCapture_ = nullptr;
+        if (capture.submitted() && !capture.completed()) {
+            try {
+                stepExecutor_.computeQueue().waitIdle();
+            } catch (...) {}
+        }
+        if (!capture.submitted()) frameScheduler_ = schedulerBefore;
+        optimizerCaptureStateUncertain_ = capture.submitted() && trainingIteration_ == before;
+        throw std::runtime_error("Unknown S4 failure; check iteration. Submitted step was NOT "
+                                 "rolled back; uncertain state blocks resume");
+    }
+}
+
 void GaussianTraining::trainStep() {
+    if (optimizerCaptureStateUncertain_)
+        throw std::runtime_error(
+            "Uncertain S4 submission: reinitialize model before resuming training");
     if (!initialized_) {
         LOG_WARN("GaussianTraining::trainStep called before initialization");
         return;
@@ -218,6 +304,7 @@ void GaussianTraining::trainStep() {
 
     using Clock = std::chrono::steady_clock;
     const auto totalStart = Clock::now();
+    const auto pixelCullStatus = tensorEarlyCullStatus();
     resetProfilingLastSamples();
 
     const bool runDensificationThisStep = !fixedBenchmarkThisStep && shouldRunDensification();
@@ -262,6 +349,7 @@ void GaussianTraining::trainStep() {
 
     const bool pruneByScreenSize =
         currentIteration > densificationConfig_.opacityResetInterval;
+    if (optimizerCapture_) optimizerCapture_->setFrame(static_cast<uint32_t>(currentFrameIndex()));
     const TrainingStepExecutionResult execution = stepExecutor_.execute({
         .buffers = buffers_,
         .forward = *gaussianForward,
@@ -279,8 +367,21 @@ void GaussianTraining::trainStep() {
         .splitChildren = densificationConfig_.splitChildren,
         .runDensification = runDensificationThisStep,
         .pruneByScreenSize = pruneByScreenSize,
+        .checkpointDiagnostics = fixedBenchmarkThisStep && checkpointDiagnosticsRequested_,
+        .checkpointWarp = fixedBenchmarkThisStep && checkpointWarpRequested_,
+        .tensorEarlyCull = trainingPixelCullForStep(fixedBenchmarkThisStep,
+            benchmarkTensorEarlyCullRequested_, pixelCullStatus),
+        .checkpointResetCounters = fixedBenchmarkCompletedSteps_ == 0u ||
+                                   fixedBenchmarkCompletedSteps_ == fixedBenchmarkStats_.warmupSteps,
+        .optimizerCapture = optimizerCapture_,
+        .fixedBenchmark = fixedBenchmarkThisStep,
+        .frameIndex = static_cast<uint32_t>(currentFrameIndex()),
+        .ssimMode = static_cast<uint32_t>(activeSsimMode()),
+        .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
+        .compositeMode = static_cast<uint32_t>(forwardCompositeMode_),
     });
     imageRuntime_.clearPendingUpload();
+    if (!fixedBenchmarkThisStep) pixelCullRunStats_.record(pixelCullStatus);
     if (execution.gpuProfilingDisabled) {
         detachProfilingQueryPool();
     }
@@ -314,6 +415,15 @@ void GaussianTraining::trainStep() {
 
     if (fixedBenchmarkThisStep) {
         ++fixedBenchmarkCompletedSteps_;
+        if (execution.checkpointReadbackValid) {
+            fixedBenchmarkStats_.checkpointFallbackCount = execution.checkpointFallbacks;
+            fixedBenchmarkStats_.checkpointErrorFlags = execution.checkpointFlags;
+            fixedBenchmarkStats_.checkpointTaskCount = execution.checkpointTasks;
+        }
+        if (checkpointDiagnosticsRequested_ && fixedBenchmarkCompletedSteps_ > fixedBenchmarkStats_.warmupSteps) {
+            if (execution.checkpointDiagnosticsRan) ++fixedBenchmarkStats_.checkpointDiagnosticSteps;
+            else ++fixedBenchmarkStats_.checkpointSkippedSteps;
+        }
         fixedBenchmarkStats_.completedWarmupSteps = std::min(
             fixedBenchmarkCompletedSteps_, fixedBenchmarkStats_.warmupSteps);
         fixedBenchmarkStats_.completedMeasuredSteps = fixedBenchmarkCompletedSteps_ >
@@ -329,6 +439,16 @@ void GaussianTraining::trainStep() {
         const uint32_t totalBenchmarkSteps = fixedBenchmarkStats_.warmupSteps +
                                              fixedBenchmarkStats_.measuredSteps;
         if (fixedBenchmarkCompletedSteps_ >= totalBenchmarkSteps) {
+            const bool pureWarp = checkpointWarpRequested_ &&
+                fixedBenchmarkStats_.checkpointSkippedSteps == 0u &&
+                fixedBenchmarkStats_.checkpointFallbackCount == 0u &&
+                fixedBenchmarkStats_.checkpointErrorFlags == 0u && execution.checkpointReadbackValid;
+            if (pureWarp) {
+                fixedBenchmarkStats_.pixelMode = TrainingPixelTo2DGSMode::CheckpointedWarp;
+                fixedBenchmarkStats_.tensorSubgroupReduction = false;
+                fixedBenchmarkStats_.tensorGlobalPixelGrad = false;
+                fixedBenchmarkStats_.tensorRgbLatencyHiding = false;
+            }
             fixedBenchmarkStats_.active = false;
             fixedBenchmarkStats_.complete = true;
             LOG_INFO("Fixed workload benchmark completed: frame {}, warmup {}, measured {}",
@@ -380,6 +500,7 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     trainableGaussianCount_ = static_cast<uint32_t>(params.size());
     trainingIteration_ = 0;
     optimizerStep_ = 0;
+    optimizerCaptureStateUncertain_ = false;
     frameScheduler_.restartSequence();
     imageRuntime_.initialize(device_, physicalDevice_, transferQueue_,
                              transferQueueFamilyIndex_,
@@ -414,12 +535,19 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
         throw std::runtime_error("Complete a Fixed Benchmark before exporting projected gradients");
     }
     const TrainingValidationStats& validation = validationService_.stats();
+    if (fixedBenchmarkStats_.checkpointDiagnosticsRequested &&
+        (fixedBenchmarkStats_.checkpointSkippedSteps != 0u ||
+         fixedBenchmarkStats_.checkpointFallbackCount != 0u ||
+         fixedBenchmarkStats_.checkpointErrorFlags != 0u))
+        throw std::runtime_error("Checkpoint capture had skipped/fallback/failed steps; export a clean benchmark run");
     if (!validation.valid || validation.parentTileItemCount == 0u ||
         fixedBenchmarkStats_.gaussianCount != trainableGaussianCount_) {
         throw std::runtime_error("Completed benchmark has no valid gradient snapshot");
     }
 
     const auto gradients = buffers_.downloadProjectedGrads(trainableGaussianCount_);
+    const TrainingExtent extent = buffers_.extent();
+    const auto pixelGradients = buffers_.downloadPixelGrads(extent.width * extent.height);
     std::vector<uint8_t> childMembership(trainableGaussianCount_, 0u);
     if (fixedBenchmarkStats_.tileMode == TrainingTileMode::AdaptiveSpatial) {
         childMembership = buffers_.downloadAdaptiveChildMembership(
@@ -446,8 +574,7 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
                          static_cast<char>((value >> 24u) & 0xffu)};
         output.write(bytes, sizeof(bytes));
     };
-    const TrainingExtent extent = buffers_.extent();
-    writeU32(5u); // Version 5 adds the actual Global RGB scheduling variant.
+    writeU32(9u); // V9 appends the actual backward pixel-culling method.
     writeU32(trainableGaussianCount_);
     writeU32(fixedBenchmarkStats_.trainingIteration);
     writeU32(fixedBenchmarkStats_.frameIndex);
@@ -463,15 +590,53 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
     writeU32(fixedBenchmarkStats_.tensorSubgroupReduction ? 1u : 0u);
     writeU32(fixedBenchmarkStats_.tensorGlobalPixelGrad ? 1u : 0u);
     writeU32(fixedBenchmarkStats_.tensorRgbLatencyHiding ? 1u : 0u);
+    writeU32(static_cast<uint32_t>(fixedBenchmarkStats_.ssimMode));
+    writeU32(fixedBenchmarkStats_.checkpointDiagnosticSteps != 0u ? 32u : 0u);
+    writeU32(fixedBenchmarkStats_.checkpointDiagnosticSteps != 0u ? 2u : 0u);
+    writeU32(fixedBenchmarkStats_.checkpointTaskCount);
+    writeU32(fixedBenchmarkStats_.checkpointDiagnosticSteps != 0u ? 1u : 0u);
+    writeU32(fixedBenchmarkStats_.checkpointFallbackCount);
+    writeU32(fixedBenchmarkStats_.pixelCullMethod);
     writeU32(std::bit_cast<uint32_t>(validation.meanLoss));
     writeU32(std::bit_cast<uint32_t>(validation.meanRenderedAlpha));
     output.write(reinterpret_cast<const char*>(gradients.data()),
                  static_cast<std::streamsize>(gradients.size() * sizeof(ProjectedGaussianGrad)));
     output.write(reinterpret_cast<const char*>(childMembership.data()),
                  static_cast<std::streamsize>(childMembership.size()));
+    output.write(reinterpret_cast<const char*>(pixelGradients.data()),
+                 static_cast<std::streamsize>(pixelGradients.size() * sizeof(PixelGrad)));
     if (!output) {
         throw std::runtime_error("Failed to write projected gradients: " + path.string());
     }
+}
+
+void GaussianTraining::exportScanlineDiagnosticInputs(const std::filesystem::path& path) {
+    const auto& b = fixedBenchmarkStats_;
+    const auto& v = validationService_.stats();
+    if (!b.complete || b.active || !v.valid || b.gaussianCount != trainableGaussianCount_ ||
+        b.trainingIteration != trainingIteration_ || b.tileMode != TrainingTileMode::Fixed16 ||
+        b.compositeMode != TrainingForwardCompositeMode::WorkgroupShared ||
+        b.pixelMode != TrainingPixelTo2DGSMode::VkSplatTensor || !b.tensorSubgroupReduction ||
+        !b.tensorGlobalPixelGrad || b.tensorRgbLatencyHiding || b.pixelCullMethod ||
+        b.checkpointDiagnosticsRequested)
+        throw std::runtime_error("S3-2 export requires a completed original Fixed16 Tensor Subgroup/Global Baseline benchmark, without EarlyCull/checkpoints");
+    TrainingScanlineHeader header;
+    header.gaussianCount = b.gaussianCount;
+    header.iteration = b.trainingIteration;
+    header.frame = b.frameIndex;
+    header.width = buffers_.extent().width;
+    header.height = buffers_.extent().height;
+    header.itemCount = v.parentTileItemCount;
+    header.tileCount = ((header.width + 15u) / 16u) * ((header.height + 15u) / 16u);
+    header.ssimMode = static_cast<uint32_t>(b.ssimMode);
+    const auto properties = physicalDevice_.getProperties();
+    header.vendorID = properties.vendorID;
+    header.deviceID = properties.deviceID;
+    header.driverVersion = properties.driverVersion;
+    stepExecutor_.synchronizeDiagnosticDownloads(transferQueue_);
+    writeTrainingScanlineCapture(path, buffers_.downloadScanlineCapture(header));
+    LOG_INFO("Exported S3-2 frozen inputs: {} bytes to {} (no training mutation)",
+             trainingScanlineCaptureBytes(header), path.string());
 }
 
 void GaussianTraining::exportAdaptiveTileDiagnostics(const std::filesystem::path& path) {
@@ -573,11 +738,35 @@ void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkC
         throw std::runtime_error("Fixed workload benchmark frame index is out of range");
     }
 
+    const bool checkpointRequested = config.checkpointDiagnostics || config.checkpointWarp;
+    const auto* backward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    if (config.tensorEarlyCull &&
+        (checkpointRequested || !backward || !backward->tensorEarlyCullSupported() ||
+         tileMode_ != TrainingTileMode::Fixed16 ||
+         forwardCompositeMode_ != TrainingForwardCompositeMode::WorkgroupShared ||
+         activePixelTo2DGSMode() != TrainingPixelTo2DGSMode::VkSplatTensor ||
+         !tensorGlobalPixelGradActive() || tensorRgbLatencyHidingActive()))
+        throw std::runtime_error("EarlyCull requires Fixed16 / Workgroup Shared / Tensor Subgroup Global / RGB Baseline, without checkpoint diagnostics");
+    if (checkpointRequested &&
+        (tileMode_ != TrainingTileMode::Fixed16 ||
+         forwardCompositeMode_ != TrainingForwardCompositeMode::WorkgroupShared ||
+         activePixelTo2DGSMode() != TrainingPixelTo2DGSMode::VkSplatTensor ||
+         !tensorGlobalPixelGradActive() || tensorRgbLatencyHidingActive()))
+        throw std::runtime_error("Checkpoint P1 diagnostics require Fixed16 / Workgroup Shared / Tensor Subgroup Global / RGB Baseline");
+    checkpointDiagnosticsRequested_ = checkpointRequested;
+    checkpointWarpRequested_ = config.checkpointWarp;
+    benchmarkTensorEarlyCullRequested_ = config.tensorEarlyCull;
+
     validationService_.collect(
         buffers_.extent(), buffers_.gaussianCapacity());
     validationService_.resetStats();
     frameScheduler_.setCurrentFrame(config.frameIndex);
     fixedBenchmarkStats_ = {};
+    fixedBenchmarkStats_.checkpointDiagnosticsRequested = checkpointRequested;
+    fixedBenchmarkStats_.checkpointWarpRequested = config.checkpointWarp;
+    fixedBenchmarkStats_.pixelCullMethod = config.tensorEarlyCull ? 1u : 0u;
+    if (checkpointDiagnosticsRequested_)
+        LOG_INFO("Checkpoint {} enabled for Fixed Benchmark", config.checkpointWarp ? "P2 warp backward" : "P1 state diagnostic");
     fixedBenchmarkStats_.active = true;
     fixedBenchmarkStats_.frameIndex = config.frameIndex;
     fixedBenchmarkStats_.gaussianCount = trainableGaussianCount_;
@@ -590,6 +779,7 @@ void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkC
     fixedBenchmarkStats_.tensorSubgroupReduction = tensorSubgroupReductionActive();
     fixedBenchmarkStats_.tensorGlobalPixelGrad = tensorGlobalPixelGradActive();
     fixedBenchmarkStats_.tensorRgbLatencyHiding = tensorRgbLatencyHidingActive();
+    fixedBenchmarkStats_.ssimMode = activeSsimMode();
     fixedBenchmarkStats_.warmupSteps = config.warmupSteps;
     fixedBenchmarkStats_.measuredSteps = std::max(config.measuredSteps, 1u);
     fixedBenchmarkCompletedSteps_ = 0u;
@@ -681,11 +871,45 @@ void GaussianTraining::setTileMode(TrainingTileMode mode, uint32_t adaptiveSplit
     }
 }
 
+void GaussianTraining::setSsimMode(TrainingSsimMode mode) {
+    // Configuration is stopped-only, or applied before the worker starts.
+    // Allocate before changing the actual path so allocation failure leaves it intact.
+    buffers_.configureSsimScratch(mode);
+    ssimMode_ = mode;
+    if (auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
+        renderer->setSsimMode(mode);
+    }
+}
+
+TrainingSsimMode GaussianTraining::activeSsimMode() const {
+    const auto* renderer = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    return renderer ? renderer->activeSsimMode() : TrainingSsimMode::TwoDimensional;
+}
+
 void GaussianTraining::setTensorRgbLatencyHiding(bool enabled) {
     tensorRgbLatencyHiding_ = enabled;
     if (auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
         renderer->setTensorRgbLatencyHiding(enabled);
     }
+}
+
+TrainingPixelCullStatus GaussianTraining::tensorEarlyCullStatus() const {
+    const auto* renderer = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
+    return resolveTrainingPixelCull(tensorEarlyCull_, {
+        .rendererReady = rendererInitialized_ && renderer != nullptr,
+        .pipelineAvailable = renderer && renderer->tensorEarlyCullSupported(),
+        .tileMode = tileMode_,
+        .forwardMode = forwardCompositeMode_,
+        .pixelMode = activePixelTo2DGSMode(),
+        .globalPixelGrad = tensorGlobalPixelGradActive(),
+        .rgbLatencyHiding = tensorRgbLatencyHidingActive(),
+    });
+}
+
+void GaussianTraining::resetTensorEarlyCullRunStats() {
+    pixelCullRunStats_ = {};
+    LOG_INFO("Training EarlyCull requested={}, selection={}", tensorEarlyCull_,
+             trainingPixelCullStatusName(tensorEarlyCullStatus()));
 }
 
 bool GaussianTraining::tensorRgbLatencyHidingActive() const {
@@ -876,7 +1100,7 @@ void GaussianTraining::createTrainingProfilingResources(vk::Device device,
                                                         vk::PhysicalDevice physicalDevice,
                                                         uint32_t computeQueueFamilyIndex) {
     profilingService_.initialize(
-        device, physicalDevice, computeQueueFamilyIndex);
+        device, physicalDevice, computeQueueFamilyIndex, vulkanValidationLayersEnabled_);
     const vk::QueryPool queryPool = profilingService_.queryPool();
 
     if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {

@@ -37,7 +37,12 @@ struct TrainingCommandPanelActions {
     bool loadDataset = false;
     bool toggleTraining = false;
     bool startFixedBenchmark = false;
+    bool startCheckpointDiagnostic = false;
+    bool startCheckpointWarp = false;
+    bool startTensorEarlyCull = false;
     bool exportFixedBenchmarkGradients = false;
+    bool exportScanlineDiagnosticInputs = false;
+    bool captureOptimizerStep = false;
     bool exportAdaptiveTileDiagnostics = false;
     bool browseOutput = false;
     bool savePly = false;

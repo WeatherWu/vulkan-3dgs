@@ -28,6 +28,14 @@ struct TrainingStepExecutionRequest {
     uint32_t splitChildren = 2;
     bool runDensification = false;
     bool pruneByScreenSize = false;
+    bool checkpointDiagnostics = false;
+    bool checkpointWarp = false;
+    bool tensorEarlyCull = false;
+    bool checkpointResetCounters = true;
+    TrainingOptimizerCaptureSession* optimizerCapture = nullptr;
+    bool fixedBenchmark = false;
+    uint32_t frameIndex = 0;
+    uint32_t ssimMode = 0, pixelMode = 0, compositeMode = 0;
 };
 
 struct TrainingStepExecutionResult {
@@ -37,6 +45,11 @@ struct TrainingStepExecutionResult {
     bool optimizerUpdated = false;
     bool densificationRan = false;
     bool gpuProfilingDisabled = false;
+    bool checkpointDiagnosticsRan = false;
+    bool checkpointReadbackValid = false;
+    uint32_t checkpointFallbacks = 0;
+    uint32_t checkpointFlags = 0;
+    uint32_t checkpointTasks = 0;
 };
 
 // Owns the Vulkan command resources and the prepare/main execution mechanics
@@ -56,6 +69,9 @@ public:
         return prepareCommandBuffer_ && mainCommandBuffer_;
     }
     [[nodiscard]] TrainingStepExecutionResult execute(TrainingStepExecutionRequest request);
+    // Explicit stopped-only export, never part of a normal training step.
+    void synchronizeDiagnosticDownloads(vk::Queue downloadQueue);
+    vk::Queue computeQueue() const { return computeQueue_; }
 
 private:
     vk::Device device_ = nullptr;

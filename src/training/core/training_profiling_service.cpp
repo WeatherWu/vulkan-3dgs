@@ -12,10 +12,13 @@ TrainingProfilingService::~TrainingProfilingService() {
 }
 
 void TrainingProfilingService::initialize(vk::Device device, vk::PhysicalDevice physicalDevice,
-                                          uint32_t computeQueueFamilyIndex) {
+                                          uint32_t computeQueueFamilyIndex,
+                                          std::optional<bool> vulkanValidationLayersEnabled) {
     cleanup();
     device_ = device;
     stats_ = {};
+    scheduling_ = TrainingSchedulingDiagnostics::fromEnvironment(
+        device, physicalDevice, computeQueueFamilyIndex, vulkanValidationLayersEnabled);
 
     const std::vector<vk::QueueFamilyProperties> families =
         physicalDevice.getQueueFamilyProperties();
@@ -44,6 +47,7 @@ void TrainingProfilingService::initialize(vk::Device device, vk::PhysicalDevice 
 }
 
 void TrainingProfilingService::cleanup() {
+    scheduling_.reset();
     gpuTimestampsAvailable_ = false;
     timestampPeriodNanoseconds_ = 0.0f;
     if (queryPool_ && device_) device_.destroyQueryPool(queryPool_);
@@ -117,6 +121,10 @@ bool TrainingProfilingService::collectGpu() {
         "Adaptive child range install",
         "Adaptive parent backward",
         "Adaptive child backward",
+        "Checkpoint layout",
+        "Checkpoint state build",
+        "Checkpoint tasks",
+        "Checkpoint warp backward",
     };
     for (uint32_t index = 0; index < kTrainingGpuProfileStageCount; ++index) {
         const auto stage = static_cast<TrainingGpuProfileStage>(index);

@@ -12,6 +12,9 @@ struct ComputePipelineConfig {
     std::vector<vk::DescriptorSetLayoutBinding> descriptorBindings;
     uint32_t pushConstantSize = 0;
     vk::ShaderStageFlags pushConstantStages = vk::ShaderStageFlagBits::eCompute;
+    // Caller must enable subgroup-size-control features when requesting these.
+    uint32_t requiredSubgroupSize = 0;
+    bool requireFullSubgroups = false;
 };
 
 class ComputePipeline {
