@@ -1,4 +1,5 @@
 #include "training/core/training_optimizer_capture.hpp"
+#include "training_optimizer_candidate.hpp"
 #include "training_optimizer_r1_metrics.hpp"
 #include "training_optimizer_reference.hpp"
 
@@ -212,12 +213,35 @@ void r1Contracts() {
     b.fill(std::numeric_limits<double>::quiet_NaN());
     reject([&] { (void)optimizer_r1::evaluate(a, b, repeat); }, "R1 NaN timestamp accepted");
 }
+void candidateContracts() {
+    using namespace optimizer_candidate;
+    check(select(Method::None, "--candidate-r1") == Method::StreamAdam,
+          "Streamed Adam candidate selection");
+    check(select(Method::None, "--candidate-sh-color-reuse") == Method::SHColorReuse,
+          "SH color reuse candidate selection");
+    for (auto current : {Method::StreamAdam, Method::SHColorReuse})
+        for (auto option : {"--candidate-r1", "--candidate-sh-color-reuse"})
+            reject([&] { (void)select(current, option); }, "Multiple candidates accepted");
+    reject([&] { (void)select(Method::None, "--unknown"); }, "Unknown candidate accepted");
+    const auto original = describe(Method::None);
+    const auto stream = describe(Method::StreamAdam);
+    const auto reuse = describe(Method::SHColorReuse);
+    check(original.shader.empty() && original.reportExtension == ".s4_replay.json",
+          "Original replay metadata");
+    check(stream.key == "r1" && stream.name == "stream_adam_v1" &&
+              stream.reportExtension == ".s4_r1.json",
+          "Streamed Adam metadata compatibility");
+    check(reuse.key == "sh_color_reuse" && reuse.name == "sh_color_reuse_v1" &&
+              reuse.shader != stream.shader && reuse.reportExtension != stream.reportExtension,
+          "Candidate identities must be distinct");
+}
 } // namespace
 int main() {
     try {
         protocol();
         oracle();
         r1Contracts();
+        candidateContracts();
         std::cout << "Optimizer capture protocol and CPU Adam checks passed\n";
         return 0;
     } catch (const std::exception& e) {

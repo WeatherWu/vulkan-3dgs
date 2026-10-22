@@ -215,8 +215,13 @@ float3 activeProjectedColorGrad(GaussianTrainParam gaussian,
 }
 
 void backwardProjectedColorToSH(inout GaussianGrad gaussianGrad,
+#if defined(TRAIN_REUSE_PROJECTED_COLOR_GRAD)
+                                float3 gradColor,
+                                float3 viewDirection) {
+#else
                                 GaussianTrainParam gaussian,
                                 float3 dLoss_dColor) {
+#endif
     static const float SH_C0 = 0.28209479177387814;
     static const float SH_C1 = 0.4886025119029199;
     static const float SH_C2[5] = {
@@ -236,8 +241,10 @@ void backwardProjectedColorToSH(inout GaussianGrad gaussianGrad,
        -0.5900435899266435
     };
 
+#if !defined(TRAIN_REUSE_PROJECTED_COLOR_GRAD)
     float3 viewDirection;
     float3 gradColor = activeProjectedColorGrad(gaussian, dLoss_dColor, viewDirection);
+#endif
     float x = viewDirection.x;
     float y = viewDirection.y;
     float z = viewDirection.z;
@@ -278,7 +285,12 @@ void backwardProjectedColorToSH(inout GaussianGrad gaussianGrad,
     trainAddSHGradient(gaussianGrad, 15u, gradColor * (SH_C3[6] * x * (xx - 3.0 * yy)));
 }
 
-float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLoss_dColor) {
+float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian,
+#if defined(TRAIN_REUSE_PROJECTED_COLOR_GRAD)
+                                        float3 gradColor, float3 viewDirection) {
+#else
+                                        float3 dLoss_dColor) {
+#endif
     static const float SH_C1 = 0.4886025119029199;
     static const float SH_C2[5] = {
         1.0925484305920792,
@@ -297,8 +309,10 @@ float3 backwardProjectedColorToPosition(GaussianTrainParam gaussian, float3 dLos
        -0.5900435899266435
     };
 
+#if !defined(TRAIN_REUSE_PROJECTED_COLOR_GRAD)
     float3 viewDirection;
     float3 gradColor = activeProjectedColorGrad(gaussian, dLoss_dColor, viewDirection);
+#endif
     if (params.activeSHDegree < 1) {
         return float3(0.0);
     }
@@ -417,9 +431,18 @@ void accumulateProjectedGradientToGaussian(
     grad.rotation += backwardCovariance3DToRotation(
         gaussian, dLoss_dCovariance3D);
 
+#if defined(TRAIN_REUSE_PROJECTED_COLOR_GRAD)
+    float3 viewDirection;
+    float3 gradColor = activeProjectedColorGrad(
+        gaussian, projectedGrad.color.xyz, viewDirection);
+    grad.positionOpacity.xyz += backwardProjectedColorToPosition(
+        gaussian, gradColor, viewDirection);
+    backwardProjectedColorToSH(grad, gradColor, viewDirection);
+#else
     grad.positionOpacity.xyz += backwardProjectedColorToPosition(
         gaussian, projectedGrad.color.xyz);
     backwardProjectedColorToSH(grad, gaussian, projectedGrad.color.xyz);
+#endif
 
     if (recordDensificationStats) {
         float2 densificationGrad = dLoss_dCenter *

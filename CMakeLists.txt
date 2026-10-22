@@ -363,12 +363,15 @@ endforeach()
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer.comp.slang"
                         "train_backward_2dgs_to_3dgs_optimizer.comp")
-# S4-3 private diagnostic helper; no training pipeline selects it.
+# Private diagnostic helper; no training pipeline selects it.
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_scheduling_sort_test.comp.slang"
                         "train_scheduling_sort_test.comp")
-# S4-1R offline-only candidate; no training pipeline selects it.
+# Offline-only candidates; no training pipeline selects them.
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer_stream_adam.comp.slang"
                         "train_backward_2dgs_to_3dgs_optimizer_stream_adam.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer_sh_color_reuse.comp.slang"
+                        "train_backward_2dgs_to_3dgs_optimizer_sh_color_reuse.comp"
+                        "${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer.comp.slang")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_optimizer.comp.slang" "train_optimizer.comp")
 compile_training_shader("${TRAINING_SHADER_VALIDATION_DIR}/train_gaussian_validation.comp.slang"
                         "train_gaussian_validation.comp")

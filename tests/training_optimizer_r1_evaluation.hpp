@@ -1,4 +1,5 @@
 #pragma once
+#include "training_optimizer_candidate.hpp"
 #include "training_optimizer_gpu_session.hpp"
 #include "training_optimizer_r1_metrics.hpp"
 
@@ -16,7 +17,7 @@ inline std::vector<optimizer_gpu::Sample> phase(optimizer_gpu::Session& session,
         session.dispatch(true, variant);
     for (uint32_t i = 0; i < 8; ++i) {
         samples.push_back(session.dispatch(true, variant));
-        optimizer_gpu::check(!errors.load(), "S4-1R timing Vulkan validation failure");
+        optimizer_gpu::check(!errors.load(), "Optimizer timing Vulkan validation failure");
     }
     return samples;
 }
@@ -43,37 +44,39 @@ inline void writeSamples(std::ostream& out, const std::vector<optimizer_gpu::Sam
 inline std::string evaluateReplay(optimizer_gpu::Session& session, const OptimizerCaptureHeader& h,
                                   const OptimizerCaptureSource& reference, uint64_t candidateHash,
                                   const std::atomic<uint32_t>& errors, uint32_t profileSeconds,
-                                  optimizer_gpu::Variant profileVariant) {
+                                  optimizer_gpu::Variant profileVariant,
+                                  const optimizer_candidate::Description& candidate) {
     using optimizer_gpu::Variant;
     // Caller has already verified original post-reference and original A/A.
     for (uint32_t i = 0; i < 2; ++i) {
-        session.dispatch(true, Variant::StreamAdam);
-        optimizer_gpu::requireMatch(session.compare(reference),
-                                    "S4-1R original post-reference / candidate repeat mismatch");
-        optimizer_gpu::check(!errors.load(), "S4-1R correctness Vulkan validation failure");
+        session.dispatch(true, Variant::Candidate);
+        optimizer_gpu::requireMatch(
+            session.compare(reference),
+            "Optimizer original post-reference / candidate repeat mismatch");
+        optimizer_gpu::check(!errors.load(), "Optimizer correctness Vulkan validation failure");
     }
     std::ostringstream out;
     out.precision(10);
-    out << ",\"r1\":{\"candidate\":\"stream_adam_v1\",\"layout\":\"unchanged typed AoS, scoped "
-           "float4 moments\""
-        << ",\"candidate_shader_fnv1a64\":\"" << candidateHash << '"'
+    out << ",\"" << candidate.key << "\":{\"candidate\":\"" << candidate.name << "\",\"layout\":\""
+        << candidate.layout << '"' << ",\"candidate_shader_fnv1a64\":\"" << candidateHash << '"'
         << ",\"bitwise_post_reference\":true,\"bitwise_candidate_repeat\":true"
         << ",\"all_mutable_state_restored_each_dispatch\":true,\"integrated_into_training\":false"
         << ",\"restore_bytes_per_dispatch\":" << uint64_t(h.gaussianCount) * 736
         << ",\"candidate_native\":{\"registers\":null,\"shared_bytes\":null,\"spill_bytes\":null}";
     if (profileSeconds) {
         // Explicit bounded resource-profiling window, never a performance admission run.
-        std::cerr << "S4-1R PROFILE WINDOW READY: " << profileSeconds << " seconds, "
-                  << (profileVariant == Variant::Baseline ? "ORIGINAL baseline" : "stream_adam_v1")
+        std::cerr << "Optimizer PROFILE WINDOW READY: " << profileSeconds << " seconds, "
+                  << (profileVariant == Variant::Baseline ? "ORIGINAL baseline" : candidate.name)
                   << ". Trigger Nsight now; every dispatch restores the SAME seed.\n";
         const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(profileSeconds);
         uint64_t dispatches = 0;
         while (std::chrono::steady_clock::now() < end) {
             session.dispatch(true, profileVariant);
-            optimizer_gpu::check(!errors.load(), "S4-1R native profiling validation failure");
+            optimizer_gpu::check(!errors.load(), "Optimizer native profiling validation failure");
             ++dispatches;
         }
-        optimizer_gpu::requireMatch(session.compare(reference), "S4-1R profile-window state drift");
+        optimizer_gpu::requireMatch(session.compare(reference),
+                                    "Optimizer profile-window state drift");
         out << ",\"profiling_only\":true,\"profile_seconds\":" << profileSeconds
             << ",\"profile_variant\":\""
             << (profileVariant == Variant::Baseline ? "baseline" : "stream-adam")
@@ -82,12 +85,12 @@ inline std::string evaluateReplay(optimizer_gpu::Session& session, const Optimiz
     } else {
         // No downloads/comparison between phases; no candidate-to-baseline Adam chaining.
         const auto a1 = phase(session, Variant::Baseline, errors);
-        const auto b = phase(session, Variant::StreamAdam, errors);
+        const auto b = phase(session, Variant::Candidate, errors);
         const auto a2 = phase(session, Variant::Baseline, errors);
-        optimizer_gpu::requireMatch(session.compare(reference), "S4-1R timed A2 contamination");
-        session.dispatch(true, Variant::StreamAdam);
+        optimizer_gpu::requireMatch(session.compare(reference), "Optimizer timed A2 contamination");
+        session.dispatch(true, Variant::Candidate);
         optimizer_gpu::requireMatch(session.compare(reference),
-                                    "S4-1R post-timing candidate mismatch");
+                                    "Optimizer post-timing candidate mismatch");
         out << ",\"profiling_only\":false,\"warmup_per_phase\":2,\"measured_per_phase\":8"
             << ",\"sample_policy\":\"all samples; max/min >1.20 is inconclusive; no automatic "
                "retry\""

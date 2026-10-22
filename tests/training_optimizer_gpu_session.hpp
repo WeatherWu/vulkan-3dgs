@@ -17,7 +17,7 @@ inline void check(bool okay, const char* message) {
 struct Sample {
     double kernelMs = 0, restoreMs = 0, cpuSubmitWaitMs = 0, restoreCpuMs = 0;
 };
-enum class Variant : size_t { Baseline = 0, StreamAdam = 1 };
+enum class Variant : size_t { Baseline = 0, Candidate = 1 };
 struct Difference {
     uint64_t words = 0, nonFinite = 0, parameterUpdates = 0;
     std::array<uint64_t, 4> fields{}; // params, m, v, densification (including padding)

@@ -14,7 +14,8 @@
 namespace {
 using optimizer_gpu::check;
 std::atomic<uint32_t> validationErrors{0};
-struct R1Progress {
+using optimizer_candidate::Method;
+struct CandidateProgress {
     uint32_t isolatedCases = 0, sequenceSteps = 0;
 };
 VKAPI_ATTR vk::Bool32 VKAPI_CALL onMessage(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -97,6 +98,7 @@ Fixture fixture(uint32_t count, uint32_t degree, uint32_t pattern) {
         f.h.push.optimizerInvFirstMomentCorrection = f.h.push.optimizerInvSecondMomentCorrection =
             1000000;
     }
+    if (pattern == 6) f.h.camera.cameraPosition = {0, 0, 2, 1};
     f.params.resize(count);
     f.states.resize(count);
     f.dense.resize(count);
@@ -127,7 +129,7 @@ Fixture fixture(uint32_t count, uint32_t degree, uint32_t pattern) {
         projectedGrads[i].conicOpacity.w = pattern == 3 ? (i % 2 ? -1e-18f : 1e-18f)
                                            : i % 4 == 0 ? 0.f
                                                         : (i % 2 ? -0.03f : 0.02f);
-        if (pattern == 5) {
+        if (pattern >= 5) {
             // Full projection/SH derivatives, clamp masks and nontrivial quaternion.
             // Compare to ORIGINAL GPU output, not an incomplete CPU projection oracle.
             g.rotation = {0.1f, -0.2f, 0.05f, 1.f};
@@ -135,6 +137,27 @@ Fixture fixture(uint32_t count, uint32_t degree, uint32_t pattern) {
             projectedGrads[i].centerRadius = {0.02f, -0.03f, 0.001f, 0.f};
             projectedGrads[i].conicOpacity = {-0.0002f, 0.0001f, 0.0003f, -0.02f};
             projectedGrads[i].color = {0.02f, -0.01f, 0.03f, 0.f};
+        }
+        if (pattern == 6) {
+            constexpr std::array<float, 5> distances{0.f, 1e-7f, 0.999e-6f, 1.001e-6f, 1e-5f};
+            g.positionOpacity = {distances[i % distances.size()], 0, 2, 0};
+        }
+        if (pattern == 7) {
+            for (auto& pack : g.sh)
+                pack = glm::vec4(0);
+            const float boundary = -0.5f / 0.28209479177387814f;
+            const std::array<float, 3> values{std::nextafter(boundary, -INFINITY), boundary,
+                                              std::nextafter(boundary, INFINITY)};
+            // SH coefficients use planar RGB packs: coefficient zero occupies packs 0/4/8.
+            for (uint32_t channel = 0; channel < 3; ++channel)
+                g.sh[channel * 4].x = values[(i + channel) % values.size()];
+        }
+        if (pattern == 8) {
+            g.positionOpacity = {float(int(i % 11) - 5) * 0.13f, float(int(i % 7) - 3) * 0.17f,
+                                 1.5f + float(i % 5) * 0.2f, 0};
+            for (uint32_t pack = 0; pack < 12; ++pack)
+                for (uint32_t lane = 0; lane < 4; ++lane)
+                    g.sh[pack][lane] = float(int((i + pack * 7 + lane * 3) % 31) - 15) * 0.13f;
         }
     }
     f.expectedParams = f.params;
@@ -291,9 +314,9 @@ void captureHook(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue
     std::filesystem::remove_all(dir);
     std::cout << "S4 real dispatch pre-copy/post-reference hook and bitwise file replay passed\n";
 }
-uint32_t r1Sequences(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                     uint32_t family, const std::filesystem::path& shader,
-                     const std::filesystem::path& candidate, R1Progress& progress) {
+uint32_t candidateSequences(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
+                            uint32_t family, const std::filesystem::path& shader,
+                            const std::filesystem::path& candidate, CandidateProgress& progress) {
     uint32_t steps = 0;
     for (uint32_t count : {17u, 257u}) {
         std::array<std::vector<std::byte>, 3> previous;
@@ -312,33 +335,35 @@ uint32_t r1Sequences(vk::Device device, vk::PhysicalDevice physical, vk::Queue q
             // Projected inputs are intentionally fixed; this is not a training sequence.
             for (size_t b = 6; b < 9; ++b)
                 session.readOutput(b, 0, f.blocks[b]); // small synthetic counts only
-            session.dispatch(true, optimizer_gpu::Variant::StreamAdam);
-            const std::string sequenceLabel = "S4-1R state-sequence G=" + std::to_string(count) +
-                                              " SH=" + std::to_string(degree) +
-                                              " sequenceStep=" + std::to_string(steps);
+            session.dispatch(true, optimizer_gpu::Variant::Candidate);
+            const std::string sequenceLabel =
+                "Optimizer candidate state-sequence G=" + std::to_string(count) +
+                " SH=" + std::to_string(degree) + " sequenceStep=" + std::to_string(steps);
             optimizer_gpu::requireMatch(session.compare(f.source()), sequenceLabel.c_str());
             session.dispatch();
             optimizer_gpu::requireMatch(session.compare(f.source()),
-                                        "S4-1R state-sequence baseline recovery");
+                                        "Optimizer candidate state-sequence baseline recovery");
             session.verifyReadonly();
-            check(!validationErrors, "S4-1R state-sequence Vulkan validation failure");
+            check(!validationErrors,
+                  "Optimizer candidate state-sequence Vulkan validation failure");
             for (size_t i = 0; i < 3; ++i)
                 previous[i] = std::move(f.blocks[i + 6]);
             ++steps;
             ++progress.sequenceSteps;
         }
     }
-    std::cout
-        << "S4-1R 12 optimizer-only sequence steps passed (SH0/1/2/3/1/0); NOT full training\n";
+    std::cout << "Optimizer candidate 12 optimizer-only sequence steps passed (SH0/1/2/3/1/0); NOT "
+                 "full training\n";
     return steps;
 }
 uint32_t synthetic(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue, uint32_t family,
                    const std::filesystem::path& shader, const std::filesystem::path& candidate,
-                   R1Progress& progress) {
+                   CandidateProgress& progress, Method method) {
     uint32_t cases = 0;
+    const uint32_t patterns = candidate.empty() ? 5u : method == Method::SHColorReuse ? 9u : 6u;
     for (uint32_t count : {0u, 1u, 255u, 256u, 257u, 1025u, 8193u}) {
         for (uint32_t degree = 0; degree < 4; ++degree) {
-            for (uint32_t pattern = 0; pattern < (candidate.empty() ? 5u : 6u); ++pattern) {
+            for (uint32_t pattern = 0; pattern < patterns; ++pattern) {
                 auto f = fixture(count, degree, pattern);
                 optimizer_gpu::Session session(device, physical, queue, family, f.h, f.source(),
                                                shader, candidate);
@@ -365,12 +390,14 @@ uint32_t synthetic(vk::Device device, vk::PhysicalDevice physical, vk::Queue que
                 check(!difference.words && !difference.nonFinite,
                       "S4 original shader A/A not bitwise repeatable");
                 if (!candidate.empty()) {
-                    session.dispatch(true, optimizer_gpu::Variant::StreamAdam);
+                    const std::string label = "Optimizer synthetic G=" + std::to_string(count) +
+                                              " SH=" + std::to_string(degree) +
+                                              " pattern=" + std::to_string(pattern);
+                    session.dispatch(true, optimizer_gpu::Variant::Candidate);
+                    optimizer_gpu::requireMatch(session.compare(reference), label.c_str());
+                    session.dispatch(true, optimizer_gpu::Variant::Candidate);
                     optimizer_gpu::requireMatch(session.compare(reference),
-                                                "S4-1R synthetic candidate mismatch");
-                    session.dispatch(true, optimizer_gpu::Variant::StreamAdam);
-                    optimizer_gpu::requireMatch(session.compare(reference),
-                                                "S4-1R synthetic candidate repeat mismatch");
+                                                (label + " candidate repeat").c_str());
                     if (pattern < 5) cpuCheck(session, f);
                 }
                 if (count && pattern == 0) {
@@ -389,12 +416,14 @@ uint32_t synthetic(vk::Device device, vk::PhysicalDevice physical, vk::Queue que
                 if (!candidate.empty()) ++progress.isolatedCases;
             }
         }
-        std::cout << "S4 original fused synthetic G=" << count << " degree0-3, "
-                  << (candidate.empty() ? 5 : 6) << " configurations passed"
-                  << (candidate.empty() ? "\n" : " incl. bitwise stream_adam_v1\n");
+        std::cout << "S4 original fused synthetic G=" << count << " degree0-3, " << patterns
+                  << " configurations passed";
+        if (!candidate.empty())
+            std::cout << " incl. bitwise " << optimizer_candidate::describe(method).name;
+        std::cout << '\n';
     }
     if (!candidate.empty())
-        cases += r1Sequences(device, physical, queue, family, shader, candidate, progress);
+        cases += candidateSequences(device, physical, queue, family, shader, candidate, progress);
     return cases;
 }
 } // namespace
@@ -402,12 +431,13 @@ uint32_t synthetic(vk::Device device, vk::PhysicalDevice physical, vk::Queue que
 int main(int argc, char** argv) {
     std::filesystem::path input, report, syntheticOutput;
     bool requireValidation = false, runSynthetic = false;
-    bool candidateR1 = false, profileVariantSpecified = false;
+    Method method = Method::None;
+    bool profileVariantSpecified = false;
     uint32_t profileSeconds = 0;
     uint64_t candidateHash = 0;
-    R1Progress progress;
+    CandidateProgress progress;
     std::string identityJson;
-    auto profileVariant = optimizer_gpu::Variant::StreamAdam;
+    auto profileVariant = optimizer_gpu::Variant::Candidate;
     std::ostringstream details;
     bool validation = false, syncValidation = false;
     try {
@@ -419,8 +449,8 @@ int main(int argc, char** argv) {
                 runSynthetic = true;
             else if (arg == "--require-validation")
                 requireValidation = true;
-            else if (arg == "--candidate-r1")
-                candidateR1 = true;
+            else if (arg == "--candidate-r1" || arg == "--candidate-sh-color-reuse")
+                method = optimizer_candidate::select(method, arg);
             else if (arg == "--profile-r1-seconds" && i + 1 < argc) {
                 const std::string value = argv[++i];
                 const auto parsed =
@@ -432,7 +462,7 @@ int main(int argc, char** argv) {
                 const std::string value = argv[++i];
                 check(value == "baseline" || value == "stream-adam", "Unknown R1 profile variant");
                 profileVariant = value == "baseline" ? optimizer_gpu::Variant::Baseline
-                                                     : optimizer_gpu::Variant::StreamAdam;
+                                                     : optimizer_gpu::Variant::Candidate;
                 profileVariantSpecified = true;
             } else if ((arg == "--replay" || arg == "--report" ||
                         arg == "--write-synthetic-fixture") &&
@@ -447,11 +477,14 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(
                     "Usage: training_optimizer_gpu_tests (--synthetic | --replay "
                     "INPUT.optimizer.bin) [--report NEW.json] [--require-validation] "
+                    "[--candidate-sh-color-reuse] "
                     "[--candidate-r1 "
                     "[--profile-r1-seconds 1..30 [--profile-variant baseline|stream-adam]]]");
         }
         check(runSynthetic != !input.empty(), "Choose exactly one of --synthetic and --replay");
-        check(!profileSeconds || (candidateR1 && !input.empty()),
+        const auto candidate = optimizer_candidate::describe(method);
+        const bool hasCandidate = method != Method::None;
+        check(!profileSeconds || (method == Method::StreamAdam && !input.empty()),
               "R1 profiling requires --candidate-r1 --replay");
         check(!profileVariantSpecified || profileSeconds,
               "--profile-variant requires a profile window");
@@ -461,7 +494,7 @@ int main(int argc, char** argv) {
               "Synthetic fixture output already exists");
         if (report.empty() && !input.empty()) {
             report = input;
-            report.replace_extension(candidateR1 ? ".s4_r1.json" : ".s4_replay.json");
+            report.replace_extension(candidate.reportExtension);
         }
         check(report.empty() || !std::filesystem::exists(report),
               "Report exists; choose a NEW --report filename");
@@ -473,10 +506,8 @@ int main(int argc, char** argv) {
         const auto shader = std::filesystem::path(OPTIMIZER_RUNTIME_DIR) /
                             "shaders/train_backward_2dgs_to_3dgs_optimizer.comp.spv";
         const auto candidateShader =
-            candidateR1 ? shader.parent_path() /
-                              "train_backward_2dgs_to_3dgs_optimizer_stream_adam.comp.spv"
-                        : std::filesystem::path{};
-        candidateHash = candidateR1 ? optimizerShaderHash(candidateShader) : 0;
+            hasCandidate ? shader.parent_path() / candidate.shader : std::filesystem::path{};
+        candidateHash = hasCandidate ? optimizerShaderHash(candidateShader) : 0;
         VULKAN_HPP_DEFAULT_DISPATCHER.init();
         std::cerr << "S4: Vulkan loader initialized\n";
         for (const auto& layer : vk::enumerateInstanceLayerProperties())
@@ -553,20 +584,23 @@ int main(int argc, char** argv) {
         const auto queue = device->getQueue(family, 0);
         if (runSynthetic) {
             captureHook(*device, physical, queue, family, shader, syntheticOutput);
-            const auto cases =
-                synthetic(*device, physical, queue, family, shader, candidateShader, progress);
+            const auto cases = synthetic(*device, physical, queue, family, shader, candidateShader,
+                                         progress, method);
             details << ",\"synthetic_cases\":" << cases << ",\"target_capture_verified\":false";
-            if (candidateR1)
-                details << ",\"r1\":{\"candidate\":\"stream_adam_v1\",\"bitwise_synthetic\":true,"
+            if (hasCandidate)
+                details << ",\"" << candidate.key << "\":{\"candidate\":\"" << candidate.name
+                        << "\",\"bitwise_synthetic\":true,"
                            "\"candidate_shader_fnv1a64\":\""
                         << candidateHash
-                        << "\",\"integrated_into_training\":false,\"short_gain_percent\":null,"
+                        << "\",\"isolated_cases_completed\":" << progress.isolatedCases
+                        << ",\"sequence_steps_completed\":" << progress.sequenceSteps
+                        << ",\"integrated_into_training\":false,\"short_gain_percent\":null,"
                            "\"verdict\":\"SYNTHETIC_PASSED_TARGET_REPLAY_REQUIRED\"}";
         } else {
-            if (candidateR1) {
-                const auto sequenceSteps = r1Sequences(*device, physical, queue, family, shader,
-                                                       candidateShader, progress);
-                details << ",\"r1_selftest_sequence_steps\":" << sequenceSteps;
+            if (hasCandidate) {
+                const auto sequenceSteps = candidateSequences(*device, physical, queue, family,
+                                                              shader, candidateShader, progress);
+                details << ",\"" << candidate.key << "_selftest_sequence_steps\":" << sequenceSteps;
             }
             auto source = [&](size_t block, uint64_t offset, std::span<std::byte> out) {
                 readOptimizerCaptureChunk(input, *capture, block, offset, out);
@@ -581,10 +615,10 @@ int main(int argc, char** argv) {
             auto repeat = session.compare(source);
             optimizer_gpu::requireMatch(repeat, "S4 original A/A reference mismatch");
             std::vector<optimizer_gpu::Sample> samples;
-            if (candidateR1) {
+            if (hasCandidate) {
                 details << optimizer_r1::evaluateReplay(session, *capture, source, candidateHash,
                                                         validationErrors, profileSeconds,
-                                                        profileVariant);
+                                                        profileVariant, candidate);
             } else {
                 session.dispatch();
                 session.dispatch();
@@ -632,18 +666,22 @@ int main(int argc, char** argv) {
                         << ",\"restore_cpu_submit_wait_ms\":" << samples[i].restoreCpuMs << '}';
             }
             details << ']';
-            if (!candidateR1) details << ",\"warmup\":2,\"measured\":8";
+            if (!hasCandidate) details << ",\"warmup\":2,\"measured\":8";
         }
         device->waitIdle();
         check(!validationErrors, "S4 core/synchronization validation errors");
         const std::string result =
             "{" + details.str() +
-            (candidateR1
-                 ? ",\"status\":\"R1_CHECKS_COMPLETED_SEE_R1_VERDICT\",\"recommendation\":"
-                   "\"DO_NOT_INTEGRATE_WITHOUT_TARGET_TIMING_AND_NATIVE_REVIEW\",\"speedup\":null,"
-                 : ",\"status\":\"BASELINE_CHECKS_PASSED_NATIVE_EVIDENCE_REQUIRED\","
-                   "\"recommendation\":"
-                   "\"INSUFFICIENT_EVIDENCE\",\"speedup\":null,") +
+            (hasCandidate ? std::string(",\"status\":\"") +
+                                (method == Method::StreamAdam
+                                     ? "R1_CHECKS_COMPLETED_SEE_R1_VERDICT"
+                                     : "CANDIDATE_CHECKS_COMPLETED_SEE_CANDIDATE_VERDICT") +
+                                "\",\"recommendation\":"
+                                "\"DO_NOT_INTEGRATE_WITHOUT_TARGET_TIMING_AND_NATIVE_REVIEW\","
+                                "\"speedup\":null,"
+                          : ",\"status\":\"BASELINE_CHECKS_PASSED_NATIVE_EVIDENCE_REQUIRED\","
+                            "\"recommendation\":"
+                            "\"INSUFFICIENT_EVIDENCE\",\"speedup\":null,") +
             "\"native\":{\"registers\":null,\"shared_bytes\":null,\"resident_warps\":null,\"spill_"
             "bytes\":null,\"local_load_store\":null,\"L1\":null,\"L2\":null,\"DRAM\":null,\"SM\":"
             "null},"
@@ -667,14 +705,17 @@ int main(int argc, char** argv) {
                         << ",\"synchronization_validation_enabled\":"
                         << (syncValidation ? "true" : "false")
                         << ",\"validation_errors\":" << validationErrors.load();
-                if (candidateR1)
-                    failure << ",\"r1\":{\"candidate\":\"stream_adam_v1\",\"candidate_shader_"
+                if (method != Method::None) {
+                    const auto candidate = optimizer_candidate::describe(method);
+                    failure << ",\"" << candidate.key << "\":{\"candidate\":\"" << candidate.name
+                            << "\",\"candidate_shader_"
                                "fnv1a64\":\""
                             << candidateHash
                             << "\",\"isolated_cases_completed\":" << progress.isolatedCases
                             << ",\"sequence_steps_completed\":" << progress.sequenceSteps
                             << ",\"integrated_into_training\":false,\"verdict\":\"STOP\",\"short_"
                                "gain_percent\":null}";
+                }
                 failure << ",\"error\":" << quoted(error.what()) << "}\n";
                 reportFile(report, failure.str());
             } catch (...) {}
