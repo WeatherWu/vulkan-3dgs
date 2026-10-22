@@ -53,7 +53,7 @@ public:
     vk::Queue getGraphicsQueue() { return graphicsQueue_; }
     vk::Queue getPresentQueue() { return presentQueue_; }
     vk::Queue getTransferQueue() { return transferQueue_; }
-    vk::Queue getComputeQueue() { return computeQueue_; }  // 新增：获取计算队列
+    vk::Queue getComputeQueue() { return computeQueue_; }  // 获取计算队列
     
     const QueueFamilyIndices& getQueueFamilyIndices() const { return queueFamilyIndices_; }
     const PhysicalDeviceInfo& getSelectedPhysicalDeviceInfo() const { return selectedPhysicalDeviceInfo_; }

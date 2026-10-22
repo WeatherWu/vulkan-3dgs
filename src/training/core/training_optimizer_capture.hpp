@@ -13,7 +13,7 @@
 
 namespace vulkan3DGS {
 
-// Independent S4 protocol. Never interpret a gradient/scanline export as this format.
+// Independent optimizer capture protocol; gradient/scanline exports use different formats.
 inline constexpr std::array<uint32_t, 9> optimizerCaptureStrides{240, 480, 48,  48, 16,
                                                                  8,   240, 480, 16};
 inline constexpr std::array<uint32_t, 6> optimizerCaptureBindings{0, 2, 3, 13, 16, 32};
