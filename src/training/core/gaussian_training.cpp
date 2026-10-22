@@ -114,6 +114,7 @@ void GaussianTraining::cleanup() {
 
 void GaussianTraining::resize(uint32_t gaussianCount, TrainingExtent extent) {
     buffers_.resize(gaussianCount, extent);
+    buffers_.configureSsimScratch(ssimMode_);
     trainableGaussianCount_ = gaussianCount;
     optimizerStep_ = 0;
     sceneExtent_ = std::max(sceneExtent_, 1.0f);
@@ -162,19 +163,10 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                           extent);
     if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
         gaussianBackward->setPixelTo2DGSMode(pixelTo2DGSMode_);
-        gaussianBackward->setAdaptiveTensorChildBatch(adaptiveTensorChildBatch_);
         gaussianBackward->setTensorSubgroupReduction(tensorSubgroupReduction_);
         gaussianBackward->setTensorGlobalPixelGrad(tensorGlobalPixelGrad_);
-        gaussianBackward->setTensorRgbLatencyHiding(tensorRgbLatencyHiding_);
-        gaussianBackward->setAdaptiveSpatialTiles(
-            tileMode_ == TrainingTileMode::AdaptiveSpatial);
-        if (tileMode_ == TrainingTileMode::AdaptiveSpatial &&
-            !gaussianBackward->adaptiveSpatialModeSupported()) {
-            LOG_WARN("Adaptive Spatial requires a supported VkSplat Tensor or Per-Splat "
-                     "backward mode; falling back to Fixed16");
-            tileMode_ = TrainingTileMode::Fixed16;
-            gaussianBackward->setAdaptiveSpatialTiles(false);
-        }
+        gaussianBackward->setSsimMode(ssimMode_);
+
     }
 
     densification_ = std::make_unique<GaussianDensificationRenderer>();
@@ -420,12 +412,9 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
     }
 
     const auto gradients = buffers_.downloadProjectedGrads(trainableGaussianCount_);
+    const TrainingExtent extent = buffers_.extent();
+    const auto pixelGradients = buffers_.downloadPixelGrads(extent.width * extent.height);
     std::vector<uint8_t> childMembership(trainableGaussianCount_, 0u);
-    if (fixedBenchmarkStats_.tileMode == TrainingTileMode::AdaptiveSpatial) {
-        childMembership = buffers_.downloadAdaptiveChildMembership(
-            trainableGaussianCount_, validation.parentTileItemCount,
-            validation.adaptiveChildItemCount);
-    }
 
     if (!path.parent_path().empty()) {
         std::filesystem::create_directories(path.parent_path());
@@ -446,8 +435,7 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
                          static_cast<char>((value >> 24u) & 0xffu)};
         output.write(bytes, sizeof(bytes));
     };
-    const TrainingExtent extent = buffers_.extent();
-    writeU32(5u); // Version 5 adds the actual Global RGB scheduling variant.
+    writeU32(7u); // SSIM mode and pixel-gradient payload are recorded explicitly.
     writeU32(trainableGaussianCount_);
     writeU32(fixedBenchmarkStats_.trainingIteration);
     writeU32(fixedBenchmarkStats_.frameIndex);
@@ -457,96 +445,24 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
     writeU32(extent.width);
     writeU32(extent.height);
     writeU32(validation.parentTileItemCount);
-    writeU32(validation.adaptiveChildItemCount);
-    writeU32(validation.adaptiveSplitParentCount);
-    writeU32(fixedBenchmarkStats_.adaptiveTensorChildBatch);
+    writeU32(0u);
+    writeU32(0u);
+    writeU32(8u);
     writeU32(fixedBenchmarkStats_.tensorSubgroupReduction ? 1u : 0u);
     writeU32(fixedBenchmarkStats_.tensorGlobalPixelGrad ? 1u : 0u);
-    writeU32(fixedBenchmarkStats_.tensorRgbLatencyHiding ? 1u : 0u);
+    writeU32(0u);
+    writeU32(static_cast<uint32_t>(fixedBenchmarkStats_.ssimMode));
     writeU32(std::bit_cast<uint32_t>(validation.meanLoss));
     writeU32(std::bit_cast<uint32_t>(validation.meanRenderedAlpha));
     output.write(reinterpret_cast<const char*>(gradients.data()),
                  static_cast<std::streamsize>(gradients.size() * sizeof(ProjectedGaussianGrad)));
     output.write(reinterpret_cast<const char*>(childMembership.data()),
                  static_cast<std::streamsize>(childMembership.size()));
+    output.write(reinterpret_cast<const char*>(pixelGradients.data()),
+                 static_cast<std::streamsize>(pixelGradients.size() * sizeof(PixelGrad)));
     if (!output) {
         throw std::runtime_error("Failed to write projected gradients: " + path.string());
     }
-}
-
-void GaussianTraining::exportAdaptiveTileDiagnostics(const std::filesystem::path& path) {
-    const auto& benchmark = fixedBenchmarkStats_;
-    const auto& validation = validationService_.stats();
-    if (!benchmark.complete || benchmark.active ||
-        benchmark.tileMode != TrainingTileMode::AdaptiveSpatial || !validation.valid ||
-        validation.parentTileItemCount == 0u || benchmark.gaussianCount != trainableGaussianCount_) {
-        throw std::runtime_error("Complete an Adaptive Spatial Fixed Benchmark before exporting tile diagnostics");
-    }
-    const auto rows = buffers_.downloadAdaptiveTileDiagnostics(validation.parentTileItemCount);
-    const bool hasClassifiedParents = std::any_of(rows.begin(), rows.end(), [&benchmark](const auto& row) {
-        return row.parentItems >= benchmark.adaptiveSplitThreshold;
-    });
-    const auto rawMasks = hasClassifiedParents
-                             ? buffers_.downloadAdaptiveChildMasks(validation.parentTileItemCount)
-                             : std::vector<uint32_t>{};
-    std::vector<uint8_t> packedMasks(validation.parentTileItemCount, 0u);
-    size_t offset = 0u;
-    for (const auto& row : rows) {
-        if (offset + row.parentItems > packedMasks.size()) {
-            throw std::runtime_error("Adaptive parent ranges exceed the mask export capacity");
-        }
-        if (row.parentItems >= benchmark.adaptiveSplitThreshold) {
-            std::array<uint32_t, 4> counted{};
-            for (size_t item = offset; item < offset + row.parentItems; ++item) {
-                const uint32_t mask = rawMasks[item];
-                if (mask > 15u) throw std::runtime_error("Adaptive diagnostics found an invalid child mask");
-                packedMasks[item] = static_cast<uint8_t>(mask);
-                for (uint32_t child = 0u; child < 4u; ++child) {
-                    counted[child] += (mask >> child) & 1u;
-                }
-            }
-            if (counted != row.childItems) {
-                throw std::runtime_error("Adaptive mask counts do not match the classified parent lists");
-            }
-        }
-        offset += row.parentItems;
-    }
-    const auto extent = buffers_.extent();
-    const auto layout = makeTrainingTileLayout(extent, kTrainingTileSize16);
-    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
-    std::ofstream output(path);
-    if (!output) throw std::runtime_error("Could not open adaptive tile output: " + path.string());
-    output << "frame,iteration,gaussians,width,height,threshold,pixel_mode,parent_index,parent_x,parent_y,"
-              "parent_items,child0,child1,child2,child3,selected,max0,max1,max2,max3,child_batch\n";
-    for (size_t index = 0u; index < rows.size(); ++index) {
-        const auto& row = rows[index];
-        output << benchmark.frameIndex << ',' << benchmark.trainingIteration << ','
-               << benchmark.gaussianCount << ',' << extent.width << ',' << extent.height << ','
-               << benchmark.adaptiveSplitThreshold << ',' << static_cast<uint32_t>(benchmark.pixelMode)
-               << ',' << index << ',' << index % layout.tileCountX << ',' << index / layout.tileCountX
-               << ',' << row.parentItems;
-        for (uint32_t count : row.childItems) output << ',' << count;
-        output << ',' << (row.selected ? 1u : 0u);
-        for (uint32_t count : row.maxProcessed) output << ',' << count;
-        output << ',' << benchmark.adaptiveTensorChildBatch << '\n';
-    }
-    if (!output) throw std::runtime_error("Failed to write adaptive tile diagnostics: " + path.string());
-    std::filesystem::path maskPath = path;
-    maskPath.replace_extension(".masks.bin");
-    std::ofstream maskOutput(maskPath, std::ios::binary | std::ios::trunc);
-    if (!maskOutput) throw std::runtime_error("Could not open child mask output: " + maskPath.string());
-    static_assert(std::endian::native == std::endian::little);
-    maskOutput.write("V3DMSK01", 8);
-    const std::array<uint32_t, 10> header = {
-        1u, benchmark.gaussianCount, benchmark.trainingIteration, benchmark.frameIndex,
-        extent.width, extent.height, benchmark.adaptiveSplitThreshold,
-        static_cast<uint32_t>(benchmark.pixelMode), validation.parentTileItemCount,
-        static_cast<uint32_t>(rows.size())};
-    static_assert(sizeof(header) == 40u);
-    maskOutput.write(reinterpret_cast<const char*>(header.data()), sizeof(header));
-    maskOutput.write(reinterpret_cast<const char*>(packedMasks.data()),
-                     static_cast<std::streamsize>(packedMasks.size()));
-    if (!maskOutput) throw std::runtime_error("Failed to write child masks: " + maskPath.string());
 }
 
 void GaussianTraining::setTrainingFrameIndex(size_t frameIndex) {
@@ -585,11 +501,9 @@ void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkC
     fixedBenchmarkStats_.tileMode = tileMode_;
     fixedBenchmarkStats_.pixelMode = activePixelTo2DGSMode();
     fixedBenchmarkStats_.compositeMode = forwardCompositeMode_;
-    fixedBenchmarkStats_.adaptiveSplitThreshold = adaptiveTileSplitThreshold_;
-    fixedBenchmarkStats_.adaptiveTensorChildBatch = adaptiveTensorChildBatch_;
     fixedBenchmarkStats_.tensorSubgroupReduction = tensorSubgroupReductionActive();
     fixedBenchmarkStats_.tensorGlobalPixelGrad = tensorGlobalPixelGradActive();
-    fixedBenchmarkStats_.tensorRgbLatencyHiding = tensorRgbLatencyHidingActive();
+    fixedBenchmarkStats_.ssimMode = activeSsimMode();
     fixedBenchmarkStats_.warmupSteps = config.warmupSteps;
     fixedBenchmarkStats_.measuredSteps = std::max(config.measuredSteps, 1u);
     fixedBenchmarkCompletedSteps_ = 0u;
@@ -657,40 +571,28 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
         std::clamp(pixelTo2DGSMinSubgroupUtilization_, 0.0f, 1.0f);
     pushConstants.densificationGradientMode =
         static_cast<uint32_t>(densificationConfig_.gradientMode);
-    pushConstants.tileSize = tileMode_ == TrainingTileMode::AdaptiveSpatial
-                                 ? 32u
-                                 : trainingTileSize(tileMode_);
-    if (tileMode_ == TrainingTileMode::AdaptiveSpatial) {
-        pushConstants.tileItemCount = adaptiveTileSplitThreshold_;
-    }
+    pushConstants.tileSize = activeTileSize();
+
     return pushConstants;
 }
 
-void GaussianTraining::setTileMode(TrainingTileMode mode, uint32_t adaptiveSplitThreshold) {
+void GaussianTraining::setTileMode(TrainingTileMode mode) {
     tileMode_ = mode;
-    adaptiveTileSplitThreshold_ = std::max(adaptiveSplitThreshold, 1u);
-    if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
-        gaussianBackward->setAdaptiveSpatialTiles(mode == TrainingTileMode::AdaptiveSpatial);
-        if (mode == TrainingTileMode::AdaptiveSpatial &&
-            !gaussianBackward->adaptiveSpatialModeSupported()) {
-            LOG_WARN("Adaptive Spatial requires a supported VkSplat Tensor or Per-Splat "
-                     "backward mode; falling back to Fixed16");
-            tileMode_ = TrainingTileMode::Fixed16;
-            gaussianBackward->setAdaptiveSpatialTiles(false);
-        }
-    }
 }
 
-void GaussianTraining::setTensorRgbLatencyHiding(bool enabled) {
-    tensorRgbLatencyHiding_ = enabled;
+void GaussianTraining::setSsimMode(TrainingSsimMode mode) {
+    // Configuration is stopped-only, or applied before the worker starts.
+    // Allocate before changing the actual path so allocation failure leaves it intact.
+    buffers_.configureSsimScratch(mode);
+    ssimMode_ = mode;
     if (auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
-        renderer->setTensorRgbLatencyHiding(enabled);
+        renderer->setSsimMode(mode);
     }
 }
 
-bool GaussianTraining::tensorRgbLatencyHidingActive() const {
+TrainingSsimMode GaussianTraining::activeSsimMode() const {
     const auto* renderer = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
-    return renderer && renderer->tensorRgbLatencyHidingActive(activeTileSize());
+    return renderer ? renderer->activeSsimMode() : TrainingSsimMode::TwoDimensional;
 }
 
 void GaussianTraining::setTensorGlobalPixelGrad(bool enabled) {
@@ -722,26 +624,11 @@ bool GaussianTraining::tensorSubgroupReductionActive() const {
     return renderer && renderer->tensorSubgroupReductionActive(activeTileSize());
 }
 
-void GaussianTraining::setAdaptiveTensorChildBatch(uint32_t batch) {
-    adaptiveTensorChildBatch_ = normalizeAdaptiveTensorChildBatch(batch);
-    if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
-        gaussianBackward->setAdaptiveTensorChildBatch(adaptiveTensorChildBatch_);
-    }
-}
-
 void GaussianTraining::setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
     pixelTo2DGSMode_ = mode;
     if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
         gaussianBackward->setPixelTo2DGSMode(mode);
-        gaussianBackward->setAdaptiveSpatialTiles(
-            tileMode_ == TrainingTileMode::AdaptiveSpatial);
-        if (tileMode_ == TrainingTileMode::AdaptiveSpatial &&
-            !gaussianBackward->adaptiveSpatialModeSupported()) {
-            LOG_WARN("Selected Pixel-to-2DGS mode is not supported with Adaptive Spatial; "
-                     "falling back to Fixed16");
-            tileMode_ = TrainingTileMode::Fixed16;
-            gaussianBackward->setAdaptiveSpatialTiles(false);
-        }
+
     }
 }
 
@@ -770,11 +657,6 @@ bool GaussianTraining::vkSplatPerSplatSupported() const {
 bool GaussianTraining::vkSplatTensorSupported() const {
     const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
     return gaussianBackward && gaussianBackward->vkSplatTensorSupported();
-}
-
-bool GaussianTraining::adaptiveSpatialBackwardSupported() const {
-    const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
-    return gaussianBackward && gaussianBackward->adaptiveSpatialModeSupported();
 }
 
 TrainingPixelTo2DGSMode GaussianTraining::activePixelTo2DGSMode() const {

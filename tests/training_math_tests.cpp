@@ -551,9 +551,7 @@ bool testTensorChildBatchReductionLayout() {
             }
         }
     }
-    return normalizeAdaptiveTensorChildBatch(12u) == 8u &&
-           normalizeAdaptiveTensorChildBatch(16u) == 16u &&
-           normalizeAdaptiveTensorChildBatch(32u) == 32u;
+    return true;
 }
 
 bool testVkSplatTraversalOrder() {
@@ -967,102 +965,6 @@ bool testAdaptivePixelTo2DGSSelection() {
     return !useDirectPixelTo2DGS(sparseLongTail, laneCount, 0.0);
 }
 
-bool testAdaptiveSpatialTileIndexing() {
-    constexpr TrainingExtent extent{53u, 37u};
-    const TrainingTileLayout parents = makeTrainingTileLayout(extent, kTrainingTileSize16);
-    const uint32_t leafCapacity = trainingAdaptiveRangeCapacity(extent);
-    std::vector<uint8_t> assigned(leafCapacity, 0u);
-
-    for (uint32_t parentY = 0u; parentY < parents.tileCountY; ++parentY) {
-        for (uint32_t parentX = 0u; parentX < parents.tileCountX; ++parentX) {
-            for (uint32_t childY = 0u; childY < 2u; ++childY) {
-                for (uint32_t childX = 0u; childX < 2u; ++childX) {
-                    const uint32_t leafIndex = trainingAdaptiveLeafIndex(
-                        parentX, parentY, childX, childY, parents.tileCountX);
-                    if (leafIndex >= leafCapacity || assigned[leafIndex] != 0u) {
-                        return false;
-                    }
-                    assigned[leafIndex] = 1u;
-
-                    const uint32_t pixelX = parentX * 16u + childX * 8u;
-                    const uint32_t pixelY = parentY * 16u + childY * 8u;
-                    if (trainingAdaptiveLeafIndexForPixel(pixelX, pixelY, parents.tileCountX,
-                                                          true) != leafIndex) {
-                        return false;
-                    }
-                }
-            }
-
-            const uint32_t coarseLeaf = trainingAdaptiveLeafIndexForPixel(
-                parentX * 16u + 15u, parentY * 16u + 15u, parents.tileCountX, false);
-            if (coarseLeaf !=
-                trainingAdaptiveLeafIndex(parentX, parentY, 0u, 0u, parents.tileCountX)) {
-                return false;
-            }
-        }
-    }
-
-    const TrainingTileLayout leaves = makeTrainingTileLayout(extent, kTrainingTileSize8);
-    return leafCapacity == parents.tileCount * kAdaptiveTrainingTileLeafFactor &&
-           leafCapacity > leaves.tileCount &&
-           trainingAdaptiveLeafIndex(parents.tileCountX - 1u, parents.tileCountY - 1u, 1u, 1u,
-                                     parents.tileCountX) == leafCapacity - 1u &&
-           trainingAdaptiveRangeCapacity(TrainingExtent{32u, 32u}) ==
-               makeTrainingTileLayout(TrainingExtent{32u, 32u}, kTrainingTileSize8).tileCount &&
-           trainingAdaptiveParentIndex(2u, 1u, parents.tileCountX) < parents.tileCount;
-}
-
-bool testCompactAdaptiveChildCoverage() {
-    constexpr TrainingExtent extent{53u, 37u};
-    const auto parents = makeTrainingTileLayout(extent, kTrainingTileSize16);
-    // Deliberately unsorted, including the partial bottom-right parent.
-    for (const std::vector<uint32_t>& activeParents :
-         {std::vector<uint32_t>{}, std::vector<uint32_t>{11u, 0u, 2u, 7u}}) {
-        std::vector<uint8_t> selected(parents.tileCount, 0u);
-        std::vector<uint8_t> coverage(extent.width * extent.height, 0u);
-        for (uint32_t parent : activeParents) selected[parent] = 1u;
-        for (uint32_t work = 0u; work < activeParents.size() * 4u; ++work) {
-            const uint32_t parent = activeParents[work / 4u];
-            const uint32_t originX = (parent % parents.tileCountX) * 16u + (work % 2u) * 8u;
-            const uint32_t originY = (parent / parents.tileCountX) * 16u + ((work % 4u) / 2u) * 8u;
-            for (uint32_t y = originY; y < std::min(originY + 8u, extent.height); ++y) {
-                for (uint32_t x = originX; x < std::min(originX + 8u, extent.width); ++x) {
-                    if (trainingAdaptiveLeafIndexForPixel(x, y, parents.tileCountX, true) !=
-                        parent * 4u + work % 4u) return false;
-                    ++coverage[y * extent.width + x];
-                }
-            }
-        }
-        for (uint32_t y = 0u; y < extent.height; ++y) {
-            for (uint32_t x = 0u; x < extent.width; ++x) {
-                const uint32_t parent = (y / 16u) * parents.tileCountX + x / 16u;
-                if (coverage[y * extent.width + x] != selected[parent]) return false;
-            }
-        }
-    }
-    return true;
-}
-
-bool testCompactAdaptiveDispatchRows() {
-    constexpr uint32_t widthLimit = kAdaptiveTrainingChildDispatchWidth;
-    for (uint32_t parents : {0u, 1u, 16383u, 16384u, 20000u}) {
-        const uint32_t children = parents * 4u;
-        const uint32_t width = std::min(children, widthLimit);
-        const uint32_t height = std::max(children / widthLimit +
-                                             static_cast<uint32_t>(children % widthLimit != 0u), 1u);
-        uint32_t validGroups = 0u;
-        for (uint32_t y = 0u; y < height; ++y) {
-            for (uint32_t x = 0u; x < width; ++x) {
-                const uint32_t child = y * widthLimit + x;
-                if (child / 4u >= parents) continue;
-                if (child != validGroups++) return false;
-            }
-        }
-        if (validGroups != children) return false;
-    }
-    return true;
-}
-
 bool testPackedConicOffDiagonalGradient() {
     const double a = 0.7;
     const double b = -0.23;
@@ -1257,14 +1159,7 @@ int main() {
         std::cerr << "adaptive pixel-to-2DGS selection test failed\n";
         return 1;
     }
-    if (!testAdaptiveSpatialTileIndexing()) {
-        std::cerr << "adaptive spatial tile indexing test failed\n";
-        return 1;
-    }
-    if (!testCompactAdaptiveChildCoverage() || !testCompactAdaptiveDispatchRows()) {
-        std::cerr << "compact adaptive child dispatch test failed\n";
-        return 1;
-    }
+
     if (!testHierarchicalExclusivePrefix()) {
         std::cerr << "hierarchical exclusive-prefix test failed\n";
         return 1;

@@ -102,6 +102,9 @@ cmake --build build
 
 Fixed Benchmark 会冻结模型/迭代并关闭 optimizer 与 densification，其 total-step average 不是端到端训练时间。`Auto (Adaptive)` 当前只选择 Direct/Subgroup 行为；测试 Per-Splat 或 Tensor 时必须显式选择，并检查 `Active Pixel Backward` 是否发生回退。
 
+
+`SSIM Mode`可选2D（默认）或2D Loss + Separable Backward。Fixed16 Tensor保留显式Subgroup归约及Global像素梯度读取开关；active标签显示能力检查后生效的设置。
+
 ## 测试
 
 ```powershell

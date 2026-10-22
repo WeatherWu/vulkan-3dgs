@@ -5,8 +5,7 @@ training path, viewer, or application architecture. For installation and basic
 UI usage, start with the [README](../README.md).
 
 Code, CMake targets, tests, and Slang declarations are the source of truth. The
-guide documents current behavior only; planned optimizations belong under
-[Known limitations](#known-limitations), not in the runtime description.
+guide documents current behavior only; limitations belong under [Known limitations](#known-limitations).
 
 ## Build and validate
 
@@ -240,7 +239,7 @@ execution to `TrainingStepExecutor`.
 1. Emit contiguous tile items per Gaussian.
 2. Stable-sort `(tile, depth)` as two 32-bit radix passes.
 3. Rebuild per-tile `[start,count]` ranges.
-4. For Adaptive Spatial, select parents and append stable child lists; then
+4. Composite pixels using the selected fixed tile size.
    composite the selected tile layout into the rendered image.
 5. Run loss, backward clear, loss-to-pixel, Pixel-to-2DGS, and
    projection/optimizer passes.
@@ -269,50 +268,42 @@ never selected automatically.
 
 ### Training tiles
 
-`Training Tile` supports Fixed8, Fixed16 (default), and experimental Adaptive
-Spatial. Adaptive requires supported Tensor or Per-Splat backward; otherwise
-training uses Fixed16. It sorts a 16x16 parent list once, selects profitable
-parents under a child-item budget of one quarter of parent item count, appends
-depth-stable 8x8 child lists, and dispatches refined work through GPU metadata.
-There is no second global child sort or additional CPU count readback.
-
-`Adaptive Split Threshold` defaults to 256. `Adaptive Tensor Child Batch`
-supports 8/16/32, defaults to 8, and changes children only. Fixed16 Tensor
-controls below do not alter Adaptive parent or child kernels. The reported
-adaptive trials do not justify replacing Fixed16 as the default.
+`Training Tile` selects Fixed8 or Fixed16 (default). The chosen size controls forward coverage, compositing and pixel backward. Tile count is computed from the image extent with partial edge tiles retained.
 
 ### Fixed16 Tensor controls
 
-These stopped-only A/B controls keep the same descriptor ABI and use separate
-compiled pipelines. Requests are persisted; `Active Tensor ...` and completed
-benchmark labels report the actual gated path.
+These controls are editable while training is stopped. Requests are persisted;
+active labels and benchmark exports report the effective capability-gated path.
 
-| Control / persisted key | Default | Effective condition |
+| Control / key | Default | Effective condition |
 | --- | --- | --- |
-| `Tensor Subgroup Reduction (Experimental)` / `tensor_subgroup_reduction` | Off | Fixed16 + VkSplat Tensor; native subgroup32, compute BASIC/SHUFFLE, and base Tensor support |
-| `Tensor Pixel Gradient Source` / `tensor_global_pixel_grad` | Shared (0) | Global (1) requires the above subgroup path |
-| `Tensor RGB Latency Hiding (Experimental)` / `tensor_rgb_latency_hiding` | Off | Requires the above Global path |
+| Tensor Subgroup Reduction / `tensor_subgroup_reduction` | Off | Fixed16 + Tensor; native subgroup32, compute BASIC/SHUFFLE and base Tensor support |
+| Tensor Pixel Gradient Source / `tensor_global_pixel_grad` | Shared | Global requires the subgroup path above |
 
-Tensor capability still requires at least 45 KiB shared memory. Fixed16 Shared
-reduction uses 45824 shared bytes/group, subgroup reduction 36612, and subgroup
-with Global pixel gradients 33540. Global reads check both image coordinates.
-The RGB scheduling variant preserves the same shared budget and changes RGB
-consumption relative to geometry accumulation; it has no demonstrated stable
-speedup. The Tensor name does not imply Tensor Core MMA.
-
-Fixed16/Tensor/Subgroup/Global/Baseline RGB is the manually selected working
-baseline for further experiments, not a change to application defaults.
-The Global variant passed supplied single-step gradient comparisons and
-improved a matched single-frame A/B/A; this is not cross-scene quality or
-full-training performance validation. Register counts and `# Warp` are
-compiler/driver observations, and `# Warp` is a theoretical residency bound.
+The Tensor capability check requires at least 45 KiB shared memory. Declared
+Fixed16 shared storage is 45824 bytes for Shared reduction, 36612 for Subgroup,
+and 33540 for Subgroup + Global. Global loads guard both pixel coordinates.
+The Tensor name describes work organization, not Tensor Core MMA.
 
 ### Loss and SSIM
 
-The loss pass computes L1/DSSIM and stores `SsimBackwardState`; loss-to-pixel
-consumes those coefficients. Both still traverse two-dimensional 11x11
-neighborhoods with zero padding and fixed normalization. Separable SSIM and
-checkpointed warp backward are not implemented.
+Loss combines L1 and DSSIM using an 11x11 Gaussian window, zero padding and
+fixed normalization. Both selectable modes compute the same two-dimensional
+loss and `SsimBackwardState`.
+
+| `ssim_mode` | UI mode | Pixel backward | Scratch |
+| ---: | --- | --- | ---: |
+| 0 (default) | 2D | Two-dimensional coefficient neighborhood | None |
+| 2 | 2D Loss + Separable Backward | Horizontal coefficients, then vertical gradient | 48 bytes/pixel |
+
+`BackwardLossPass` owns both paths and their synchronization. Hybrid mode
+uses three float4 planes at binding 42. `TrainingBuffers` allocates them for
+the current extent, checks storage/index limits and releases them in 2D mode.
+Loss and Loss-to-pixel timings include all associated passes and barriers.
+The SSIM control is applied while stopped and is persisted as `ssim_mode`.
+Unsupported persisted values select 2D; invalid API values are rejected.
+An explicit `ssim_mode` takes precedence over the compatibility key
+`separable_ssim`, without mapping an unsupported method to hybrid.
 
 ### Projection and optimizer
 
@@ -353,8 +344,7 @@ All training shaders use descriptor set 0. Important bindings are:
 | 28 | SSIM backward state |
 | 29/30/31 | Pixel partial, Gaussian partial, final validation result |
 | 32/33 | Per-Gaussian tile range and prefix scratch |
-| 34/35/36/37 | Adaptive split flags, child counts, item masks, child offsets |
-| 38/39/40/41 | Adaptive parent prefixes, block scratch/offsets, active parents, child dispatch metadata |
+| 42 | Optional hybrid SSIM coefficient scratch |
 
 Binding numbers and C++/Slang struct layouts are ABI. Update C++ descriptor
 writes, Slang `[[vk::binding(N, 0)]]`, and static assertions together.
@@ -397,38 +387,30 @@ training benchmark; use Pure Training for wall-clock comparisons.
 
 ### Gradient checks and timing
 
-1. Pause on one model; keep the same benchmark frame, forward settings, and
-   extent. Use warmup 0/measured 1 and export gradients after each completed run.
-2. Compare the actual paths with the local helper:
+Freeze a model/frame and use warmup 0, measured 1 for gradient exports.
+Compare exports with:
 
-   ```powershell
-   python scripts/compare_projected_gradients.py baseline.bin candidate.bin
-   python -m unittest discover -s tests -p "test_*.py"
-   ```
+```powershell
+python -B scripts/compare_projected_gradients.py baseline.bin candidate.bin
+python -B -m unittest discover -s tests -p "test_*.py"
+```
 
-3. For a new performance hypothesis, use warmup 200/measured 1000 and A/B/A,
-   recording averages without resuming normal training. Verify measured
-   progress reaches its target. `n=30000` accumulated training stats are not a
-   completed 1000-step fixed benchmark.
+Exports go to `benchmark_gradients/` under the output directory, with numeric
+suffixes to avoid overwriting. Filenames identify the actual Tensor reduction,
+pixel-gradient source and SSIM mode. The writer emits V3DGGRD1 version 7:
+an 84-byte little-endian header (`<8s17I2f`), 12 float32 projected-gradient
+components and one zero membership byte per Gaussian, then width*height float4
+pixel gradients. Reserved child metadata is zero, child batch is 8, and RGB
+schedule is 0. The reader accepts versions 1–7 as input compatibility formats.
 
-`Export Benchmark Gradients` writes under the configured output directory's
-`benchmark_gradients/`. Fixed16 Tensor names identify reduction, pixel-gradient
-source, and Global RGB schedule; Adaptive Tensor names identify child batch.
-Existing names receive numeric suffixes. The writer uses format v5: an 80-byte
-little-endian header with magic `V3DGGRD1`, 16 uint32 fields and loss/alpha
-float32 values, followed by 12 float32 gradient components and one membership
-byte per Gaussian. The comparator accepts v1–v5, reports actual paths, and
-checks repeat captures retain the same path. Inspect mismatch counts, not
-only exit status; do not loosen tolerance merely to pass.
+Inspect mismatch and non-finite counts as well as exit status. A repeat must
+retain the actual path; compare different pixel kernels only with the explicit
+override. Do not relax tolerances to obtain a pass.
 
-`Export Adaptive Tile Diagnostics` writes a CSV and companion mask file under
-`benchmark_tiles/`. Adaptive construction timings are nested in sort/ranges;
-parent/child backward timings and `Tile-local backward` are nested in
-Pixel-to-2DGS and must not be added twice.
-
-The current ignore rules exclude `scripts/`, capture outputs, `plan.md`, and
-`.codex/`. Sync local helpers/plans/skills explicitly when transferring only
-tracked source changes. The commands above require those local scripts.
+For timing, use warmup 200, measured 1000 and A/B/A on the same frozen state,
+without resuming normal training. Compare averages and keep all samples.
+`Tile-local backward` is nested within Pixel-to-2DGS, not an additional cost.
+Fixed Benchmark excludes optimizer/ADC; Pure Training measures end-to-end time.
 
 ### Shader source profiling
 
@@ -519,19 +501,10 @@ and preserves actionable diagnostics and exit codes.
 - Each training iteration still waits for prepare and main submissions.
 - Tile sorting uses two stable 32-bit radix passes rather than one packed key.
 - Loss and loss-to-pixel remain separate passes.
-- Separable SSIM, checkpointed warp backward, pixel-level EarlyCull/scanline
-  prototypes, GPU SoA/AoSoA parameter storage, and GPU-driven count/sort are
-  future optimization directions, not current behavior.
 - Pixel backward kernel selection is manual; Auto does not choose VkSplat.
-- RGB latency hiding has no demonstrated stable speedup; all Tensor A/B
-  switches remain default-off and do not change Adaptive kernels.
-- After the normal schedule completes, a synchronous training-complete check
-  can stop a new multi-step fixed benchmark early; use an earlier frozen
-  checkpoint and verify progress pending a separate lifecycle fix.
 - The full Gaussian gradient buffer remains allocated for fallback and
   optimizer-disabled/densification paths.
 - Densification can still trigger large allocations and bandwidth spikes.
 - Training accepts undistorted PINHOLE/SIMPLE_PINHOLE cameras and ignores target
   alpha masks.
-- Optimized paths have primarily been validated on RTX 3090 rather than a broad
-  NVIDIA/AMD/Intel matrix.
+- GPU support is capability-gated; performance and final training quality require device-specific assessment.

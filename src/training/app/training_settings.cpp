@@ -1,5 +1,6 @@
 #include "training/app/training_settings.hpp"
 #include "training/core/training_tile_layout.hpp"
+#include "training/core/training_ssim_mode.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -51,9 +52,11 @@ const std::unordered_set<std::string>& trainingKeys() {
                                                       "training_tile_mode",
                                                       "adaptive_tile_split_threshold",
                                                       "adaptive_tensor_child_batch",
+                                                      "tensor_rgb_latency_hiding",
                                                       "tensor_subgroup_reduction",
                                                       "tensor_global_pixel_grad",
-                                                      "tensor_rgb_latency_hiding",
+                                                      "separable_ssim",
+                                                      "ssim_mode",
                                                       "total_iterations",
                                                       "steps_per_frame",
                                                       "validation_interval",
@@ -131,6 +134,7 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
     std::ifstream input(path);
     if (!input.is_open()) return;
 
+    bool explicitSsimMode = false;
     std::string line;
     while (std::getline(input, line)) {
         std::istringstream row(line);
@@ -173,10 +177,6 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
             row >> settings.run.forwardCompositeMode;
         else if (key == "training_tile_mode")
             row >> settings.run.tileMode;
-        else if (key == "adaptive_tile_split_threshold")
-            row >> settings.run.adaptiveTileSplitThreshold;
-        else if (key == "adaptive_tensor_child_batch")
-            row >> settings.run.adaptiveTensorChildBatch;
         else if (key == "tensor_subgroup_reduction") {
             int value = 0;
             if (row >> value) settings.run.tensorSubgroupReduction = value != 0;
@@ -185,9 +185,15 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
             int value = 0;
             if (row >> value) settings.run.tensorGlobalPixelGrad = value != 0;
         }
-        else if (key == "tensor_rgb_latency_hiding") {
+
+        else if (key == "separable_ssim") {
             int value = 0;
-            if (row >> value) settings.run.tensorRgbLatencyHiding = value != 0;
+            if ((row >> value) && !explicitSsimMode) settings.run.ssimMode = value != 0 ? 1 : 0;
+        }
+        else if (key == "ssim_mode") {
+            int value = 0;
+            explicitSsimMode = true;
+            settings.run.ssimMode = (row >> value) ? value : 0;
         }
         else if (key == "steps_per_frame")
             row >> settings.run.benchmarkStepsPerFrame;
@@ -304,11 +310,9 @@ void TrainingSettingsStore::write(std::ostream& output, const TrainingSettings& 
            << '\n';
     output << "forward_composite_mode " << run.forwardCompositeMode << '\n';
     output << "training_tile_mode " << run.tileMode << '\n';
-    output << "adaptive_tile_split_threshold " << run.adaptiveTileSplitThreshold << '\n';
-    output << "adaptive_tensor_child_batch " << run.adaptiveTensorChildBatch << '\n';
     output << "tensor_subgroup_reduction " << (run.tensorSubgroupReduction ? 1 : 0) << '\n';
     output << "tensor_global_pixel_grad " << (run.tensorGlobalPixelGrad ? 1 : 0) << '\n';
-    output << "tensor_rgb_latency_hiding " << (run.tensorRgbLatencyHiding ? 1 : 0) << '\n';
+    output << "ssim_mode " << run.ssimMode << '\n';
     output << "steps_per_frame " << run.benchmarkStepsPerFrame << '\n';
     output << "benchmark_frame " << run.benchmarkFrame << '\n';
     output << "benchmark_warmup " << run.benchmarkWarmupSteps << '\n';
@@ -380,6 +384,9 @@ TrainingSettingsValidation TrainingSettingsStore::validate(const TrainingSetting
     }
 
     const auto& run = settings.run;
+    if (!validTrainingSsimMode(static_cast<TrainingSsimMode>(run.ssimMode))) {
+        return invalid("SSIM mode is invalid");
+    }
     if (run.pixelTo2DGSMode < 0 || run.pixelTo2DGSMode > 6) {
         return invalid("Pixel-to-2DGS mode is invalid");
     }
@@ -391,16 +398,10 @@ TrainingSettingsValidation TrainingSettingsStore::validate(const TrainingSetting
     if (run.forwardCompositeMode < 0 || run.forwardCompositeMode > 1) {
         return invalid("Forward composite mode is invalid");
     }
-    if (run.tileMode < 0 || run.tileMode > 2) {
+    if (run.tileMode < 0 || run.tileMode > 1) {
         return invalid("Training tile mode is invalid");
     }
-    if (run.adaptiveTileSplitThreshold == 0u || run.adaptiveTileSplitThreshold > 1000000u) {
-        return invalid("Adaptive tile split threshold is invalid");
-    }
-    if (run.adaptiveTensorChildBatch != 8u && run.adaptiveTensorChildBatch != 16u &&
-        run.adaptiveTensorChildBatch != 32u) {
-        return invalid("Adaptive Tensor child batch must be 8, 16 or 32");
-    }
+
     if (run.benchmarkStepsPerFrame == 0u || run.benchmarkMeasuredSteps == 0u) {
         return invalid("Benchmark step counts must be greater than zero");
     }
@@ -469,20 +470,19 @@ TrainingRunConfig makeTrainingRunConfig(const TrainingSettings& settings) {
 }
 
 void TrainingSettingsStore::clamp(TrainingSettings& settings) {
+    if (!validTrainingSsimMode(static_cast<TrainingSsimMode>(settings.run.ssimMode))) {
+        settings.run.ssimMode = 0;
+    }
     settings.initialization.downscale = std::clamp(settings.initialization.downscale, 1, 16);
     settings.schedule.imageSelectionMode = std::clamp(settings.schedule.imageSelectionMode, 0, 1);
     settings.run.pixelTo2DGSMode = std::clamp(settings.run.pixelTo2DGSMode, 0, 6);
     settings.run.pixelTo2DGSMinSubgroupUtilization =
         std::clamp(settings.run.pixelTo2DGSMinSubgroupUtilization, 0.0f, 1.0f);
     settings.run.forwardCompositeMode = std::clamp(settings.run.forwardCompositeMode, 0, 1);
-    // Unknown persisted values should remain on the established fixed 16x16
-    // path; do not silently opt users into the experimental adaptive mode.
-    if (settings.run.tileMode < 0 || settings.run.tileMode > 2) {
+    // Invalid persisted tile modes use Fixed16.
+    if (settings.run.tileMode < 0 || settings.run.tileMode > 1) {
         settings.run.tileMode = 1;
     }
-    settings.run.adaptiveTileSplitThreshold =
-        std::clamp(settings.run.adaptiveTileSplitThreshold, 1u, 1000000u);
-    settings.run.adaptiveTensorChildBatch = normalizeAdaptiveTensorChildBatch(settings.run.adaptiveTensorChildBatch);
     settings.run.benchmarkStepsPerFrame = std::max(settings.run.benchmarkStepsPerFrame, 1u);
     settings.run.benchmarkMeasuredSteps = std::max(settings.run.benchmarkMeasuredSteps, 1u);
     settings.optimizer.maxSHDegree = std::min(settings.optimizer.maxSHDegree, 3u);

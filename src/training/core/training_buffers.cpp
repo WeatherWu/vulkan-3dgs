@@ -121,17 +121,10 @@ void TrainingBuffers::cleanup() {
     pixelBlendStates_.cleanup();
     pixelGrads_.cleanup();
     ssimBackwardStates_.cleanup();
+    ssimScratch_.cleanup();
     targetColor_.cleanup();
     renderedColor_.cleanup();
     gaussianTilePrefixScratch_.cleanup();
-    adaptiveTileSplitFlags_.cleanup();
-    adaptiveChildCounts_.cleanup();
-    adaptiveChildMasks_.cleanup();
-    adaptiveChildOffsets_.cleanup();
-    adaptiveChildPrefix_.cleanup();
-    adaptiveChildBlockSums_.cleanup();
-    adaptiveActiveParents_.cleanup();
-    adaptiveChildDispatch_.cleanup();
     gaussianTileRanges_.cleanup();
     tileRanges_.cleanup();
     tileSortStorage_.cleanup();
@@ -168,15 +161,8 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     const uint32_t safeWidth = std::max(extent.width, 1u);
     const uint32_t safeHeight = std::max(extent.height, 1u);
     const uint64_t pixelCount = static_cast<uint64_t>(safeWidth) * static_cast<uint64_t>(safeHeight);
-    const uint64_t parentTileCount = makeTrainingTileLayout(
-        TrainingExtent{safeWidth, safeHeight}, kTrainingTileSize16).tileCount;
-    const uint64_t tileRangeCapacity = trainingAdaptiveRangeCapacity(
-        TrainingExtent{safeWidth, safeHeight});
-    if (parentTileCount * 4u > std::numeric_limits<uint32_t>::max() ||
-        parentTileCount * 4u > static_cast<uint64_t>(kAdaptiveTrainingChildDispatchWidth) *
-                                   kAdaptiveTrainingChildDispatchWidth) {
-        throw std::runtime_error("Adaptive child dispatch exceeds the supported workgroup grid");
-    }
+    const uint64_t tileRangeCapacity = makeTrainingTileLayout(
+        TrainingExtent{safeWidth, safeHeight}, kTrainingTileSize8).tileCount;
 
     gaussianParams_.cleanup();
     gaussianGrads_.cleanup();
@@ -192,18 +178,11 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     tileRanges_.cleanup();
     gaussianTileRanges_.cleanup();
     gaussianTilePrefixScratch_.cleanup();
-    adaptiveChildCounts_.cleanup();
-    adaptiveTileSplitFlags_.cleanup();
-    adaptiveChildMasks_.cleanup();
-    adaptiveChildOffsets_.cleanup();
-    adaptiveChildPrefix_.cleanup();
-    adaptiveChildBlockSums_.cleanup();
-    adaptiveActiveParents_.cleanup();
-    adaptiveChildDispatch_.cleanup();
     renderedColor_.cleanup();
     targetColor_.cleanup();
     pixelGrads_.cleanup();
     ssimBackwardStates_.cleanup();
+    ssimScratch_.cleanup();
     pixelValidationPartials_.cleanup();
     gaussianValidationPartials_.cleanup();
     densifiedGaussianValidationPartials_.cleanup();
@@ -239,25 +218,10 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     createStorageBuffer(tileSortIndices_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileSortScratch_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileItemsSorted_, sizeof(uint32_t) * tileItemCapacity_);
-    createStorageBuffer(adaptiveChildMasks_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileRanges_, sizeof(glm::uvec4) * tileRangeCapacity);
     createStorageBuffer(gaussianTileRanges_, sizeof(glm::uvec2) * safeGaussianCount);
     createStorageBuffer(gaussianTilePrefixScratch_,
                         sizeof(uint32_t) * gaussianPrefixScratchElementCount(safeGaussianCount));
-    createZeroedStorageBuffer(adaptiveChildCounts_, sizeof(glm::uvec4) * parentTileCount);
-    createZeroedStorageBuffer(adaptiveTileSplitFlags_, sizeof(uint32_t) * parentTileCount);
-    createZeroedStorageBuffer(adaptiveChildOffsets_, sizeof(glm::uvec4) * parentTileCount);
-    createStorageBuffer(adaptiveChildPrefix_, sizeof(uint32_t) * parentTileCount);
-    createStorageBuffer(adaptiveChildBlockSums_,
-                        sizeof(uint32_t) * ((parentTileCount + 255u) / 256u));
-    createStorageBuffer(adaptiveActiveParents_, sizeof(uint32_t) * parentTileCount);
-    adaptiveChildDispatch_.create(
-        device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
-        sizeof(glm::uvec4),
-        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer |
-            vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
-        vk::MemoryPropertyFlagBits::eDeviceLocal,
-        {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     createStorageBuffer(renderedColor_, sizeof(glm::vec4) * pixelCount);
     createStorageBuffer(targetColor_, sizeof(uint32_t) * pixelCount);
     createStorageBuffer(pixelGrads_, sizeof(PixelGrad) * pixelCount);
@@ -297,6 +261,27 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     extent_ = {safeWidth, safeHeight};
 }
 
+void TrainingBuffers::configureSsimScratch(TrainingSsimMode mode) {
+    if (!validTrainingSsimMode(mode)) throw std::invalid_argument("Invalid SSIM mode");
+    const uint32_t planes = ssimScratchPlaneCount(mode);
+    if (planes == 0u) {
+        ssimScratch_.cleanup();
+        return;
+    }
+    if (!device_ || extent_.width == 0u || extent_.height == 0u) return;
+    const vk::DeviceSize pixels = static_cast<vk::DeviceSize>(extent_.width) * extent_.height;
+    const vk::DeviceSize bytes = pixels * planes * sizeof(glm::vec4);
+    if (bytes > physicalDevice_.getProperties().limits.maxStorageBufferRange ||
+        pixels > std::numeric_limits<uint32_t>::max() / planes) {
+        throw std::runtime_error("Separable SSIM scratch exceeds maxStorageBufferRange or shader indexing limit");
+    }
+    if (ssimScratch_.getSize() != bytes) {
+        Buffer scratch;
+        createStorageBuffer(scratch, bytes);
+        ssimScratch_ = std::move(scratch);
+    }
+}
+
 void TrainingBuffers::resizeTileItems(uint32_t tileItemCapacity) {
     if (!device_) {
         throw std::runtime_error("TrainingBuffers must be initialized before resizing tile items");
@@ -313,7 +298,6 @@ void TrainingBuffers::resizeTileItems(uint32_t tileItemCapacity) {
     tileSortIndices_.cleanup();
     tileSortScratch_.cleanup();
     tileItemsSorted_.cleanup();
-    adaptiveChildMasks_.cleanup();
     tileSortStorage_.cleanup();
     createStorageBuffer(tileItems_, sizeof(uint32_t) * safeCapacity);
     createStorageBuffer(tileKeyLow_, sizeof(uint32_t) * safeCapacity);
@@ -321,7 +305,6 @@ void TrainingBuffers::resizeTileItems(uint32_t tileItemCapacity) {
     createStorageBuffer(tileSortIndices_, sizeof(uint32_t) * safeCapacity);
     createStorageBuffer(tileSortScratch_, sizeof(uint32_t) * safeCapacity);
     createStorageBuffer(tileItemsSorted_, sizeof(uint32_t) * safeCapacity);
-    createStorageBuffer(adaptiveChildMasks_, sizeof(uint32_t) * safeCapacity);
     tileItemCapacity_ = safeCapacity;
 }
 
@@ -488,91 +471,16 @@ std::vector<ProjectedGaussianGrad> TrainingBuffers::downloadProjectedGrads(uint3
     return gradients;
 }
 
-std::vector<TrainingAdaptiveTileDiagnostic> TrainingBuffers::downloadAdaptiveTileDiagnostics(
-    uint32_t parentItemCount) {
-    if (parentItemCount > tileItemCapacity_) {
-        throw std::runtime_error("Adaptive diagnostics exceed tile item buffer capacity");
+std::vector<PixelGrad> TrainingBuffers::downloadPixelGrads(uint32_t pixelCount) {
+    const uint64_t capacity = static_cast<uint64_t>(extent_.width) * extent_.height;
+    if (pixelCount > capacity) {
+        throw std::runtime_error("Pixel gradient download exceeds buffer capacity");
     }
-    const auto layout = makeTrainingTileLayout(extent_, kTrainingTileSize16);
-    std::vector<TrainingAdaptiveTileDiagnostic> result(layout.tileCount);
-    std::vector<uint32_t> keys(parentItemCount);
-    if (parentItemCount != 0u) {
-        // The original high keys retain the parent ID for every emitted pair.
-        // Unlike leaf ranges, they are not overwritten when children install.
-        tileKeyHigh_.download(keys.data(), static_cast<vk::DeviceSize>(parentItemCount) * sizeof(uint32_t));
-    }
-    for (uint32_t parent : keys) {
-        if (parent >= layout.tileCount) {
-            throw std::runtime_error("Adaptive diagnostics found an invalid parent key");
-        }
-        ++result[parent].parentItems;
-    }
-
-    std::vector<glm::uvec4> counts(layout.tileCount);
-    std::vector<uint32_t> flags(layout.tileCount);
-    adaptiveChildCounts_.download(counts.data(), counts.size() * sizeof(glm::uvec4));
-    adaptiveTileSplitFlags_.download(flags.data(), flags.size() * sizeof(uint32_t));
-    for (uint32_t parent = 0u; parent < layout.tileCount; ++parent) {
-        if (flags[parent] > 1u) {
-            throw std::runtime_error("Adaptive diagnostics found an invalid split flag");
-        }
-        result[parent].selected = flags[parent] != 0u;
-        for (uint32_t child = 0u; child < 4u; ++child) {
-            result[parent].childItems[child] = counts[parent][static_cast<glm::length_t>(child)];
-        }
-    }
-
-    const size_t pixelCount = static_cast<size_t>(extent_.width) * extent_.height;
-    std::vector<PixelBlendState> blends(pixelCount);
-    pixelBlendStates_.download(blends.data(), pixelCount * sizeof(PixelBlendState));
-    for (uint32_t y = 0u; y < extent_.height; ++y) {
-        for (uint32_t x = 0u; x < extent_.width; ++x) {
-            auto& parent = result[(y / 16u) * layout.tileCountX + x / 16u];
-            const uint32_t child = ((y % 16u) / 8u) * 2u + (x % 16u) / 8u;
-            const uint32_t rangeCount = parent.selected ? parent.childItems[child] : parent.parentItems;
-            const uint32_t processed = std::min(
-                blends[static_cast<size_t>(y) * extent_.width + x].processedCount, rangeCount);
-            parent.maxProcessed[child] = std::max(parent.maxProcessed[child], processed);
-        }
+    std::vector<PixelGrad> result(pixelCount);
+    if (pixelCount != 0u) {
+        pixelGrads_.download(result.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(PixelGrad));
     }
     return result;
-}
-
-std::vector<uint32_t> TrainingBuffers::downloadAdaptiveChildMasks(uint32_t parentItemCount) {
-    if (parentItemCount > tileItemCapacity_) {
-        throw std::runtime_error("Adaptive mask download exceeds tile item buffer capacity");
-    }
-    std::vector<uint32_t> masks(parentItemCount);
-    if (parentItemCount != 0u) {
-        adaptiveChildMasks_.download(masks.data(),
-                                     static_cast<vk::DeviceSize>(parentItemCount) * sizeof(uint32_t));
-    }
-    return masks;
-}
-
-std::vector<uint8_t> TrainingBuffers::downloadAdaptiveChildMembership(
-    uint32_t gaussianCount, uint32_t parentItemCount, uint32_t childItemCount) {
-    if (gaussianCount > gaussianCapacity_) {
-        throw std::runtime_error("Child membership download exceeds Gaussian buffer capacity");
-    }
-    const uint64_t totalItemCount = static_cast<uint64_t>(parentItemCount) + childItemCount;
-    if (totalItemCount > tileItemCapacity_) {
-        throw std::runtime_error("Child membership download exceeds tile item buffer capacity");
-    }
-
-    std::vector<uint8_t> membership(gaussianCount, 0u);
-    if (childItemCount == 0u) return membership;
-
-    std::vector<uint32_t> tileItems(static_cast<size_t>(totalItemCount));
-    tileItemsSorted_.download(tileItems.data(), totalItemCount * sizeof(uint32_t));
-    for (uint64_t item = parentItemCount; item < totalItemCount; ++item) {
-        const uint32_t gaussianIndex = tileItems[static_cast<size_t>(item)];
-        if (gaussianIndex >= gaussianCount) {
-            throw std::runtime_error("Adaptive child item refers to an invalid Gaussian index");
-        }
-        membership[gaussianIndex] = 1u;
-    }
-    return membership;
 }
 
 std::vector<float> TrainingBuffers::downloadLoss(uint32_t pixelCount) {
@@ -662,15 +570,6 @@ uint32_t TrainingBuffers::requiredTileItemCount() {
     glm::uvec4 counters{0, 0, 0, 0};
     std::memcpy(&counters, tileItemCountReadbackMapped_, sizeof(counters));
     return counters.x;
-}
-
-std::array<uint32_t, 2> TrainingBuffers::adaptiveChildStats() const {
-    if (!tileItemCountReadbackMapped_) {
-        throw std::runtime_error("Adaptive child statistics readback is not mapped");
-    }
-    glm::uvec4 counters{0, 0, 0, 0};
-    std::memcpy(&counters, tileItemCountReadbackMapped_, sizeof(counters));
-    return {counters.y, counters.z};
 }
 
 void TrainingBuffers::recordDensificationStatsReadback(vk::CommandBuffer commandBuffer) {

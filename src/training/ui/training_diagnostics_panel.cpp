@@ -23,13 +23,9 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
     const auto& validation = snapshot.validation;
     ImGui::Text("Loss %.6g", validation.meanLoss);
     ImGui::Text("Render alpha %.6g", validation.meanRenderedAlpha);
-    if (snapshot.tileMode == TrainingTileMode::AdaptiveSpatial) {
-        ImGui::Text("Stored tile items %u (parent %u, child %u)", validation.tileItemCount,
-                    validation.parentTileItemCount, validation.adaptiveChildItemCount);
-        ImGui::Text("Split parent tiles %u", validation.adaptiveSplitParentCount);
-    } else {
+
         ImGui::Text("Tile items %u", validation.tileItemCount);
-    }
+
     ImGui::Text("Backward candidates avg %.2f, contributors avg %.2f, max candidates %u",
                 validation.meanProcessedCandidatesPerPixel, validation.meanContributorsPerPixel,
                 validation.maxProcessedCandidatesPerPixel);
@@ -99,12 +95,6 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
             "Optimizer",
             "Validation",
             "Densify/prune",
-            "Adaptive child count (inside sort/ranges)",
-            "Adaptive child select (inside sort/ranges)",
-            "Adaptive child scatter (inside sort/ranges)",
-            "Adaptive child range install (inside sort/ranges)",
-            "Adaptive parent backward (inside Pixel to 2DGS)",
-            "Adaptive child backward (inside Pixel to 2DGS)",
         };
         static_assert(sizeof(cpuStageNames) / sizeof(cpuStageNames[0]) ==
                       kTrainingCpuProfileStageCount);

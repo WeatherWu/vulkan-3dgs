@@ -2,13 +2,6 @@
 #include "train_backward_types.slang"
 
 uint trainBackwardTileItemReadLimit() {
-#if TRAIN_ADAPTIVE_TILES
-    // Child items are appended after the sorted parent list. C++ reserves
-    // one quarter of the parent count for them before recording this pass.
-    if (params.tileSize == 32u) {
-        return params.tileItemCount + params.tileItemCount / 4u;
-    }
-#endif
     return params.tileItemCount;
 }
 

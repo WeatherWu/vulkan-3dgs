@@ -129,18 +129,15 @@ void TrainingPanel::dispatch(TrainingController& controller,
     if (actions.validateDataset) controller.validateDataset();
     if (actions.loadDataset) controller.loadDataset();
 
-    if (actions.settings.pixelBackwardChanged || actions.settings.adaptiveTensorBatchChanged ||
-        actions.settings.tensorReductionChanged ||
+    if (actions.settings.pixelBackwardChanged || actions.settings.tensorReductionChanged ||
         actions.settings.tensorPixelGradSourceChanged ||
-        actions.settings.tensorRgbScheduleChanged ||
-        actions.settings.subgroupUtilizationChanged ||
+        actions.settings.ssimModeChanged || actions.settings.subgroupUtilizationChanged ||
         actions.settings.forwardCompositeChanged || actions.settings.validationIntervalChanged) {
         controller.applyLiveSettings();
     }
     if (actions.toggleTraining) controller.toggleTraining();
     if (actions.startFixedBenchmark) controller.startFixedBenchmark();
     if (actions.exportFixedBenchmarkGradients) controller.exportFixedBenchmarkGradients();
-    if (actions.exportAdaptiveTileDiagnostics) controller.exportAdaptiveTileDiagnostics();
 
     if (actions.browseOutput) {
         fileDialogs_.openOutputFolder(

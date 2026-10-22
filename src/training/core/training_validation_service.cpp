@@ -93,16 +93,10 @@ TrainingValidationService::acquire(TrainingValidationReadbackMetadata metadata) 
         nextSlot_ = (index + 1u) % slots_.size();
         readback.iteration = metadata.iteration;
         readback.tileItemCount = metadata.tileItemCount;
-        readback.adaptiveStats = {};
         readback.gaussianCount = metadata.gaussianCount;
         return ReadbackTicket{index};
     }
     return std::nullopt;
-}
-
-void TrainingValidationService::setAdaptiveStats(ReadbackTicket ticket,
-                                                 TrainingAdaptiveTileReadbackStats stats) {
-    slot(ticket).adaptiveStats = stats;
 }
 
 void TrainingValidationService::recordCopy(vk::CommandBuffer commandBuffer, vk::Buffer sourceBuffer,
@@ -138,7 +132,7 @@ void TrainingValidationService::collect(TrainingExtent extent, uint32_t gaussian
                      readback.iteration, result.validationIteration);
         } else {
             consumeResult(result, readback.tileItemCount, readback.gaussianCount, extent,
-                          gaussianCapacity, readback.adaptiveStats);
+                          gaussianCapacity);
         }
         readback.pending = false;
     }
@@ -155,13 +149,10 @@ void TrainingValidationService::resetCandidateProfileStats() {
 
 void TrainingValidationService::consumeResult(const TrainingValidationGpuResult& result,
                                               uint32_t tileItemCount, uint32_t gaussianCount,
-                                              TrainingExtent extent, uint32_t gaussianCapacity,
-                                              TrainingAdaptiveTileReadbackStats adaptiveStats) {
+                                              TrainingExtent extent, uint32_t gaussianCapacity) {
     TrainingValidationStats stats{};
     stats.parentTileItemCount = tileItemCount;
-    stats.adaptiveChildItemCount = adaptiveStats.childItemCount;
-    stats.adaptiveSplitParentCount = adaptiveStats.splitParentCount;
-    stats.tileItemCount = tileItemCount + adaptiveStats.childItemCount;
+    stats.tileItemCount = tileItemCount;
     const uint32_t pixelCount = extent.width * extent.height;
     if (pixelCount == 0u || gaussianCount == 0u) {
         stats.valid = false;

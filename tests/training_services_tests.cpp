@@ -30,35 +30,28 @@ bool testValidationConversionAndHistory() {
     const TrainingValidationStats& stats = service.stats();
     const TrainingCandidateProfileStats& history =
         service.candidateProfileStats();
-    if (!stats.valid || stats.tileItemCount != 12u || !near(stats.meanLoss, 0.5f) ||
-        !near(stats.meanRenderedAlpha, 0.5f) || !near(stats.meanRenderedLuminance, 0.25f) ||
+    if (!stats.valid || stats.tileItemCount != 12u ||
+        !near(stats.meanLoss, 0.5f) ||
+        !near(stats.meanRenderedAlpha, 0.5f) ||
+        !near(stats.meanRenderedLuminance, 0.25f) ||
         !near(stats.meanProcessedCandidatesPerPixel, 2.0f) ||
-        !near(stats.meanContributorsPerPixel, 1.0f) || history.sampleCount != 1u ||
+        !near(stats.meanContributorsPerPixel, 1.0f) ||
+        history.sampleCount != 1u ||
         !near(history.meanPixelFractionByProcessedBucket[0], 0.25f)) {
-        return false;
-    }
-
-    TrainingValidationService adaptiveService;
-    adaptiveService.consumeResult(result, 12u, 2u, TrainingExtent{2u, 2u}, 8u,
-                                  TrainingAdaptiveTileReadbackStats{
-                                      .childItemCount = 3u,
-                                      .splitParentCount = 1u,
-                                  });
-    const TrainingValidationStats& adaptive = adaptiveService.stats();
-    if (!adaptive.valid || adaptive.tileItemCount != 15u || adaptive.parentTileItemCount != 12u ||
-        adaptive.adaptiveChildItemCount != 3u || adaptive.adaptiveSplitParentCount != 1u) {
         return false;
     }
 
     result.validationIteration = 2;
     result.nonFiniteGaussianCount = 1;
     service.consumeResult(result, 12u, 2u, TrainingExtent{2u, 2u}, 8u);
-    if (service.stats().valid || service.candidateProfileStats().sampleCount != 2u) {
+    if (service.stats().valid ||
+        service.candidateProfileStats().sampleCount != 2u) {
         return false;
     }
 
     service.resetCandidateProfileStats();
-    return service.candidateProfileStats().sampleCount == 0u && !service.stats().valid;
+    return service.candidateProfileStats().sampleCount == 0u &&
+           !service.stats().valid;
 }
 
 bool testProfilingAccumulators() {

@@ -111,12 +111,6 @@ bool TrainingProfilingService::collectGpu() {
         "Optimizer",
         "Validation",
         "Densification",
-        "Adaptive child count",
-        "Adaptive child select",
-        "Adaptive child scatter",
-        "Adaptive child range install",
-        "Adaptive parent backward",
-        "Adaptive child backward",
     };
     for (uint32_t index = 0; index < kTrainingGpuProfileStageCount; ++index) {
         const auto stage = static_cast<TrainingGpuProfileStage>(index);

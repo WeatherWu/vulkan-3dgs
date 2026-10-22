@@ -27,14 +27,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID,
           uint3 groupThreadID : SV_GroupThreadID,
           uint3 groupID : SV_GroupID) {
     uint2 pixel = dispatchThreadID.xy;
-#if TRAIN_ADAPTIVE_TILES
-    TrainingTileWorkgroup workgroup = trainingTileWorkgroup(groupID.xy);
-    if (!workgroup.active) return;
-    pixel = workgroup.origin + groupThreadID.xy;
-    TileRange range = unpackTileRange(tileRanges[workgroup.tileIndex]);
-#else
     TileRange range = unpackTileRange(tileRanges[tileIndexForPixel(pixel)]);
-#endif
     uint localIndex = groupThreadID.y * TRAIN_TILE_SIZE + groupThreadID.x;
     bool validPixel = pixel.x < params.width && pixel.y < params.height;
     uint pixelLinearIndex = validPixel ? pixelIndex(pixel) : 0u;

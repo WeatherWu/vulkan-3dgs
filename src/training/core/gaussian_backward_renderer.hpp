@@ -22,27 +22,19 @@ public:
     void setTrainingBuffers(const TrainingBuffers& trainingBuffers, vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void setProfilingQueryPool(vk::QueryPool queryPool);
+    void setSsimMode(TrainingSsimMode mode) { lossPass_.setSsimMode(mode); }
+    [[nodiscard]] TrainingSsimMode activeSsimMode() const { return lossPass_.activeSsimMode(); }
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
         pixelDispatcher_.setRequestedMode(mode);
     }
-    void setAdaptiveSpatialTiles(bool enabled) {
-        pixelDispatcher_.setAdaptiveSpatialTiles(enabled);
-    }
-    void setAdaptiveTensorChildBatch(uint32_t batch) {
-        pixelDispatcher_.setAdaptiveTensorChildBatch(batch);
-    }
+
     void setTensorSubgroupReduction(bool enabled) {
         pixelDispatcher_.setTensorSubgroupReduction(enabled);
     }
     void setTensorGlobalPixelGrad(bool enabled) {
         pixelDispatcher_.setTensorGlobalPixelGrad(enabled);
     }
-    void setTensorRgbLatencyHiding(bool enabled) {
-        pixelDispatcher_.setTensorRgbLatencyHiding(enabled);
-    }
-    [[nodiscard]] bool tensorRgbLatencyHidingActive(uint32_t tileSize) const {
-        return pixelDispatcher_.tensorRgbLatencyHidingActive(tileSize);
-    }
+
     [[nodiscard]] bool tensorGlobalPixelGradActive(uint32_t tileSize) const {
         return pixelDispatcher_.tensorGlobalPixelGradActive(tileSize);
     }
@@ -67,9 +59,7 @@ public:
     [[nodiscard]] TrainingPixelTo2DGSMode activePixelTo2DGSMode() const {
         return pixelDispatcher_.activeMode();
     }
-    [[nodiscard]] bool adaptiveSpatialModeSupported() const {
-        return pixelDispatcher_.adaptiveSpatialModeSupported();
-    }
+
     void backward() override;
     void gradientDescent() override;
 

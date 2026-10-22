@@ -17,11 +17,6 @@ struct TrainingValidationReadbackMetadata {
     uint32_t gaussianCount = 0;
 };
 
-struct TrainingAdaptiveTileReadbackStats {
-    uint32_t childItemCount = 0u;
-    uint32_t splitParentCount = 0u;
-};
-
 class TrainingValidationService {
 public:
     struct ReadbackTicket {
@@ -39,15 +34,13 @@ public:
 
     [[nodiscard]] std::optional<ReadbackTicket>
     acquire(TrainingValidationReadbackMetadata metadata);
-    void setAdaptiveStats(ReadbackTicket ticket, TrainingAdaptiveTileReadbackStats stats);
     void recordCopy(vk::CommandBuffer commandBuffer, vk::Buffer sourceBuffer,
                     ReadbackTicket ticket) const;
     [[nodiscard]] vk::Fence submissionFence(ReadbackTicket ticket) const;
     void markSubmitted(ReadbackTicket ticket);
     void collect(TrainingExtent extent, uint32_t gaussianCapacity);
     void consumeResult(const TrainingValidationGpuResult& result, uint32_t tileItemCount,
-                       uint32_t gaussianCount, TrainingExtent extent, uint32_t gaussianCapacity,
-                       TrainingAdaptiveTileReadbackStats adaptiveStats = {});
+                       uint32_t gaussianCount, TrainingExtent extent, uint32_t gaussianCapacity);
 
     void resetStats();
     void resetCandidateProfileStats();
@@ -67,7 +60,6 @@ private:
         vk::Fence fence = nullptr;
         uint32_t iteration = 0;
         uint32_t tileItemCount = 0;
-        TrainingAdaptiveTileReadbackStats adaptiveStats{};
         uint32_t gaussianCount = 0;
         bool pending = false;
     };

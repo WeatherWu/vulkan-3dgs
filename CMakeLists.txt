@@ -72,6 +72,7 @@ set(TRAINING_SHADER_SPV_DIR "${CMAKE_SOURCE_DIR}/shaders/training_shader/spv")
 set(TRAINING_SHADER_COMMON_DEPS
     "${TRAINING_SHADER_COMMON_DIR}/train_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_loss_common.slang"
+    "${TRAINING_SHADER_COMMON_DIR}/train_ssim_separable.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_target_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_forward_common.slang"
     "${TRAINING_SHADER_COMMON_DIR}/train_forward_tile_common.slang"
@@ -198,51 +199,6 @@ function(compile_training_tile_shader SHADER_SRC OUTPUT_BASENAME TILE_SIZE)
     set(ALL_SHADER_FILES ${ALL_SHADER_FILES} ${BUILD_SPV} PARENT_SCOPE)
 endfunction()
 
-function(compile_training_adaptive_tile_shader SHADER_SRC OUTPUT_BASENAME TILE_SIZE)
-    cmake_parse_arguments(ADAPTIVE "" "CHILD_TENSOR_BATCH" "" ${ARGN})
-    set(ADAPTIVE_DEFINES)
-    if(ADAPTIVE_CHILD_TENSOR_BATCH)
-        list(APPEND ADAPTIVE_DEFINES "-DTRAIN_TENSOR_CHILD_BATCH=${ADAPTIVE_CHILD_TENSOR_BATCH}")
-    endif()
-    set(SHADER_SPV "${TRAINING_SHADER_SPV_DIR}/${OUTPUT_BASENAME}.spv")
-    set(BUILD_SPV "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders/${OUTPUT_BASENAME}.spv")
-
-    add_custom_command(
-        OUTPUT ${SHADER_SPV}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${TRAINING_SHADER_SPV_DIR}"
-        COMMAND ${SLANGC_EXECUTABLE}
-            ${SHADER_SRC}
-            -DTRAIN_TILE_SIZE=${TILE_SIZE}
-            -DTRAIN_ADAPTIVE_TILES=1
-            ${ADAPTIVE_DEFINES}
-            -target spirv
-            -profile sm_6_5
-            -entry main
-            -stage compute
-            ${TRAINING_SHADER_DEBUG_FLAGS}
-            -matrix-layout-column-major
-            -fvk-use-gl-layout
-            -o ${SHADER_SPV}
-        DEPENDS
-            ${SHADER_SRC}
-            ${TRAINING_SHADER_COMMON_DEPS}
-            "${TRAINING_SHADER_DEBUG_INFO_STAMP}"
-            ${ADAPTIVE_UNPARSED_ARGUMENTS}
-        COMMENT "Compiling adaptive ${TILE_SIZE}x${TILE_SIZE} training shader ${SHADER_SRC} -> ${OUTPUT_BASENAME}.spv"
-        VERBATIM
-    )
-
-    add_custom_command(
-        OUTPUT ${BUILD_SPV}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SPV} ${BUILD_SPV}
-        DEPENDS ${SHADER_SPV}
-        VERBATIM
-    )
-
-    set_source_files_properties(${SHADER_SPV} ${BUILD_SPV} PROPERTIES GENERATED TRUE)
-    set(ALL_SHADER_FILES ${ALL_SHADER_FILES} ${BUILD_SPV} PARENT_SCOPE)
-endfunction()
 
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_project.comp.slang" "train_project.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_project.comp.slang" "train_forward_project.comp")
@@ -289,9 +245,6 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_te
                         "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor_subgroup_global_grad.comp.slang"
                         "train_backward_vksplat_tensor_subgroup_global_grad.comp"
-                        "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor_subgroup_global_grad_latency.comp.slang"
-                        "train_backward_vksplat_tensor_subgroup_global_grad_latency.comp"
                         "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs.comp.slang" "train_backward_2dgs_to_3dgs.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_2dgs_to_3dgs_optimizer.comp.slang"
@@ -346,53 +299,11 @@ compile_training_tile_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vkspl
 compile_training_tile_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang"
                              "train_backward_vksplat_tensor_tile8.comp" 8)
 
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_child_count.comp.slang"
-                        "train_forward_adaptive_child_count.comp")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_child_select.comp.slang"
-                        "train_forward_adaptive_child_select.comp")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_child_dispatch.comp.slang"
-                        "train_forward_adaptive_child_dispatch.comp")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_child_prefix.comp.slang"
-                        "train_forward_adaptive_child_prefix.comp")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_child_block_prefix.comp.slang"
-                        "train_forward_adaptive_child_block_prefix.comp")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_child_scatter.comp.slang"
-                        "train_forward_adaptive_child_scatter.comp")
-compile_training_adaptive_tile_shader(
-    "${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_parent_range_boundaries.comp.slang"
-    "train_forward_adaptive_parent_range_boundaries.comp" 16)
-compile_training_adaptive_tile_shader(
-    "${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_clear.comp.slang"
-    "train_forward_tile_clear_adaptive.comp" 16)
-compile_training_adaptive_tile_shader(
-    "${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_sort.comp.slang"
-    "train_forward_tile_sort_adaptive.comp" 16)
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_adaptive_child_ranges.comp.slang"
-                        "train_forward_adaptive_child_ranges.comp")
-compile_training_adaptive_tile_shader(
-    "${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang"
-    "train_forward_adaptive.comp" 16)
-foreach(adaptive_tile_size IN ITEMS 8 16)
-    compile_training_adaptive_tile_shader(
-        "${TRAINING_SHADER_PASSES_DIR}/train_forward_workgroup.comp.slang"
-        "train_forward_workgroup_adaptive_tile${adaptive_tile_size}.comp"
-        ${adaptive_tile_size})
-    compile_training_adaptive_tile_shader(
-        "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_per_splat.comp.slang"
-        "train_backward_vksplat_per_splat_adaptive_tile${adaptive_tile_size}.comp"
-        ${adaptive_tile_size})
-    compile_training_adaptive_tile_shader(
-        "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang"
-        "train_backward_vksplat_tensor_adaptive_tile${adaptive_tile_size}.comp"
-        ${adaptive_tile_size})
-endforeach()
 
-foreach(child_tensor_batch IN ITEMS 16 32)
-    compile_training_adaptive_tile_shader(
-        "${TRAINING_SHADER_PASSES_DIR}/train_backward_vksplat_tensor.comp.slang"
-        "train_backward_vksplat_tensor_adaptive_tile8_batch${child_tensor_batch}.comp"
-        8 CHILD_TENSOR_BATCH ${child_tensor_batch})
-endforeach()
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_ssim_coefficients_horizontal.comp.slang"
+                        "train_ssim_coefficients_horizontal.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_loss_to_pixel_separable.comp.slang"
+                        "train_backward_loss_to_pixel_separable.comp")
 
 add_custom_target(compile_shaders DEPENDS ${ALL_SHADER_FILES})
 

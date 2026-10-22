@@ -30,7 +30,7 @@ public:
         std::optional<uint32_t> presentIndex;
         std::optional<uint32_t> transferIndex;
         std::optional<uint32_t> computeIndex;
-        
+
         operator bool() const {
             return graphicsIndex && presentIndex;
         }
@@ -41,7 +41,7 @@ public:
            DeviceRole role = DeviceRole::Presentation);
     Device() = default;
     ~Device();
-    
+
     void createDevice();
     void pickPhysicalDevice(vk::SurfaceKHR& surface);
     bool isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface, QueueFamilyIndices& queueFamilyIndices);
@@ -53,18 +53,18 @@ public:
     vk::Queue getGraphicsQueue() { return graphicsQueue_; }
     vk::Queue getPresentQueue() { return presentQueue_; }
     vk::Queue getTransferQueue() { return transferQueue_; }
-    vk::Queue getComputeQueue() { return computeQueue_; }  // 新增：获取计算队列
-    
+    vk::Queue getComputeQueue() { return computeQueue_; }  // 获取计算队列
+
     const QueueFamilyIndices& getQueueFamilyIndices() const { return queueFamilyIndices_; }
     const PhysicalDeviceInfo& getSelectedPhysicalDeviceInfo() const { return selectedPhysicalDeviceInfo_; }
     const std::vector<PhysicalDeviceInfo>& getAvailablePhysicalDeviceInfos() const {
         return availablePhysicalDeviceInfos_;
     }
     DeviceRole role() const { return role_; }
-    
+
     vk::CommandPool createCommandPool(uint32_t queue_family_index, vk::CommandPoolCreateFlags flags = {});
     void destroyCommandPool(vk::CommandPool command_pool);
-    
+
 private:
     vk::SurfaceKHR surface_ = nullptr;  // 保存surface供createDevice使用
     std::optional<std::string> gpuSelector_;
@@ -75,11 +75,11 @@ private:
     vk::Queue graphicsQueue_ = nullptr;
     vk::Queue presentQueue_ = nullptr;
     vk::Queue transferQueue_ = nullptr;
-    vk::Queue computeQueue_ = nullptr;  // 新增：计算队列
+    vk::Queue computeQueue_ = nullptr;  // 计算队列
     QueueFamilyIndices queueFamilyIndices_;
     PhysicalDeviceInfo selectedPhysicalDeviceInfo_;
     std::vector<PhysicalDeviceInfo> availablePhysicalDeviceInfos_;
-    
+
     const std::vector<const char*> presentationDeviceExtensions_ = {
         vk::KHRSwapchainExtensionName,
         vk::KHRPushDescriptorExtensionName

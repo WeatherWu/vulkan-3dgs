@@ -35,6 +35,15 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         if (!canEdit) ImGui::BeginDisabled();
 
         static constexpr const char* trainingModes[] = {"Sequential", "3DGS Random"};
+        static constexpr const char* ssimModes[] = {"2D", "2D Loss + Separable Backward"};
+        int ssimChoice = run.ssimMode == 2 ? 1 : 0;
+        if (ImGui::Combo("SSIM Mode", &ssimChoice, ssimModes, IM_ARRAYSIZE(ssimModes))) {
+            run.ssimMode = ssimChoice == 1 ? 2 : 0;
+            actions.ssimModeChanged = true;
+        }
+        if (snapshot.rendererInitialized) {
+            ImGui::Text("Active SSIM: %s", trainingSsimModeName(snapshot.activeSsimMode));
+        }
         ImGui::Combo("Mode", &schedule.imageSelectionMode, trainingModes,
                      IM_ARRAYSIZE(trainingModes));
         schedule.imageSelectionMode = std::clamp(schedule.imageSelectionMode, 0, 1);
@@ -71,54 +80,25 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
             run.forwardCompositeMode = std::clamp(run.forwardCompositeMode, 0, 1);
             actions.forwardCompositeChanged = true;
         }
-        static constexpr const char* tileModes[] = {"Fixed 8x8", "Fixed 16x16", "Adaptive Spatial"};
+        static constexpr const char* tileModes[] = {"Fixed 8x8", "Fixed 16x16"};
         ImGui::Combo("Training Tile", &run.tileMode, tileModes, IM_ARRAYSIZE(tileModes));
-        run.tileMode = std::clamp(run.tileMode, 0, 2);
-        if (run.tileMode == static_cast<int>(TrainingTileMode::AdaptiveSpatial)) {
-            ImGui::InputScalar("Adaptive Split Threshold", ImGuiDataType_U32,
-                               &run.adaptiveTileSplitThreshold);
-            run.adaptiveTileSplitThreshold =
-                std::clamp(run.adaptiveTileSplitThreshold, 1u, 1000000u);
-            if (run.pixelTo2DGSMode == static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor)) {
-                static constexpr const char* batches[] = {"8", "16", "32"};
-                int batchChoice = run.adaptiveTensorChildBatch == 32u ? 2 :
-                                  run.adaptiveTensorChildBatch == 16u ? 1 : 0;
-                if (ImGui::Combo("Adaptive Tensor Child Batch", &batchChoice, batches, IM_ARRAYSIZE(batches))) {
-                    run.adaptiveTensorChildBatch = batchChoice == 2 ? 32u : batchChoice == 1 ? 16u : 8u;
-                    actions.adaptiveTensorBatchChanged = true;
-                }
-            }
-            if (snapshot.rendererInitialized &&
-                snapshot.tileMode != TrainingTileMode::AdaptiveSpatial) {
-                ImGui::TextDisabled(
-                    "Adaptive needs supported Tensor or Per-Splat backward; using Fixed16.");
-            } else if (run.pixelTo2DGSMode !=
-                           static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor) &&
-                       run.pixelTo2DGSMode !=
-                           static_cast<int>(TrainingPixelTo2DGSMode::VkSplatPerSplat)) {
-                ImGui::TextDisabled("Select Tensor or Per-Splat to enable Adaptive Spatial; "
-                                    "otherwise Fixed16 is used.");
-            }
-        }
+        run.tileMode = std::clamp(run.tileMode, 0, 1);
+
         if (run.pixelTo2DGSMode == static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor) &&
             run.tileMode == static_cast<int>(TrainingTileMode::Fixed16)) {
-            if (ImGui::Checkbox("Tensor Subgroup Reduction (Experimental)",
+            if (ImGui::Checkbox("Tensor Subgroup Reduction",
                                  &run.tensorSubgroupReduction)) {
                 actions.tensorReductionChanged = true;
             }
             if (run.tensorSubgroupReduction) {
-                static constexpr const char* sources[] = {"Shared", "Global (Experimental)"};
+                static constexpr const char* sources[] = {"Shared", "Global"};
                 int source = run.tensorGlobalPixelGrad ? 1 : 0;
                 if (ImGui::Combo("Tensor Pixel Gradient Source", &source, sources,
                                  IM_ARRAYSIZE(sources))) {
                     run.tensorGlobalPixelGrad = source == 1;
                     actions.tensorPixelGradSourceChanged = true;
                 }
-                if (run.tensorGlobalPixelGrad &&
-                    ImGui::Checkbox("Tensor RGB Latency Hiding (Experimental)",
-                                     &run.tensorRgbLatencyHiding)) {
-                    actions.tensorRgbScheduleChanged = true;
-                }
+
             }
             if (snapshot.rendererInitialized && run.tensorSubgroupReduction &&
                 !snapshot.tensorSubgroupReductionSupported) {
@@ -134,19 +114,11 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
                             snapshot.tensorSubgroupReductionActive ? "Subgroup" : "Shared");
                 ImGui::Text("Active Tensor Pixel Grad: %s",
                             snapshot.tensorGlobalPixelGradActive ? "Global" : "Shared");
-                if (snapshot.tensorGlobalPixelGradActive) {
-                    ImGui::Text("Active Tensor RGB Schedule: %s",
-                                snapshot.tensorRgbLatencyHidingActive ? "Latency Hiding" : "Baseline");
-                }
+
             }
-            if (snapshot.tileMode == TrainingTileMode::AdaptiveSpatial) {
-                ImGui::Text("Active Tile: Adaptive 8x8 / 16x16");
-                if (snapshot.activePixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
-                    ImGui::Text("Active child Tensor batch %u", snapshot.adaptiveTensorChildBatch);
-                }
-            } else {
+
                 ImGui::Text("Active Tile %ux%u", snapshot.activeTileSize, snapshot.activeTileSize);
-            }
+
         }
         if (schedule.imageSelectionMode == 1) {
             schedule.totalIterations = 30000;

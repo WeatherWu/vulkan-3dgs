@@ -6,11 +6,10 @@
 namespace vulkan3DGS {
 
 struct TrainingSettingsPanelActions {
+    bool ssimModeChanged = false;
     bool pixelBackwardChanged = false;
-    bool adaptiveTensorBatchChanged = false;
     bool tensorReductionChanged = false;
     bool tensorPixelGradSourceChanged = false;
-    bool tensorRgbScheduleChanged = false;
     bool subgroupUtilizationChanged = false;
     bool forwardCompositeChanged = false;
     bool validationIntervalChanged = false;

@@ -232,12 +232,15 @@ void TrainingController::applyLiveSettings() {
     training_.setPixelTo2DGSMinSubgroupUtilization(settings_.run.pixelTo2DGSMinSubgroupUtilization);
     training_.setForwardCompositeMode(static_cast<TrainingForwardCompositeMode>(
         std::clamp(settings_.run.forwardCompositeMode, 0, 1)));
-    training_.setTileMode(static_cast<TrainingTileMode>(std::clamp(settings_.run.tileMode, 0, 2)),
-                          settings_.run.adaptiveTileSplitThreshold);
-    training_.setAdaptiveTensorChildBatch(settings_.run.adaptiveTensorChildBatch);
+    training_.setTileMode(static_cast<TrainingTileMode>(std::clamp(settings_.run.tileMode, 0, 1)));
     training_.setTensorSubgroupReduction(settings_.run.tensorSubgroupReduction);
     training_.setTensorGlobalPixelGrad(settings_.run.tensorGlobalPixelGrad);
-    training_.setTensorRgbLatencyHiding(settings_.run.tensorRgbLatencyHiding);
+    try {
+        training_.setSsimMode(static_cast<TrainingSsimMode>(settings_.run.ssimMode));
+    } catch (const std::exception& error) {
+        settings_.run.ssimMode = static_cast<int>(training_.activeSsimMode());
+        setError(error.what());
+    }
     training_.setValidationInterval(settings_.schedule.validationInterval);
 }
 
@@ -262,12 +265,10 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     training_.setPixelTo2DGSMinSubgroupUtilization(config.run.pixelTo2DGSMinSubgroupUtilization);
     training_.setForwardCompositeMode(static_cast<TrainingForwardCompositeMode>(
         std::clamp(config.run.forwardCompositeMode, 0, 1)));
-    training_.setTileMode(static_cast<TrainingTileMode>(std::clamp(config.run.tileMode, 0, 2)),
-                          config.run.adaptiveTileSplitThreshold);
-    training_.setAdaptiveTensorChildBatch(config.run.adaptiveTensorChildBatch);
+    training_.setTileMode(static_cast<TrainingTileMode>(std::clamp(config.run.tileMode, 0, 1)));
     training_.setTensorSubgroupReduction(config.run.tensorSubgroupReduction);
     training_.setTensorGlobalPixelGrad(config.run.tensorGlobalPixelGrad);
-    training_.setTensorRgbLatencyHiding(config.run.tensorRgbLatencyHiding);
+    training_.setSsimMode(static_cast<TrainingSsimMode>(config.run.ssimMode));
     training_.setValidationInterval(config.schedule.validationInterval);
 
     bool initializedModel = false;
@@ -431,57 +432,28 @@ void TrainingController::exportFixedBenchmarkGradients() {
         if (!benchmark.complete) {
             throw std::runtime_error("Complete a Fixed Benchmark before exporting gradients");
         }
-        const char* tileName = benchmark.tileMode == TrainingTileMode::AdaptiveSpatial
-                                   ? "adaptive"
-                                   : benchmark.tileMode == TrainingTileMode::Fixed8 ? "fixed8" : "fixed16";
+        const char* tileName = benchmark.tileMode == TrainingTileMode::Fixed8 ? "fixed8" : "fixed16";
         const std::filesystem::path directory =
             std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) /
             "benchmark_gradients";
         std::string stem = "frame_" + std::to_string(benchmark.frameIndex) + "_iter_" +
                                  std::to_string(benchmark.trainingIteration) + "_" + tileName;
-        if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial &&
-            benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
-            stem += "_batch_" + std::to_string(benchmark.adaptiveTensorChildBatch);
-        }
+
         if (benchmark.tileMode == TrainingTileMode::Fixed16 &&
             benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
             stem += benchmark.tensorSubgroupReduction ? "_tensor_subgroup" : "_tensor_shared";
             stem += benchmark.tensorGlobalPixelGrad ? "_grad_global" : "_grad_shared";
             if (benchmark.tensorGlobalPixelGrad) {
-                stem += benchmark.tensorRgbLatencyHiding ? "_rgb_latency" : "_rgb_baseline";
+                stem += "_rgb_baseline";
             }
         }
+        stem += std::string("_") + trainingSsimModeFileTag(benchmark.ssimMode);
         std::filesystem::path path = directory / (stem + ".bin");
         for (uint32_t suffix = 2u; std::filesystem::exists(path); ++suffix) {
             path = directory / (stem + "_" + std::to_string(suffix) + ".bin");
         }
         training_.exportFixedBenchmarkGradients(path);
         setStatus("Saved benchmark gradients: " + std::filesystem::absolute(path).string());
-    } catch (const std::exception& error) {
-        setError(error.what());
-    }
-}
-
-void TrainingController::exportAdaptiveTileDiagnostics() {
-    if (state_.running || active_) {
-        setError("Finish the benchmark before exporting adaptive tile diagnostics.");
-        return;
-    }
-    try {
-        const auto& benchmark = training_.fixedWorkloadBenchmarkStats();
-        const std::filesystem::path directory =
-            std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) / "benchmark_tiles";
-        const std::string stem = "frame_" + std::to_string(benchmark.frameIndex) + "_iter_" +
-                                 std::to_string(benchmark.trainingIteration) + "_threshold_" +
-                                 std::to_string(benchmark.adaptiveSplitThreshold) + "_batch_" +
-                                 std::to_string(benchmark.adaptiveTensorChildBatch);
-        std::filesystem::path path = directory / (stem + ".csv");
-        for (uint32_t suffix = 2u; std::filesystem::exists(path) ||
-                                  std::filesystem::exists(std::filesystem::path(path).replace_extension(".masks.bin")); ++suffix) {
-            path = directory / (stem + "_" + std::to_string(suffix) + ".csv");
-        }
-        training_.exportAdaptiveTileDiagnostics(path);
-        setStatus("Saved adaptive tile CSV and .masks.bin: " + std::filesystem::absolute(path).string());
     } catch (const std::exception& error) {
         setError(error.what());
     }
@@ -731,11 +703,10 @@ TrainingUiSnapshot TrainingController::captureSnapshot() const {
     snapshot.tensorSubgroupReductionSupported = training_.tensorSubgroupReductionSupported();
     snapshot.tensorSubgroupReductionActive = training_.tensorSubgroupReductionActive();
     snapshot.tensorGlobalPixelGradActive = training_.tensorGlobalPixelGradActive();
-    snapshot.tensorRgbLatencyHidingActive = training_.tensorRgbLatencyHidingActive();
+    snapshot.activeSsimMode = training_.activeSsimMode();
     snapshot.activePixelMode = training_.activePixelTo2DGSMode();
     snapshot.tileMode = training_.tileMode();
     snapshot.activeTileSize = training_.activeTileSize();
-    snapshot.adaptiveTensorChildBatch = training_.adaptiveTensorChildBatch();
     snapshot.gaussianCount = training_.gaussianCount();
     snapshot.trainingIteration = training_.trainingIteration();
     snapshot.totalIterations = training_.totalIterations();

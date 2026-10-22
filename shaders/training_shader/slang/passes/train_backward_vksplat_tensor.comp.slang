@@ -6,16 +6,10 @@
 #ifndef TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
 #define TRAIN_TENSOR_GLOBAL_PIXEL_GRAD 0
 #endif
-#ifndef TRAIN_TENSOR_RGB_LATENCY_HIDING
-#define TRAIN_TENSOR_RGB_LATENCY_HIDING 0
-#endif
-#if TRAIN_TENSOR_RGB_LATENCY_HIDING && !TRAIN_TENSOR_GLOBAL_PIXEL_GRAD
-#error RGB latency hiding requires the Global pixel-gradient variant
-#endif
 #if TRAIN_TENSOR_GLOBAL_PIXEL_GRAD && !TRAIN_TENSOR_SUBGROUP_REDUCTION
 #error Global pixel gradients require the Fixed16 Tensor subgroup variant
 #endif
-#if TRAIN_TENSOR_SUBGROUP_REDUCTION && (TRAIN_TILE_SIZE != 16 || TRAIN_ADAPTIVE_TILES)
+#if TRAIN_TENSOR_SUBGROUP_REDUCTION && (TRAIN_TILE_SIZE != 16 || 0)
 #error Tensor subgroup reduction is only supported for Fixed16
 #endif
 
@@ -362,17 +356,6 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
                         sharedPixelGradGreen[pixelRank],
                         sharedPixelGradBlue[pixelRank]);
 #endif
-#if TRAIN_TENSOR_RGB_LATENCY_HIDING
-                    // The guarded RGB load above is independent of geometry.
-                    // Accumulate center/conic before consuming its result to
-                    // expose scheduling room without changing per-component
-                    // summation order, precision, or the shared-memory budget.
-                    CompactProjectedGrad geometryGrad = backwardTensorPair(
-                        gaussian, pixelCenter(pairPixel), pairDerivative.y, float3(0.0));
-                    localGrad.center += geometryGrad.center;
-                    localGrad.conicOpacity += geometryGrad.conicOpacity;
-                    localGrad.color += pairPixelGrad * pairDerivative.x;
-#else
                     float3 dLoss_dGaussianColor =
                         pairPixelGrad * pairDerivative.x;
                     CompactProjectedGrad grad = backwardTensorPair(
@@ -381,7 +364,6 @@ void main(uint3 groupThreadID : SV_GroupThreadID,
                         pairDerivative.y,
                         dLoss_dGaussianColor);
                     addCompactProjectedGrad(localGrad, grad);
-#endif
                 }
             }
         }

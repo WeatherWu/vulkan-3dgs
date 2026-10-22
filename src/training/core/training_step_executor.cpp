@@ -101,12 +101,9 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
     request.profiling.recordCpu(
         TrainingCpuProfileStage::TileCountReadback,
         std::chrono::duration<float, std::milli>(Clock::now() - tileReadbackStart).count());
-    const uint64_t childBudget = request.pushConstants.tileSize == 32u
-                                     ? static_cast<uint64_t>(result.tileItemCount) / 4u
-                                     : 0u;
-    const uint64_t requiredItemCapacity = static_cast<uint64_t>(result.tileItemCount) + childBudget;
+    const uint64_t requiredItemCapacity = result.tileItemCount;
     if (requiredItemCapacity > std::numeric_limits<uint32_t>::max()) {
-        throw std::runtime_error("Adaptive training tile item capacity exceeds uint32 range");
+        throw std::runtime_error("Training tile item capacity exceeds uint32 range");
     }
     if (requiredItemCapacity > request.buffers.tileItemCapacity()) {
         const auto resizeStart = Clock::now();
@@ -213,15 +210,6 @@ TrainingStepExecutionResult TrainingStepExecutor::execute(TrainingStepExecutionR
     const bool gpuProfilingWasAvailable = request.profiling.gpuTimestampsAvailable();
     result.gpuProfilingDisabled = gpuProfilingWasAvailable && !request.profiling.collectGpu();
     result.optimizerUpdated = request.pushConstants.optimizerEnabled != 0u;
-
-    if (validationTicket && request.pushConstants.tileSize == 32u) {
-        const auto adaptiveStats = request.buffers.adaptiveChildStats();
-        request.validation.setAdaptiveStats(*validationTicket,
-                                            TrainingAdaptiveTileReadbackStats{
-                                                .childItemCount = adaptiveStats[0],
-                                                .splitParentCount = adaptiveStats[1],
-                                            });
-    }
 
     if (request.pushConstants.validationEnabled != 0u) {
         const auto validationStart = Clock::now();

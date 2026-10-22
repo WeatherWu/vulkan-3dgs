@@ -53,43 +53,13 @@ private:
         vk::DescriptorSet forwardWorkgroupDescriptorSet = nullptr;
     };
 
-    struct AdaptiveTilePipelines {
-        ComputePipeline countChildren;
-        ComputePipeline prefixChildren;
-        ComputePipeline prefixChildBlocks;
-        ComputePipeline selectChildren;
-        ComputePipeline dispatchChildren;
-        ComputePipeline scatterChildren;
-        ComputePipeline buildParentBoundaries;
-        ComputePipeline clearLeafRanges;
-        ComputePipeline buildLeafRanges;
-        ComputePipeline installChildRanges;
-        ComputePipeline forwardDirect;
-        std::array<ComputePipeline, 2> forwardWorkgroup;
-        vk::DescriptorSet countChildrenSet = nullptr;
-        vk::DescriptorSet prefixChildrenSet = nullptr;
-        vk::DescriptorSet prefixChildBlocksSet = nullptr;
-        vk::DescriptorSet selectChildrenSet = nullptr;
-        vk::DescriptorSet dispatchChildrenSet = nullptr;
-        vk::DescriptorSet scatterChildrenSet = nullptr;
-        vk::DescriptorSet buildParentBoundariesSet = nullptr;
-        vk::DescriptorSet clearLeafRangesSet = nullptr;
-        vk::DescriptorSet buildLeafRangesSet = nullptr;
-        vk::DescriptorSet installChildRangesSet = nullptr;
-        vk::DescriptorSet forwardDirectSet = nullptr;
-        std::array<vk::DescriptorSet, 2> forwardWorkgroupSets{};
-    };
-
     void createForwardResources();
     void destroyForwardResources();
     void initializeTileVariant(TilePipelineVariant& variant, uint32_t tileSize);
     void cleanupTileVariant(TilePipelineVariant& variant);
-    void initializeAdaptivePipelines();
-    void cleanupAdaptivePipelines();
     [[nodiscard]] TilePipelineVariant& activeTileVariant();
     [[nodiscard]] const TilePipelineVariant& activeTileVariant() const;
     void projectGaussians();
-    void buildAdaptiveChildRanges();
     void clearTileRanges();
     void countTileCoverage();
     void prefixGaussianTileRanges();
@@ -102,7 +72,6 @@ private:
     void compositePixels();
     void bindAndDispatch(ComputePipeline& pipeline, vk::DescriptorSet descriptorSet,
                          uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
-    void bindAndDispatchChildren(ComputePipeline& pipeline, vk::DescriptorSet descriptorSet);
     void bindAndDispatchPrefix(ComputePipeline& pipeline, vk::DescriptorSet descriptorSet,
                                const TrainingPrefixPushConstants& prefixConstants,
                                uint32_t groupCountX);
@@ -129,7 +98,6 @@ private:
     ComputePipeline tileGatherHighPipeline_;
     ComputePipeline tileGatherItemsPipeline_;
     std::array<TilePipelineVariant, 2> tileVariants_{};
-    AdaptiveTilePipelines adaptivePipelines_{};
     VrdxSorter radixSorter_ = VK_NULL_HANDLE;
 
     vk::DescriptorPool descriptorPool_ = nullptr;
@@ -146,7 +114,6 @@ private:
     vk::CommandBuffer commandBuffer_ = nullptr;
     vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
-    uint32_t adaptiveSplitThreshold_ = 256u;
     TrainingForwardCompositeMode compositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
     bool initialized_ = false;
 };

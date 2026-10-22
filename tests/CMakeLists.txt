@@ -31,6 +31,7 @@ target_link_libraries(image_cache_tests PRIVATE vulkan_3dgs_core)
 configure_vulkan_3dgs_test(image_cache_tests)
 
 add_executable(training_ssim_tests training_ssim_tests.cpp)
+target_include_directories(training_ssim_tests PRIVATE ../src)
 configure_vulkan_3dgs_test(training_ssim_tests)
 
 add_executable(training_validation_tests training_validation_tests.cpp)

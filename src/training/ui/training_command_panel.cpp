@@ -122,37 +122,29 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
         settings.run.benchmarkMeasuredSteps = std::max(settings.run.benchmarkMeasuredSteps, 1u);
     }
     const auto& benchmark = snapshot.fixedBenchmark;
+    if (benchmark.active || benchmark.complete)
+        ImGui::Text("Benchmark SSIM: %s", trainingSsimModeName(benchmark.ssimMode));
     if (benchmark.active || benchmark.complete || benchmark.completedWarmupSteps > 0u ||
         benchmark.completedMeasuredSteps > 0u) {
         ImGui::Text("Fixed benchmark frame %u, warmup %u/%u, measured %u/%u, %s",
                     benchmark.frameIndex, benchmark.completedWarmupSteps, benchmark.warmupSteps,
                     benchmark.completedMeasuredSteps, benchmark.measuredSteps,
                     benchmark.active ? "running" : (benchmark.complete ? "complete" : "stopped"));
-        if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial &&
-            benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
-            ImGui::Text("Benchmark child Tensor batch %u", benchmark.adaptiveTensorChildBatch);
-        }
+
         if (benchmark.tileMode == TrainingTileMode::Fixed16 &&
             benchmark.pixelMode == TrainingPixelTo2DGSMode::VkSplatTensor) {
             ImGui::Text("Benchmark Tensor reduction: %s",
                         benchmark.tensorSubgroupReduction ? "Subgroup" : "Shared");
             ImGui::Text("Benchmark Tensor pixel grad: %s",
                         benchmark.tensorGlobalPixelGrad ? "Global" : "Shared");
-            if (benchmark.tensorGlobalPixelGrad) {
-                ImGui::Text("Benchmark Tensor RGB schedule: %s",
-                            benchmark.tensorRgbLatencyHiding ? "Latency Hiding" : "Baseline");
-            }
+
         }
     }
     if (benchmark.complete && !state.trainingRunning) {
         if (ImGui::Button("Export Benchmark Gradients")) {
             actions.exportFixedBenchmarkGradients = true;
         }
-        if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial) {
-            if (ImGui::Button("Export Adaptive Tile Diagnostics")) {
-                actions.exportAdaptiveTileDiagnostics = true;
-            }
-        }
+
     }
     if (!pureWorkerRunning) {
         TrainingDiagnosticsPanel::draw(snapshot, state.frameCount);

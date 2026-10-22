@@ -1,5 +1,7 @@
 #pragma once
 
+#include "training/core/training_ssim_mode.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -91,7 +93,6 @@ enum class TrainingDensificationGradientMode : uint32_t {
 enum class TrainingTileMode : uint32_t {
     Fixed8 = 0,
     Fixed16 = 1,
-    AdaptiveSpatial = 2,
 };
 
 struct TrainingScheduleConfig {
@@ -107,6 +108,7 @@ struct TrainingFixedBenchmarkConfig {
 };
 
 struct TrainingFixedBenchmarkStats {
+    TrainingSsimMode ssimMode = TrainingSsimMode::TwoDimensional;
     bool active = false;
     bool complete = false;
     uint32_t frameIndex = 0;
@@ -119,18 +121,8 @@ struct TrainingFixedBenchmarkStats {
     TrainingTileMode tileMode = TrainingTileMode::Fixed16;
     TrainingPixelTo2DGSMode pixelMode = TrainingPixelTo2DGSMode::Auto;
     TrainingForwardCompositeMode compositeMode = TrainingForwardCompositeMode::WorkgroupShared;
-    uint32_t adaptiveSplitThreshold = 256u;
-    uint32_t adaptiveTensorChildBatch = 8u;
     bool tensorSubgroupReduction = false; // Actual path used by this benchmark.
     bool tensorGlobalPixelGrad = false;   // Actual pixel-gradient source (false = Shared).
-    bool tensorRgbLatencyHiding = false;  // Actual Global RGB scheduling variant.
-};
-
-struct TrainingAdaptiveTileDiagnostic {
-    uint32_t parentItems = 0u;
-    std::array<uint32_t, 4> childItems{};
-    std::array<uint32_t, 4> maxProcessed{};
-    bool selected = false;
 };
 
 struct TrainingOptimizerConfig {
@@ -170,8 +162,6 @@ struct TrainingValidationStats {
     uint32_t firstNonFiniteGaussianIndex = std::numeric_limits<uint32_t>::max();
     uint32_t tileItemCount = 0;
     uint32_t parentTileItemCount = 0;
-    uint32_t adaptiveChildItemCount = 0;
-    uint32_t adaptiveSplitParentCount = 0;
     float meanProcessedCandidatesPerPixel = 0.0f;
     float meanContributorsPerPixel = 0.0f;
     uint32_t maxProcessedCandidatesPerPixel = 0;
@@ -281,12 +271,6 @@ enum class TrainingGpuProfileStage : uint32_t {
     Optimizer,
     Validation,
     Densification,
-    AdaptiveChildCount,
-    AdaptiveChildSelect,
-    AdaptiveChildScatter,
-    AdaptiveChildRangeInstall,
-    AdaptiveParentBackward,
-    AdaptiveChildBackward,
     Count,
 };
 

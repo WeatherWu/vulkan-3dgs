@@ -102,6 +102,9 @@ In the application:
 
 Fixed Benchmark freezes the model and iteration state and disables optimizer/densification; its total-step average is not an end-to-end training time. `Auto (Adaptive)` currently selects only Direct/Subgroup behavior, so choose experimental Per-Splat or Tensor modes explicitly and check `Active Pixel Backward` for fallback.
 
+
+`SSIM Mode` selects 2D (default) or 2D Loss + Separable Backward. Fixed16 Tensor also exposes opt-in Subgroup reduction and Global pixel-gradient reads; active labels report capability-gated settings.
+
 ## Tests
 
 ```powershell

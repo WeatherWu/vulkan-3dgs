@@ -68,12 +68,6 @@ resolvePixelTo2DGSMode(TrainingPixelTo2DGSMode requested,
     return requested;
 }
 
-bool supportsAdaptiveSpatialBackward(TrainingPixelTo2DGSMode requested,
-                                     const PixelTo2DGSCapabilities& capabilities) noexcept {
-    return (requested == TrainingPixelTo2DGSMode::VkSplatTensor && capabilities.vkSplatTensor) ||
-           (requested == TrainingPixelTo2DGSMode::VkSplatPerSplat && capabilities.vkSplatPerSplat);
-}
-
 bool supportsTensorSubgroupReduction(const PixelTo2DGSCapabilities& capabilities) noexcept {
     return capabilities.vkSplatTensor && capabilities.subgroup && capabilities.subgroupSize == 32u;
 }
@@ -90,14 +84,6 @@ bool useTensorGlobalPixelGrad(bool requested, bool subgroupRequested,
                               const PixelTo2DGSCapabilities& capabilities) noexcept {
     return requested && useTensorSubgroupReduction(subgroupRequested, activeMode, tileMode,
                                                     capabilities);
-}
-
-bool useTensorRgbLatencyHiding(bool requested, bool globalPixelGradRequested,
-                               bool subgroupRequested, TrainingPixelTo2DGSMode activeMode,
-                               TrainingTileMode tileMode,
-                               const PixelTo2DGSCapabilities& capabilities) noexcept {
-    return requested && useTensorGlobalPixelGrad(globalPixelGradRequested, subgroupRequested,
-                                                  activeMode, tileMode, capabilities);
 }
 
 void PixelTo2DGSDispatcher::initializeVariant(TilePipelineVariant& variant, uint32_t tileSize,
@@ -181,10 +167,6 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
         backwardStorageBinding(12), backwardStorageBinding(13), backwardStorageBinding(14),
     };
     config.pushConstantSize = sizeof(TrainingPushConstants);
-    ComputePipelineConfig adaptiveSpatialConfig = config;
-    adaptiveSpatialConfig.descriptorBindings.push_back(backwardStorageBinding(34));
-    adaptiveSpatialConfig.descriptorBindings.push_back(backwardStorageBinding(40));
-    adaptiveSpatialConfig.descriptorBindings.push_back(backwardStorageBinding(41));
     initializeVariant(tileVariants_[0], kTrainingTileSize8, config);
     initializeVariant(tileVariants_[1], kTrainingTileSize16, config);
     if (supportsTensorSubgroupReduction(capabilities_)) {
@@ -192,35 +174,6 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
             device_, "shaders/train_backward_vksplat_tensor_subgroup.comp.spv", config);
         tensorGlobalPixelGradPipeline_.initialize(
             device_, "shaders/train_backward_vksplat_tensor_subgroup_global_grad.comp.spv", config);
-        tensorRgbLatencyPipeline_.initialize(
-            device_, "shaders/train_backward_vksplat_tensor_subgroup_global_grad_latency.comp.spv", config);
-    }
-    constexpr std::array<uint32_t, 2> adaptiveTileSizes = {kTrainingTileSize8, kTrainingTileSize16};
-    for (size_t index = 0; index < adaptiveTileSizes.size(); ++index) {
-        const uint32_t tileSize = adaptiveTileSizes[index];
-        if (capabilities_.vkSplatPerSplat) {
-            adaptiveSpatialPerSplatPipelines_[index].initialize(
-                device_,
-                "shaders/train_backward_vksplat_per_splat_adaptive_tile" +
-                    std::to_string(tileSize) + ".comp.spv",
-                adaptiveSpatialConfig);
-        }
-        if (capabilities_.vkSplatTensor) {
-            adaptiveSpatialTensorPipelines_[index].initialize(
-                device_,
-                "shaders/train_backward_vksplat_tensor_adaptive_tile" + std::to_string(tileSize) +
-                    ".comp.spv",
-                adaptiveSpatialConfig);
-        }
-    }
-
-    if (capabilities_.vkSplatTensor) {
-        for (size_t index = 0u; index < adaptiveTensorLargeChildPipelines_.size(); ++index) {
-            const uint32_t batch = index == 0u ? 16u : 32u;
-            adaptiveTensorLargeChildPipelines_[index].initialize(
-                device_, "shaders/train_backward_vksplat_tensor_adaptive_tile8_batch" +
-                             std::to_string(batch) + ".comp.spv", adaptiveSpatialConfig);
-        }
     }
 
     std::vector<vk::DescriptorSetLayout> layouts;
@@ -244,20 +197,6 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
     if (supportsTensorSubgroupReduction(capabilities_)) {
         layouts.push_back(tensorSubgroupPipeline_.getDescriptorSetLayout());
         layouts.push_back(tensorGlobalPixelGradPipeline_.getDescriptorSetLayout());
-        layouts.push_back(tensorRgbLatencyPipeline_.getDescriptorSetLayout());
-    }
-    if (capabilities_.vkSplatPerSplat) {
-        for (const ComputePipeline& pipeline : adaptiveSpatialPerSplatPipelines_) {
-            layouts.push_back(pipeline.getDescriptorSetLayout());
-        }
-    }
-    if (capabilities_.vkSplatTensor) {
-        for (const ComputePipeline& pipeline : adaptiveSpatialTensorPipelines_) {
-            layouts.push_back(pipeline.getDescriptorSetLayout());
-        }
-        for (const ComputePipeline& pipeline : adaptiveTensorLargeChildPipelines_) {
-            layouts.push_back(pipeline.getDescriptorSetLayout());
-        }
     }
     const std::vector<vk::DescriptorSet> sets =
         descriptorPool_.create(device_, static_cast<uint32_t>(layouts.size()) * 9u, 0u, layouts);
@@ -276,20 +215,6 @@ void PixelTo2DGSDispatcher::initialize(vk::Device device, vk::PhysicalDevice phy
     if (supportsTensorSubgroupReduction(capabilities_)) {
         tensorSubgroupDescriptorSet_ = sets[index++];
         tensorGlobalPixelGradDescriptorSet_ = sets[index++];
-        tensorRgbLatencyDescriptorSet_ = sets[index++];
-    }
-    if (capabilities_.vkSplatPerSplat) {
-        for (vk::DescriptorSet& descriptorSet : adaptiveSpatialPerSplatDescriptorSets_) {
-            descriptorSet = sets[index++];
-        }
-    }
-    if (capabilities_.vkSplatTensor) {
-        for (vk::DescriptorSet& descriptorSet : adaptiveSpatialTensorDescriptorSets_) {
-            descriptorSet = sets[index++];
-        }
-        for (vk::DescriptorSet& descriptorSet : adaptiveTensorLargeChildDescriptorSets_) {
-            descriptorSet = sets[index++];
-        }
     }
 
     if (capabilities_.subgroup) {
@@ -315,46 +240,22 @@ void PixelTo2DGSDispatcher::cleanup() {
     tensorSubgroupDescriptorSet_ = nullptr;
     tensorGlobalPixelGradPipeline_.cleanup();
     tensorGlobalPixelGradDescriptorSet_ = nullptr;
-    tensorRgbLatencyPipeline_.cleanup();
-    tensorRgbLatencyDescriptorSet_ = nullptr;
-    for (ComputePipeline& pipeline : adaptiveSpatialPerSplatPipelines_) {
-        pipeline.cleanup();
-    }
-    for (ComputePipeline& pipeline : adaptiveSpatialTensorPipelines_) {
-        pipeline.cleanup();
-    }
-    for (ComputePipeline& pipeline : adaptiveTensorLargeChildPipelines_) {
-        pipeline.cleanup();
-    }
-    adaptiveSpatialPerSplatDescriptorSets_.fill(nullptr);
-    adaptiveSpatialTensorDescriptorSets_.fill(nullptr);
-    adaptiveTensorLargeChildDescriptorSets_.fill(nullptr);
+
     for (TilePipelineVariant& variant : tileVariants_) {
         cleanupVariant(variant);
     }
     capabilities_ = {};
     device_ = nullptr;
-    adaptiveSpatialTiles_ = false;
 }
 
 TrainingPixelTo2DGSMode PixelTo2DGSDispatcher::activeMode() const noexcept {
-    if (adaptiveSpatialTiles_) {
-        return adaptiveSpatialModeSupported() ? requestedMode_ : TrainingPixelTo2DGSMode::Direct;
-    }
+
     return resolvePixelTo2DGSMode(requestedMode_, capabilities_);
 }
 
 void PixelTo2DGSDispatcher::record(const BackwardPassContext& context) {
     const TrainingPixelTo2DGSMode mode = activeMode();
-    const bool adaptiveSpatial = context.pushConstants.tileSize == 32u && adaptiveSpatialTiles_;
-    if (adaptiveSpatial) {
-        if (!adaptiveSpatialModeSupported()) {
-            throw std::logic_error(
-                "Adaptive Spatial reached backward dispatch without optimized support");
-        }
-        recordAdaptiveSpatial(context, mode);
-        return;
-    }
+
     TilePipelineVariant& variant = variantForTileSize(context.pushConstants.tileSize);
     if (mode == TrainingPixelTo2DGSMode::TileGaussianAtomic) {
         recordTileGaussian(context, variant);
@@ -382,10 +283,7 @@ void PixelTo2DGSDispatcher::record(const BackwardPassContext& context) {
             pipeline = &tensorGlobalPixelGradPipeline_;
             descriptorSet = tensorGlobalPixelGradDescriptorSet_;
         }
-        if (tensorRgbLatencyHidingActive(context.pushConstants.tileSize)) {
-            pipeline = &tensorRgbLatencyPipeline_;
-            descriptorSet = tensorRgbLatencyDescriptorSet_;
-        }
+
     }
     const auto projectedInfo = context.buffers.projectedInfo();
     const auto tileItemsInfo = context.buffers.tileItemsInfo();
@@ -427,93 +325,6 @@ void PixelTo2DGSDispatcher::record(const BackwardPassContext& context) {
     if (profileTileLocal) {
         writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
                                         TrainingGpuProfileStage::TileLocalBackward, true);
-    }
-    recordBackwardBufferBarrier(context.commandBuffer, {projectedGradsInfo},
-                                vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
-}
-
-void PixelTo2DGSDispatcher::recordAdaptiveSpatial(const BackwardPassContext& context,
-                                                  TrainingPixelTo2DGSMode mode) {
-    std::array<ComputePipeline, 2>* pipelines = nullptr;
-    std::array<vk::DescriptorSet, 2>* descriptorSets = nullptr;
-    if (mode == TrainingPixelTo2DGSMode::VkSplatTensor) {
-        pipelines = &adaptiveSpatialTensorPipelines_;
-        descriptorSets = &adaptiveSpatialTensorDescriptorSets_;
-    } else if (mode == TrainingPixelTo2DGSMode::VkSplatPerSplat) {
-        pipelines = &adaptiveSpatialPerSplatPipelines_;
-        descriptorSets = &adaptiveSpatialPerSplatDescriptorSets_;
-    } else {
-        throw std::logic_error("Unsupported optimized adaptive Pixel-to-2DGS mode");
-    }
-
-    if (context.pushConstants.width == 0u || context.pushConstants.height == 0u) return;
-    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
-                                    TrainingGpuProfileStage::TileLocalBackward, false);
-
-    // Coarse parents are handled first. Refined parents are skipped by this
-    // shader; the following 8x8 dispatch handles only their child leaves.
-    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
-                                    TrainingGpuProfileStage::AdaptiveParentBackward, false);
-    recordAdaptiveSpatialDispatch(context, (*pipelines)[1], (*descriptorSets)[1],
-                                  kTrainingTileSize16);
-    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
-                                    TrainingGpuProfileStage::AdaptiveParentBackward, true);
-    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
-                                    TrainingGpuProfileStage::AdaptiveChildBackward, false);
-    if (mode == TrainingPixelTo2DGSMode::VkSplatTensor && adaptiveTensorChildBatch_ != 8u) {
-        const size_t index = adaptiveTensorChildBatch_ == 16u ? 0u : 1u;
-        recordAdaptiveSpatialDispatch(context, adaptiveTensorLargeChildPipelines_[index],
-                                      adaptiveTensorLargeChildDescriptorSets_[index], kTrainingTileSize8);
-    } else {
-        recordAdaptiveSpatialDispatch(context, (*pipelines)[0], (*descriptorSets)[0], kTrainingTileSize8);
-    }
-    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
-                                    TrainingGpuProfileStage::AdaptiveChildBackward, true);
-
-    writeBackwardProfilingTimestamp(context.commandBuffer, context.profilingQueryPool,
-                                    TrainingGpuProfileStage::TileLocalBackward, true);
-}
-
-void PixelTo2DGSDispatcher::recordAdaptiveSpatialDispatch(const BackwardPassContext& context,
-                                                          ComputePipeline& pipeline,
-                                                          vk::DescriptorSet descriptorSet,
-                                                          uint32_t tileSize) {
-    const auto projectedInfo = context.buffers.projectedInfo();
-    const auto tileItemsInfo = context.buffers.tileItemsInfo();
-    const auto tileRangesInfo = context.buffers.tileRangesInfo();
-    const auto pixelGradsInfo = context.buffers.pixelGradsInfo();
-    const auto projectedGradsInfo = context.buffers.projectedGradsInfo();
-    const auto pixelBlendStatesInfo = context.buffers.pixelBlendStatesInfo();
-    const auto adaptiveSplitFlagsInfo = context.buffers.adaptiveTileSplitFlagsInfo();
-    const auto activeParentsInfo = context.buffers.adaptiveActiveParentsInfo();
-    const auto childDispatchInfo = context.buffers.adaptiveChildDispatchInfo();
-    const std::array<vk::DescriptorBufferInfo, 9> infos = {
-        projectedInfo,      tileItemsInfo,        tileRangesInfo,        pixelGradsInfo,
-        projectedGradsInfo, pixelBlendStatesInfo, adaptiveSplitFlagsInfo,
-        activeParentsInfo, childDispatchInfo};
-    constexpr std::array<uint32_t, 9> bindings = {3u, 4u, 5u, 12u, 13u, 14u, 34u, 40u, 41u};
-    static_assert(std::tuple_size_v<decltype(infos)> == bindings.size());
-    std::array<vk::WriteDescriptorSet, bindings.size()> writes{};
-    for (size_t index = 0; index < writes.size(); ++index) {
-        writes[index]
-            .setDstSet(descriptorSet)
-            .setDstBinding(bindings[index])
-            .setDescriptorCount(1)
-            .setDescriptorType(vk::DescriptorType::eStorageBuffer)
-            .setPBufferInfo(&infos[index]);
-    }
-    device_.updateDescriptorSets(writes, {});
-    context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.getPipeline());
-    context.commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                             pipeline.getPipelineLayout(), 0, descriptorSet, {});
-    context.commandBuffer.pushConstants(pipeline.getPipelineLayout(),
-                                        vk::ShaderStageFlagBits::eCompute, 0,
-                                        sizeof(TrainingPushConstants), &context.pushConstants);
-    if (tileSize == kTrainingTileSize8) {
-        context.commandBuffer.dispatchIndirect(context.buffers.adaptiveChildDispatchBuffer(), 0u);
-    } else {
-        context.commandBuffer.dispatch((context.pushConstants.width + tileSize - 1u) / tileSize,
-                                       (context.pushConstants.height + tileSize - 1u) / tileSize, 1u);
     }
     recordBackwardBufferBarrier(context.commandBuffer, {projectedGradsInfo},
                                 vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);

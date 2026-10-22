@@ -41,20 +41,6 @@ bool testSupportedModes() {
                TrainingPixelTo2DGSMode::VkSplatTensor;
 }
 
-bool testAdaptiveSpatialRequiresOptimizedBackward() {
-    PixelTo2DGSCapabilities capabilities{};
-    capabilities.vkSplatTensor = true;
-    if (!supportsAdaptiveSpatialBackward(TrainingPixelTo2DGSMode::VkSplatTensor, capabilities) ||
-        supportsAdaptiveSpatialBackward(TrainingPixelTo2DGSMode::Direct, capabilities) ||
-        supportsAdaptiveSpatialBackward(TrainingPixelTo2DGSMode::Auto, capabilities) ||
-        supportsAdaptiveSpatialBackward(TrainingPixelTo2DGSMode::VkSplatPerSplat, capabilities)) {
-        return false;
-    }
-
-    capabilities.vkSplatPerSplat = true;
-    return supportsAdaptiveSpatialBackward(TrainingPixelTo2DGSMode::VkSplatPerSplat, capabilities);
-}
-
 bool testTensorSubgroupPolicy() {
     PixelTo2DGSCapabilities caps{};
     caps.vkSplatTensor = true;
@@ -67,8 +53,7 @@ bool testTensorSubgroupPolicy() {
         useTensorSubgroupReduction(false, Mode::VkSplatTensor, Tile::Fixed16, caps) ||
         useTensorSubgroupReduction(true, Mode::Direct, Tile::Fixed16, caps) ||
         useTensorSubgroupReduction(true, Mode::Auto, Tile::Fixed16, caps) ||
-        useTensorSubgroupReduction(true, Mode::VkSplatTensor, Tile::Fixed8, caps) ||
-        useTensorSubgroupReduction(true, Mode::VkSplatTensor, Tile::AdaptiveSpatial, caps)) return false;
+        useTensorSubgroupReduction(true, Mode::VkSplatTensor, Tile::Fixed8, caps)) return false;
     for (uint32_t size : {0u, 16u, 64u}) {
         caps.subgroupSize = size;
         if (supportsTensorSubgroupReduction(caps)) return false;
@@ -92,7 +77,7 @@ bool testTensorGlobalPixelGradPolicy() {
         for (bool subgroup : {false, true}) {
             for (Mode mode : {Mode::Auto, Mode::Direct, Mode::WorkgroupShared, Mode::Subgroup,
                               Mode::TileGaussianAtomic, Mode::VkSplatPerSplat, Mode::VkSplatTensor}) {
-                for (Tile tile : {Tile::Fixed8, Tile::Fixed16, Tile::AdaptiveSpatial}) {
+                for (Tile tile : {Tile::Fixed8, Tile::Fixed16}) {
                     const bool expected = requested && subgroup && mode == Mode::VkSplatTensor &&
                                           tile == Tile::Fixed16;
                     if (useTensorGlobalPixelGrad(requested, subgroup, mode, tile, caps) != expected) {
@@ -112,32 +97,6 @@ bool testTensorGlobalPixelGradPolicy() {
     caps.subgroup = true;
     caps.vkSplatTensor = false;
     return !useTensorGlobalPixelGrad(true, true, Mode::VkSplatTensor, Tile::Fixed16, caps);
-}
-
-bool testTensorRgbLatencyPolicy() {
-    using Mode = TrainingPixelTo2DGSMode;
-    using Tile = TrainingTileMode;
-    const PixelTo2DGSCapabilities full{32u, true, true, true, true};
-    std::array<PixelTo2DGSCapabilities, 6> capabilities{};
-    capabilities.fill(full);
-    capabilities[1].subgroupSize = 0u;
-    capabilities[2].subgroupSize = 16u;
-    capabilities[3].subgroupSize = 64u;
-    capabilities[4].subgroup = false;
-    capabilities[5].vkSplatTensor = false;
-    for (size_t cap = 0; cap < capabilities.size(); ++cap) {
-        for (uint32_t flags = 0u; flags < 8u; ++flags) {
-            for (uint32_t mode = 0u; mode <= 6u; ++mode) {
-                for (Tile tile : {Tile::Fixed8, Tile::Fixed16, Tile::AdaptiveSpatial}) {
-                    const bool expected = cap == 0u && flags == 7u && mode == 6u && tile == Tile::Fixed16;
-                    if (useTensorRgbLatencyHiding((flags & 1u) != 0u, (flags & 2u) != 0u,
-                                                  (flags & 4u) != 0u, static_cast<Mode>(mode),
-                                                  tile, capabilities[cap]) != expected) return false;
-                }
-            }
-        }
-    }
-    return true;
 }
 
 bool testTensorSegmentReduction() {
@@ -189,9 +148,8 @@ bool testTensorSegmentReduction() {
 
 int main() {
     if (!testFallbacks() || !testSupportedModes() ||
-        !testAdaptiveSpatialRequiresOptimizedBackward() || !testTensorSubgroupPolicy() ||
+        !testTensorSubgroupPolicy() ||
         !testTensorGlobalPixelGradPolicy() ||
-        !testTensorRgbLatencyPolicy() ||
         !testTensorSegmentReduction()) {
         std::fputs("Backward dispatch policy tests failed\n", stderr);
         return 1;

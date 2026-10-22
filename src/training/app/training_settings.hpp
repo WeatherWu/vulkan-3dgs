@@ -65,15 +65,13 @@ struct TrainingDensificationSettings {
 };
 
 struct TrainingRunSettings {
+    int ssimMode = 0;
     int pixelTo2DGSMode = 0;
     float pixelTo2DGSMinSubgroupUtilization = 0.5f;
     int forwardCompositeMode = 1;
     int tileMode = 1;
-    uint32_t adaptiveTileSplitThreshold = 256;
-    uint32_t adaptiveTensorChildBatch = 8;
     bool tensorSubgroupReduction = false;
     bool tensorGlobalPixelGrad = false;
-    bool tensorRgbLatencyHiding = false;
     uint32_t benchmarkStepsPerFrame = 1;
     uint32_t benchmarkFrame = 0;
     uint32_t benchmarkWarmupSteps = 200;
