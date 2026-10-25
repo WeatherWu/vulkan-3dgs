@@ -1,10 +1,100 @@
 #include "training_sort_replay_reference.hpp"
+#include "training_sort_replay_transfer.hpp"
 
 #include <iostream>
 
 using namespace sort_replay;
+
+namespace {
+struct TransferCall {
+    uint64_t descriptorOffset, offset;
+    size_t bytes;
+};
+struct RecordingTransfer {
+    std::vector<std::byte> deviceBytes;
+    std::vector<TransferCall> uploads, downloads;
+    void upload(vk::DescriptorBufferInfo buffer, uint64_t offset, std::span<const std::byte> bytes) {
+        check(bytes.size() <= optimizerCaptureChunkBytes && offset <= buffer.range &&
+                  bytes.size() <= buffer.range - offset,
+              "Upload exceeds single-chunk staging bounds");
+        check(buffer.offset <= deviceBytes.size() && offset <= deviceBytes.size() - buffer.offset &&
+                  bytes.size() <= deviceBytes.size() - buffer.offset - offset,
+              "Upload exceeds backing allocation");
+        uploads.push_back({buffer.offset, offset, bytes.size()});
+        std::copy(bytes.begin(), bytes.end(), deviceBytes.begin() + buffer.offset + offset);
+    }
+    void download(vk::DescriptorBufferInfo buffer, uint64_t offset, std::span<std::byte> bytes) {
+        check(bytes.size() <= optimizerCaptureChunkBytes && offset <= buffer.range &&
+                  bytes.size() <= buffer.range - offset,
+              "Download exceeds single-chunk staging bounds");
+        check(buffer.offset <= deviceBytes.size() && offset <= deviceBytes.size() - buffer.offset &&
+                  bytes.size() <= deviceBytes.size() - buffer.offset - offset,
+              "Download exceeds backing allocation");
+        downloads.push_back({buffer.offset, offset, bytes.size()});
+        std::copy_n(deviceBytes.begin() + buffer.offset + offset, bytes.size(), bytes.begin());
+    }
+};
+void verifyCalls(const std::vector<TransferCall>& calls, size_t bytes) {
+    size_t cursor = 0;
+    for (const auto& call : calls) {
+        check(call.descriptorOffset == 16 && call.offset == cursor &&
+                  call.bytes == std::min(optimizerCaptureChunkBytes, bytes - cursor),
+              "Transfer chunks overlap, skip bytes or ignore descriptor offset");
+        cursor += call.bytes;
+    }
+    check(cursor == bytes, "Transfer does not cover full payload");
+}
+void transferTests() {
+    constexpr auto chunk = optimizerCaptureChunkBytes;
+    for (size_t bytes : {size_t(0), size_t(4), chunk - 4, chunk, chunk + 4,
+                         2 * chunk, 2 * chunk + 12, size_t(59910000)}) {
+        std::vector<std::byte> input(bytes), output(bytes);
+        for (size_t i = 0; i < bytes; ++i)
+            input[i] = std::byte((i * 37 + (i / chunk) * 13) & 255u);
+        RecordingTransfer transfer;
+        transfer.deviceBytes.assign(bytes + 32, std::byte{0xA5});
+        vk::DescriptorBufferInfo buffer;
+        buffer.offset = 16;
+        buffer.range = bytes;
+        uploadSortReplay(transfer, buffer, std::span<const std::byte>(input));
+        downloadSortReplay(transfer, buffer, std::span<std::byte>(output));
+        verifyCalls(transfer.uploads, bytes);
+        verifyCalls(transfer.downloads, bytes);
+        check(input == output, "Chunked roundtrip altered payload");
+        for (size_t i = 0; i < 16; ++i)
+            check(transfer.deviceBytes[i] == std::byte{0xA5} &&
+                      transfer.deviceBytes[16 + bytes + i] == std::byte{0xA5},
+                  "Chunked transfer altered buffer canary");
+    }
+    RecordingTransfer transfer;
+    std::vector<std::byte> bytes(chunk + 4);
+    vk::DescriptorBufferInfo tooSmall;
+    tooSmall.range = bytes.size() - 1;
+    bool uploadRejected = false, downloadRejected = false;
+    try { uploadSortReplay(transfer, tooSmall, std::span<const std::byte>(bytes)); }
+    catch (const std::runtime_error&) { uploadRejected = true; }
+    try { downloadSortReplay(transfer, tooSmall, std::span<std::byte>(bytes)); }
+    catch (const std::runtime_error&) { downloadRejected = true; }
+    check(uploadRejected && downloadRejected && transfer.uploads.empty() && transfer.downloads.empty(),
+          "Invalid full-buffer range must be rejected before any partial transfer");
+    vk::DescriptorBufferInfo valid;
+    valid.range = bytes.size();
+    size_t calls = 0;
+    bool propagated = false;
+    try {
+        forEachReplayTransferChunk(valid, std::span<std::byte>(bytes),
+            [&](auto, size_t, auto) {
+                ++calls;
+                throw std::runtime_error("Transfer failure");
+            });
+    } catch (const std::runtime_error&) { propagated = true; }
+    check(propagated && calls == 1, "Failed transfer must propagate without retrying");
+}
+} // namespace
+
 int main() {
     try {
+        transferTests();
         TrainingScanlineCapture source;
         source.header.gaussianCount = 3;
         source.header.width = 32;

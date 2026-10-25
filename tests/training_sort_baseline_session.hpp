@@ -1,6 +1,7 @@
 #pragma once
 
 #include "training_sort_replay_reference.hpp"
+#include "training_sort_replay_transfer.hpp"
 #include "training/core/gaussian_forward_renderer.hpp"
 #include "training/core/training_optimizer_capture_gpu.hpp"
 #include "training/core/training_scheduling_diagnostics.hpp"
@@ -36,7 +37,7 @@ public:
         fence_ = device_.createFenceUnique({});
         queries_ = device_.createQueryPoolUnique({{}, vk::QueryType::eTimestamp,
                                                   kTrainingSortTimestampCount});
-        transfer_.upload(buffers_.projectedInfo(), 0,
+        uploadSortReplay(transfer_, buffers_.projectedInfo(),
                           std::as_bytes(std::span(source.projected)));
         push_.gaussianCount = header_.gaussianCount;
         push_.pixelCount = header_.width * header_.height;
@@ -159,7 +160,7 @@ private:
     }
     template<class T> std::vector<T> download(vk::DescriptorBufferInfo source, size_t count) {
         std::vector<T> values(count);
-        if (count) transfer_.download(source, 0, std::as_writable_bytes(std::span(values)));
+        downloadSortReplay(transfer_, source, std::as_writable_bytes(std::span(values)));
         return values;
     }
     vk::Device device_;

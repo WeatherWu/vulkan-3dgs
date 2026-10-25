@@ -115,6 +115,11 @@ to private `TrainingBuffers` and calls the existing renderer's count, prefix,
 emit, two radix sorts, gathers and range construction. Normal training leaves
 its optional sort query pool unset and retains the original shader sequence.
 
+Replay uploads and downloads split arrays into chunks of at most 1 MiB using
+the existing bounded staging buffer. Descriptor-relative offsets advance for
+each chunk; the complete array range is checked before the first copy. These
+setup and verification transfers stay outside the measured samples.
+
 The runner allocates the normal training workspace but does not dispatch
 projection, composite, loss, backward, Adam or ADC. It requires measurable
 `VK_EXT_memory_budget` headroom and can reject a low-memory device before
