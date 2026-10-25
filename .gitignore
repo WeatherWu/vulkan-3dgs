@@ -5,6 +5,7 @@
 /.**
 /skills
 /tools
+/research**
 /nsight**
 !/.clang-format
 !/.clang-tidy
@@ -26,7 +27,9 @@ benchmark_tiles/
 
 /docs/training-flow.dot
 
-plan.md
+plan*.md
 analysis.json
 frame_0_**
 s4_**.json
+optimizer**.json
+imgui.ini

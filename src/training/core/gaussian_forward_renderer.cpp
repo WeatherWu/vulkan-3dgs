@@ -99,6 +99,7 @@ void GaussianForwardRenderer::cleanup() {
     trainingBuffers_ = nullptr;
     commandBuffer_ = nullptr;
     profilingQueryPool_ = nullptr;
+    sortDiagnosticQueries_ = nullptr;
     pushConstants_ = {};
     initialized_ = false;
 }
@@ -141,30 +142,52 @@ void GaussianForwardRenderer::prepareTileItems() {
     projectGaussians();
     writeProfilingTimestamp(TrainingGpuProfileStage::GaussianProjection, true);
 
+    prepareProjectedTileItems();
+}
+
+void GaussianForwardRenderer::prepareProjectedTileItems() {
+    writeSortTimestamp(TrainingSortTimestamp::CountBegin);
     writeProfilingTimestamp(TrainingGpuProfileStage::TileCoverageCount, false);
     clearTileRanges();
     countTileCoverage();
     writeProfilingTimestamp(TrainingGpuProfileStage::TileCoverageCount, true);
+    writeSortTimestamp(TrainingSortTimestamp::CountEnd);
 
     writeProfilingTimestamp(TrainingGpuProfileStage::TilePrefix, false);
     prefixGaussianTileRanges();
     writeProfilingTimestamp(TrainingGpuProfileStage::TilePrefix, true);
+    writeSortTimestamp(TrainingSortTimestamp::PrefixEnd);
 }
 
 void GaussianForwardRenderer::renderPreparedTiles(uint32_t tileItemCount) {
+    buildPreparedTileLists(tileItemCount);
+    writeProfilingTimestamp(TrainingGpuProfileStage::Composite, false);
+    compositePixels();
+    writeProfilingTimestamp(TrainingGpuProfileStage::Composite, true);
+}
+
+void GaussianForwardRenderer::emitPreparedTileItems(uint32_t tileItemCount) {
     pushConstants_.tileItemCount = tileItemCount;
+    writeSortTimestamp(TrainingSortTimestamp::EmitBegin);
     writeProfilingTimestamp(TrainingGpuProfileStage::TileEmit, false);
     emitTileItems();
     writeProfilingTimestamp(TrainingGpuProfileStage::TileEmit, true);
+    writeSortTimestamp(TrainingSortTimestamp::EmitEnd);
+}
 
+void GaussianForwardRenderer::buildPreparedTileLists(uint32_t tileItemCount) {
+    emitPreparedTileItems(tileItemCount);
     writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, false);
     sortTileItems(tileItemCount);
     rebuildTileRanges(tileItemCount);
     writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, true);
+    writeSortTimestamp(TrainingSortTimestamp::RangesEnd);
+}
 
-    writeProfilingTimestamp(TrainingGpuProfileStage::Composite, false);
-    compositePixels();
-    writeProfilingTimestamp(TrainingGpuProfileStage::Composite, true);
+void GaussianForwardRenderer::writeSortTimestamp(TrainingSortTimestamp point) {
+    if (sortDiagnosticQueries_ && commandBuffer_)
+        commandBuffer_.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands,
+                                      sortDiagnosticQueries_, uint32_t(point));
 }
 
 void GaussianForwardRenderer::writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end) {
@@ -628,12 +651,19 @@ void GaussianForwardRenderer::emitTileItems() {
 
 void GaussianForwardRenderer::sortTileItems(uint32_t tileItemCount) {
     if (tileItemCount == 0u) {
+        for (auto point : {TrainingSortTimestamp::DepthEnd, TrainingSortTimestamp::HighGatherEnd,
+                           TrainingSortTimestamp::TileEnd, TrainingSortTimestamp::ItemGatherEnd})
+            writeSortTimestamp(point);
         return;
     }
     if (tileItemCount == 1u) {
+        for (auto point : {TrainingSortTimestamp::DepthEnd, TrainingSortTimestamp::HighGatherEnd,
+                           TrainingSortTimestamp::TileEnd})
+            writeSortTimestamp(point);
         gatherSortedTileItems(tileItemCount);
         shaderBufferBarrier({trainingBuffers_->tileItemsInfo()},
                             vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+        writeSortTimestamp(TrainingSortTimestamp::ItemGatherEnd);
         return;
     }
 
@@ -655,8 +685,10 @@ void GaussianForwardRenderer::sortTileItems(uint32_t tileItemCount) {
     LOG_DEBUG("Recorded low-key training radix sort");
 
     shaderMemoryBarrier();
+    writeSortTimestamp(TrainingSortTimestamp::DepthEnd);
     gatherHighTileKeys(tileItemCount);
     shaderMemoryBarrier();
+    writeSortTimestamp(TrainingSortTimestamp::HighGatherEnd);
 
     LOG_DEBUG("Recording high-key training radix sort");
     vrdxCmdSortKeyValue(commandBuffer_,
@@ -673,9 +705,11 @@ void GaussianForwardRenderer::sortTileItems(uint32_t tileItemCount) {
     LOG_DEBUG("Recorded high-key training radix sort");
 
     shaderMemoryBarrier();
+    writeSortTimestamp(TrainingSortTimestamp::TileEnd);
     gatherSortedTileItems(tileItemCount);
     shaderBufferBarrier({trainingBuffers_->tileItemsInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    writeSortTimestamp(TrainingSortTimestamp::ItemGatherEnd);
 }
 
 void GaussianForwardRenderer::gatherHighTileKeys(uint32_t tileItemCount) {

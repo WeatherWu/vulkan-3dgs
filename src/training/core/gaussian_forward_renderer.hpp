@@ -13,6 +13,12 @@
 
 namespace vulkan3DGS {
 
+enum class TrainingSortTimestamp : uint32_t {
+    CountBegin, CountEnd, PrefixEnd, EmitBegin, EmitEnd, DepthEnd,
+    HighGatherEnd, TileEnd, ItemGatherEnd, RangesEnd, Count
+};
+inline constexpr uint32_t kTrainingSortTimestampCount = uint32_t(TrainingSortTimestamp::Count);
+
 class GaussianForwardRenderer : public ForwardTrainingRenderer {
 public:
     void initialize(vk::Device device,
@@ -31,6 +37,11 @@ public:
     void forward() override;
     void prepareTileItems();
     void renderPreparedTiles(uint32_t tileItemCount);
+    // Private replay callers own the query pool and restore inputs before recording.
+    void setSortDiagnosticQueryPool(vk::QueryPool pool) { sortDiagnosticQueries_ = pool; }
+    void prepareProjectedTileItems();
+    void emitPreparedTileItems(uint32_t tileItemCount);
+    void buildPreparedTileLists(uint32_t tileItemCount);
 
     bool isInitialized() const override { return initialized_; }
 
@@ -112,6 +123,7 @@ private:
     void updateDescriptorSet(vk::DescriptorSet descriptorSet,
                              std::initializer_list<uint32_t> bindings);
     void writeProfilingTimestamp(TrainingGpuProfileStage stage, bool end);
+    void writeSortTimestamp(TrainingSortTimestamp point);
 
     vk::Device device_ = nullptr;
     vk::PhysicalDevice physicalDevice_ = nullptr;
@@ -145,6 +157,7 @@ private:
     TrainingBuffers* trainingBuffers_ = nullptr;
     vk::CommandBuffer commandBuffer_ = nullptr;
     vk::QueryPool profilingQueryPool_ = nullptr;
+    vk::QueryPool sortDiagnosticQueries_ = nullptr;
     TrainingPushConstants pushConstants_{};
     uint32_t adaptiveSplitThreshold_ = 256u;
     TrainingForwardCompositeMode compositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;

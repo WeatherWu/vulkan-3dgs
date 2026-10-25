@@ -59,6 +59,31 @@ add_executable(training_scheduling_tests training_scheduling_tests.cpp)
 target_link_libraries(training_scheduling_tests PRIVATE vulkan_3dgs_core)
 configure_vulkan_3dgs_test(training_scheduling_tests)
 
+add_executable(training_sort_replay_tests training_sort_replay_tests.cpp)
+target_link_libraries(training_sort_replay_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_sort_replay_tests)
+
+# Private baseline replay; hardware execution is explicit, not a CTest prerequisite.
+file(SHA256 "${CMAKE_SOURCE_DIR}/third_party/vulkan_radix_sort/include/vk_radix_sort.h"
+    SORT_REPLAY_SORTER_HASH)
+add_executable(training_sort_baseline_gpu_tests training_sort_baseline_gpu_tests.cpp)
+target_link_libraries(training_sort_baseline_gpu_tests PRIVATE vulkan_3dgs_core)
+target_compile_definitions(training_sort_baseline_gpu_tests PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    SORT_REPLAY_RUNTIME_DIR="${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    SORT_REPLAY_BUILD_CONFIG="$<CONFIG>"
+    SORT_REPLAY_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+    SORT_REPLAY_SHADER_COMPILER="Slang ${OPTIMIZER_SLANG_VERSION}, debug=${VULKAN_3DGS_TRAINING_SHADER_DEBUG_INFO}"
+    SORT_REPLAY_SORTER_HASH="${SORT_REPLAY_SORTER_HASH}")
+set_target_properties(training_sort_baseline_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+foreach(sort_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${sort_config}" sort_config_upper)
+    set_target_properties(training_sort_baseline_gpu_tests PROPERTIES
+        "RUNTIME_OUTPUT_DIRECTORY_${sort_config_upper}" "${CMAKE_CURRENT_BINARY_DIR}/${sort_config}")
+endforeach()
+add_test(NAME training_sort_baseline_help COMMAND $<TARGET_FILE:training_sort_baseline_gpu_tests> --help)
+
 # Explicit S4-3 private diagnostics, not a hardware-dependent CTest.
 file(SHA256 "${CMAKE_SOURCE_DIR}/third_party/vulkan_radix_sort/include/vk_radix_sort.h"
     SCHEDULING_SORTER_HASH)
