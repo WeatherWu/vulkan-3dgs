@@ -168,6 +168,12 @@ admission is implied by successful collection.
 
 Samples include count/clear, prefix, emit, depth sort, high-key gather, tile sort,
 item gather and ranges, plus prepare/main totals and CPU submission/wait costs.
+Segmented Fixed16 samples also contain `range_boundaries_ms`,
+`range_boundary_barrier_ms`, `range_finalize_ms` and
+`range_finalize_barrier_ms`. These four intervals sum to `ranges_ms` and
+include their ALL_COMMANDS timestamp boundaries; they do not by themselves
+identify a stall's hardware cause. `sort_timestamp_count` is 13. Boundary-only
+samples omit these internal measurements and report null for their fields.
 `gpu_span_including_host_gap_ms` crosses the prepare fence and host recording
 gap; it is not a sum of shader execution times. Mutable input/work arrays are
 cleared in a separately fenced restore outside each sample. Downloads and
@@ -178,6 +184,41 @@ Device UUID, driver, build/compiler, shader fingerprints and actual validation
 state are in the report. Source capture fingerprints identify the input, not a
 matching historical module or full training checkpoint. No whole-step or
 training speedup is reported.
+
+### Conditional budget review
+
+An existing correctness report and raw input verification can be reused for a
+timing-only range split when the workload, device and shader identities still
+match. Run one bounded capture with a new output name; do not rerun until fast:
+
+```text
+build/bin/Release/training_sort_baseline_gpu_tests --capture frame_0_iter_8037.scanline.bin --report sort_baseline_ranges_timing.json --timing --no-validation
+```
+
+`tests/training_sort_baseline_budget.py` checks the supplied correctness,
+timing and CPU input-audit evidence and writes a conditional budget report:
+
+```text
+python -B tests/training_sort_baseline_budget.py --correctness sort_baseline_correctness.json --timing sort_baseline_ranges_timing.json --input-audit sort_reuse_with_inputs.json --report sort_budget.json
+```
+
+Generate `sort_reuse_with_inputs.json` with the raw-input verification command
+below. Budget output is exclusive. The evaluator rejects mismatched device,
+module or workload identities, missing raw verification, incomplete samples
+and inconsistent timestamp sums. It retains all phase summaries, flags the
+declared 20% sample variation / 2% baseline drift limits and reports the
+boundary-only timing difference. Old reports without split intervals produce
+`NEEDS_RANGE_SPLIT`, not a candidate-admission result.
+
+The net target is the greater of 0.10 ms and 5% of the complete GPU list-production
+sequence. This GPU screening budget is not a full-step CPU/wall-time result.
+Depth scaling by `Nv/I` is a sensitivity assumption, and removing high-key
+gather is a candidate-design assumption. Their sum is only partial gross
+savings: compact-ID emit may also avoid traversing nonparticipating Gaussians,
+but still emits the same `I` items. The evaluator reports how much emit must
+save for several explicitly assumed added preparation costs. It does not
+assume emit scales linearly with `Nv/G`, count unexplained ranges time as a
+saving, or admit a candidate automatically.
 
 ### Small synchronization fixture
 

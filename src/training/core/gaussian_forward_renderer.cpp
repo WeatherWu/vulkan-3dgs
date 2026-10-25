@@ -751,12 +751,15 @@ void GaussianForwardRenderer::rebuildTileRanges(uint32_t tileItemCount) {
     bindAndDispatch(variant.tileRangeBoundariesPipeline,
                     variant.tileRangeBoundariesDescriptorSet,
                     ceilDiv(tileItemCount + 1u, 256u));
+    writeSortTimestamp(TrainingSortTimestamp::RangeBoundaryDispatchEnd);
     shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    writeSortTimestamp(TrainingSortTimestamp::RangeBoundaryBarrierEnd);
 
     updateDescriptorSet(variant.tileRangeBuildDescriptorSet, {5});
     bindAndDispatch(variant.tileRangeBuildPipeline, variant.tileRangeBuildDescriptorSet,
                     ceilDiv(layout.tileCount, 256u));
+    writeSortTimestamp(TrainingSortTimestamp::RangeFinalizeDispatchEnd);
     shaderBufferBarrier({trainingBuffers_->tileRangesInfo()},
                         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
 

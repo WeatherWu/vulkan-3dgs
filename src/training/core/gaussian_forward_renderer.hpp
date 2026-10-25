@@ -15,7 +15,8 @@ namespace vulkan3DGS {
 
 enum class TrainingSortTimestamp : uint32_t {
     CountBegin, CountEnd, PrefixEnd, EmitBegin, EmitEnd, DepthEnd,
-    HighGatherEnd, TileEnd, ItemGatherEnd, RangesEnd, Count
+    HighGatherEnd, TileEnd, ItemGatherEnd, RangesEnd,
+    RangeBoundaryDispatchEnd, RangeBoundaryBarrierEnd, RangeFinalizeDispatchEnd, Count
 };
 inline constexpr uint32_t kTrainingSortTimestampCount = uint32_t(TrainingSortTimestamp::Count);
 

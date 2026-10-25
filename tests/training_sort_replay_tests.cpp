@@ -1,6 +1,7 @@
 #include "training_sort_replay_reference.hpp"
 #include "training_sort_replay_transfer.hpp"
 #include "training/core/training_sort_synchronization.hpp"
+#include "training/core/gaussian_forward_renderer.hpp"
 
 #include <iostream>
 
@@ -8,6 +9,13 @@ using namespace sort_replay;
 
 namespace {
 void synchronizationTests() {
+    check(uint32_t(TrainingSortTimestamp::ItemGatherEnd) == 8 &&
+              uint32_t(TrainingSortTimestamp::RangesEnd) == 9 &&
+              uint32_t(TrainingSortTimestamp::RangeBoundaryDispatchEnd) == 10 &&
+              uint32_t(TrainingSortTimestamp::RangeBoundaryBarrierEnd) == 11 &&
+              uint32_t(TrainingSortTimestamp::RangeFinalizeDispatchEnd) == 12 &&
+              kTrainingSortTimestampCount == 13,
+          "Range split queries must preserve existing interval endpoints");
     const auto scratch = vk::Buffer(reinterpret_cast<VkBuffer>(uintptr_t{0x1234}));
     const auto barrier = trainingSortScratchReuseBarrier(scratch);
     check(barrier.buffer == scratch && barrier.offset == 0 && barrier.size == VK_WHOLE_SIZE &&

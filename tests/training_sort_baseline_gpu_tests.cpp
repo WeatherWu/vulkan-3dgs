@@ -43,6 +43,12 @@ void sampleJson(std::ostream& out, const Sample& sample) {
     interval("tile_sort_ms", 6, 7);
     interval("item_gather_ms", 7, 8);
     interval("ranges_ms", 8, 9);
+    interval("range_boundaries_ms", 8, uint32_t(TrainingSortTimestamp::RangeBoundaryDispatchEnd));
+    interval("range_boundary_barrier_ms", uint32_t(TrainingSortTimestamp::RangeBoundaryDispatchEnd),
+             uint32_t(TrainingSortTimestamp::RangeBoundaryBarrierEnd));
+    interval("range_finalize_ms", uint32_t(TrainingSortTimestamp::RangeBoundaryBarrierEnd),
+             uint32_t(TrainingSortTimestamp::RangeFinalizeDispatchEnd));
+    interval("range_finalize_barrier_ms", uint32_t(TrainingSortTimestamp::RangeFinalizeDispatchEnd), 9);
     interval("sort_ranges_ms", 4, 9);
     interval("prepare_gpu_ms", 0, 2);
     interval("main_gpu_ms", 3, 9);
@@ -207,6 +213,7 @@ int main(int argc, char** argv) {
              << ",\"driver_version\":" << properties.properties.driverVersion
              << ",\"timestamp_valid_bits\":" << families[family].timestampValidBits
              << ",\"timestamp_period_ns\":" << limits.timestampPeriod
+             << ",\"sort_timestamp_count\":" << kTrainingSortTimestampCount
              << ",\"validation_enabled\":" << std::boolalpha << validation
              << ",\"synchronization_validation_enabled\":" << synchronization
              << ",\"validation_errors\":" << validationErrors.load()
