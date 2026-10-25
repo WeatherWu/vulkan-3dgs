@@ -76,11 +76,11 @@ target_compile_definitions(training_sort_baseline_gpu_tests PRIVATE
     SORT_REPLAY_SHADER_COMPILER="Slang ${OPTIMIZER_SLANG_VERSION}, debug=${VULKAN_3DGS_TRAINING_SHADER_DEBUG_INFO}"
     SORT_REPLAY_SORTER_HASH="${SORT_REPLAY_SORTER_HASH}")
 set_target_properties(training_sort_baseline_gpu_tests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 foreach(sort_config IN LISTS CMAKE_CONFIGURATION_TYPES)
     string(TOUPPER "${sort_config}" sort_config_upper)
     set_target_properties(training_sort_baseline_gpu_tests PROPERTIES
-        "RUNTIME_OUTPUT_DIRECTORY_${sort_config_upper}" "${CMAKE_CURRENT_BINARY_DIR}/${sort_config}")
+        "RUNTIME_OUTPUT_DIRECTORY_${sort_config_upper}" "${CMAKE_BINARY_DIR}/bin/${sort_config}")
 endforeach()
 add_test(NAME training_sort_baseline_help COMMAND $<TARGET_FILE:training_sort_baseline_gpu_tests> --help)
 

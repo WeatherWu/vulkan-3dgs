@@ -118,6 +118,7 @@ private:
                                const TrainingPrefixPushConstants& prefixConstants,
                                uint32_t groupCountX);
     void shaderMemoryBarrier();
+    void tileSortScratchReuseBarrier();
     void shaderBufferBarrier(std::initializer_list<vk::DescriptorBufferInfo> buffers,
                              vk::AccessFlags dstAccessMask);
     void updateDescriptorSet(vk::DescriptorSet descriptorSet,

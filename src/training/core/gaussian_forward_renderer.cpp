@@ -1,4 +1,5 @@
 #include "training/core/gaussian_forward_renderer.hpp"
+#include "training/core/training_sort_synchronization.hpp"
 
 #include "utils/logger.hpp"
 
@@ -671,6 +672,7 @@ void GaussianForwardRenderer::sortTileItems(uint32_t tileItemCount) {
     ensureTileSortResources(tileItemCount);
     LOG_DEBUG("Training radix sort storage is ready for {} tile items", tileItemCount);
     LOG_DEBUG("Recording low-key training radix sort");
+    tileSortScratchReuseBarrier();
     vrdxCmdSortKeyValue(commandBuffer_,
                         radixSorter_,
                         tileItemCount,
@@ -691,6 +693,7 @@ void GaussianForwardRenderer::sortTileItems(uint32_t tileItemCount) {
     writeSortTimestamp(TrainingSortTimestamp::HighGatherEnd);
 
     LOG_DEBUG("Recording high-key training radix sort");
+    tileSortScratchReuseBarrier();
     vrdxCmdSortKeyValue(commandBuffer_,
                         radixSorter_,
                         tileItemCount,
@@ -988,6 +991,13 @@ void GaussianForwardRenderer::shaderBufferBarrier(std::initializer_list<vk::Desc
                                    barriers.data(),
                                    0,
                                    nullptr);
+}
+
+void GaussianForwardRenderer::tileSortScratchReuseBarrier() {
+    const auto barrier = trainingSortScratchReuseBarrier(trainingBuffers_->tileSortStorageBuffer());
+    commandBuffer_.pipelineBarrier(kTrainingSortScratchReuseSourceStages,
+                                   kTrainingSortScratchReuseDestinationStages, {},
+                                   0, nullptr, 1, &barrier, 0, nullptr);
 }
 
 void GaussianForwardRenderer::shaderMemoryBarrier() {

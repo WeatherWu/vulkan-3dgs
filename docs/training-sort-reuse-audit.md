@@ -115,6 +115,11 @@ to private `TrainingBuffers` and calls the existing renderer's count, prefix,
 emit, two radix sorts, gathers and range construction. Normal training leaves
 its optional sort query pool unset and retains the original shader sequence.
 
+Each radix invocation orders prior transfer writes and compute accesses to the
+shared sort scratch before resetting its count and histogram. This dependency
+is buffer-scoped; the shader dependencies for sorted keys and gather remain
+separate. Timings include the scratch-reuse barriers.
+
 Replay uploads and downloads split arrays into chunks of at most 1 MiB using
 the existing bounded staging buffer. Descriptor-relative offsets advance for
 each chunk; the complete array range is checked before the first copy. These
@@ -130,11 +135,13 @@ the old live allocation or historical resize latency.
 
 After building Release, run these commands on the RTX3090 host from the
 repository root. Windows uses the same paths with `.exe` appended.
+The diagnostic executable is built beside the application shaders because the
+renderer resolves relative shader paths from the executable directory.
 
 First collect correctness evidence and original renderer inputs:
 
 ```text
-build/test/Release/training_sort_baseline_gpu_tests --capture frame_0_iter_8037.scanline.bin --report sort_baseline_correctness.json --inputs sort_baseline_inputs.bin --require-validation
+build/bin/Release/training_sort_baseline_gpu_tests --capture frame_0_iter_8037.scanline.bin --report sort_baseline_correctness.json --inputs sort_baseline_inputs.bin --require-validation
 ```
 
 This command requires core and synchronization validation. If those are
@@ -147,7 +154,7 @@ failed run can leave an empty binary; discard its evidence when the JSON says
 Only after correctness succeeds, collect separate baseline timings:
 
 ```text
-build/test/Release/training_sort_baseline_gpu_tests --capture frame_0_iter_8037.scanline.bin --report sort_baseline_timing.json --timing --no-validation
+build/bin/Release/training_sort_baseline_gpu_tests --capture frame_0_iter_8037.scanline.bin --report sort_baseline_timing.json --timing --no-validation
 ```
 
 The timing run rechecks lists outside the measured samples. It retains all
@@ -171,6 +178,24 @@ Device UUID, driver, build/compiler, shader fingerprints and actual validation
 state are in the report. Source capture fingerprints identify the input, not a
 matching historical module or full training checkpoint. No whole-step or
 training speedup is reported.
+
+### Small synchronization fixture
+
+The CPU test executable can export a deterministic five-Gaussian, two-tile
+fixture with unequal and tied depths. Gaussian support lies inside the tile
+interiors, away from geometric classification boundaries. Run it through the
+same renderer and validation checks:
+
+```text
+build/test/Release/training_sort_replay_tests --write-sync-fixture build/sort_sync_fixture.bin
+build/bin/Release/training_sort_baseline_gpu_tests --capture build/sort_sync_fixture.bin --report build/sort_sync_fixture.json --require-validation
+```
+
+Both output paths must be new. This fixture checks scratch reuse and ordering
+in the actual GPU path, not representative performance or compatibility of a
+historical capture with a different GPU. It is an explicit hardware test and is
+not added to CPU CTest requirements. The CPU suite separately checks the scratch
+barrier stage/access scopes, buffer range and unchanged queue ownership.
 
 ### Raw input format and CPU verification
 

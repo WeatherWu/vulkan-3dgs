@@ -1,11 +1,46 @@
 #include "training_sort_replay_reference.hpp"
 #include "training_sort_replay_transfer.hpp"
+#include "training/core/training_sort_synchronization.hpp"
 
 #include <iostream>
 
 using namespace sort_replay;
 
 namespace {
+void synchronizationTests() {
+    const auto scratch = vk::Buffer(reinterpret_cast<VkBuffer>(uintptr_t{0x1234}));
+    const auto barrier = trainingSortScratchReuseBarrier(scratch);
+    check(barrier.buffer == scratch && barrier.offset == 0 && barrier.size == VK_WHOLE_SIZE &&
+              barrier.srcQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED &&
+              barrier.dstQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED,
+          "Scratch reuse dependency must cover only its buffer, without queue ownership transfer");
+    check(barrier.srcAccessMask == (vk::AccessFlagBits::eTransferWrite |
+              vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite) &&
+              barrier.dstAccessMask == vk::AccessFlagBits::eTransferWrite &&
+              kTrainingSortScratchReuseSourceStages ==
+                  (vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader) &&
+              kTrainingSortScratchReuseDestinationStages == vk::PipelineStageFlagBits::eTransfer,
+          "Scratch reuse must order transfer resets and compute accesses before transfer writes");
+}
+TrainingScanlineCapture synchronizationFixture() {
+    TrainingScanlineCapture source;
+    source.header.gaussianCount = 5;
+    source.header.width = 32;
+    source.header.height = 16;
+    source.header.itemCount = 5;
+    source.header.tileCount = 2;
+    source.projected.resize(5);
+    constexpr std::array<float, 5> depths{2, 1, 1, 3, 2};
+    for (size_t i = 0; i < source.projected.size(); ++i) {
+        source.projected[i].centerRadius = {i % 2 ? 24.0f : 8.0f, 8, depths[i], 4};
+        source.projected[i].conicOpacity = {1, 0, 1, 0.5f};
+    }
+    source.items = {2, 0, 4, 1, 3};
+    source.ranges = {{0, 3, 0, 0}, {3, 2, 0, 0}};
+    source.blends.resize(32 * 16);
+    source.pixelGrads.resize(32 * 16);
+    return source;
+}
 struct TransferCall {
     uint64_t descriptorOffset, offset;
     size_t bytes;
@@ -92,8 +127,14 @@ void transferTests() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 3 && std::string_view(argv[1]) == "--write-sync-fixture") {
+            writeTrainingScanlineCapture(argv[2], synchronizationFixture());
+            return 0;
+        }
+        check(argc == 1, "Usage: training_sort_replay_tests [--write-sync-fixture NEW.bin]");
+        synchronizationTests();
         transferTests();
         TrainingScanlineCapture source;
         source.header.gaussianCount = 3;
