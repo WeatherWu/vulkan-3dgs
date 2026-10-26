@@ -66,7 +66,7 @@ build/bin/Release/training_range_keys_gpu_tests --full-sort-chain --capture fram
 Only after both validated GPU commands succeed, run one short timing comparison:
 
 ```text
-build/bin/Release/training_range_keys_gpu_tests --full-sort-chain --capture frame_0_iter_8037.scanline.bin --inputs sort_baseline_inputs.bin --report full_sort_timing.json --timing --no-validation
+build/bin/Release/training_range_keys_gpu_tests --full-sort-chain --capture frame_0_iter_8037.scanline.bin --inputs sort_baseline_inputs.bin --report full_sort_timing_preheated.json --timing --no-validation
 ```
 
 `--require-validation` requires both core and synchronization validation. Timing
@@ -102,9 +102,22 @@ investigated on the matched target setup.
 
 ## Timing and decision
 
-Each A1/B/A2 phase has two warmups and eight retained samples. Every invocation
-restores private workspaces in a separate fenced submission. No full-buffer
-verification downloads occur between measured phases. Restore, allocation,
+The full-chain timing protocol is `fixed_preconditioning_32_aba_2w8_v1`.
+After correctness verification and its downloads, the runner executes exactly
+16 alternating A/B pairs (32 full invocations) before A1. This count is fixed;
+it never waits or retries until a favorable sample appears. All 32 timings are
+retained in `preconditioning_samples` with the candidate flag. They are excluded
+from the formal timing statistics by protocol, regardless of their values.
+
+Each A1/B/A2 phase then has two warmups and eight retained measured samples.
+Its two warmup results are saved in `warmup_samples`; all 24 measured samples
+remain in `samples` and determine the original acceptance checks. Fixed warming
+does not guarantee stable device conditions. An unstable measured phase still
+produces an inconclusive result; measured samples are never discarded.
+
+Every invocation restores private workspaces in a separate fenced submission.
+No full-buffer verification downloads occur between preconditioning and A1 or
+between measured phases. Restore, allocation,
 upload, verification downloads and timestamp-query retrieval are outside the
 sequence timing. Restore submit/wait is reported separately; restoring both
 paths' private workspace perturbs caches and does not model production allocation.

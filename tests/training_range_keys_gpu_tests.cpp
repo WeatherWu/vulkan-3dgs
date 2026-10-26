@@ -155,6 +155,12 @@ std::string testCase(Context& context, const Inputs& input, bool timing) {
     out << '}';
     return out.str();
 }
+void fullSampleJson(std::ostream& out, const full_sort::Sample& sample) {
+    out << "{\"gpu_active_ms\":" << sample.activeMs << ",\"gpu_span_ms\":" << sample.spanMs
+        << ",\"prepare_ms\":" << sample.prepareMs << ",\"main_ms\":" << sample.mainMs
+        << ",\"ranges_ms\":" << sample.rangeMs << ",\"cpu_sequence_ms\":" << sample.cpuMs
+        << ",\"restore_cpu_submit_wait_ms\":" << sample.restoreCpuMs << '}';
+}
 std::string testFullCase(Context& context, const Inputs& input, bool timing) {
     full_sort::verifyChainOracle(input);
     full_sort::Session session(*context.device, context.physical, context.queue, context.family, input);
@@ -170,26 +176,42 @@ std::string testFullCase(Context& context, const Inputs& input, bool timing) {
         << ",\"tile_radix_passes\":" << full_sort::tileBits(input.header.source.tileCount) / 8
         << ",\"exact_list_ranges_intermediates_A_B_A\":true,\"readonly_tails_canaries_verified\":true";
     if (timing) {
+        constexpr uint32_t preconditioningPairs = 16;
+        std::array<full_sort::Sample, preconditioningPairs * 2> preconditioning{};
+        for (uint32_t pair = 0; pair < preconditioningPairs; ++pair) {
+            preconditioning[pair * 2] = session.run(false);
+            preconditioning[pair * 2 + 1] = session.run(true);
+        }
+        std::array<std::array<full_sort::Sample, 2>, 3> phaseWarmups{};
         std::array<std::vector<full_sort::Sample>, 3> samples;
         for (size_t phase = 0; phase < 3; ++phase) {
-            for (uint32_t i = 0; i < 2; ++i) session.run(phase == 1);
+            for (auto& warmup : phaseWarmups[phase]) warmup = session.run(phase == 1);
             for (uint32_t i = 0; i < 8; ++i) samples[phase].push_back(session.run(phase == 1));
         }
         session.verify(); session.run(true); session.verify();
         check(!validationErrors, "Full sort timing validation errors");
         std::array<std::array<double, 8>, 3> active{}, span{}, cpu{};
-        out << ",\"warmup_per_phase\":2,\"measured_per_phase\":8,\"phases\":[";
+        out << ",\"timing_protocol\":\"fixed_preconditioning_32_aba_2w8_v1\""
+            << ",\"preconditioning_pairs\":" << preconditioningPairs << ",\"preconditioning_samples\":[";
+        for (size_t i = 0; i < preconditioning.size(); ++i) {
+            if (i) out << ',';
+            out << "{\"candidate\":" << std::boolalpha << bool(i & 1u) << ",\"sample\":";
+            fullSampleJson(out, preconditioning[i]); out << '}';
+        }
+        out << "],\"warmup_per_phase\":2,\"measured_per_phase\":8,\"phases\":[";
         for (size_t phase = 0; phase < 3; ++phase) {
             if (phase) out << ',';
-            out << "{\"candidate\":" << std::boolalpha << (phase == 1) << ",\"samples\":[";
+            out << "{\"candidate\":" << std::boolalpha << (phase == 1) << ",\"warmup_samples\":[";
+            for (size_t i = 0; i < phaseWarmups[phase].size(); ++i) {
+                if (i) out << ',';
+                fullSampleJson(out, phaseWarmups[phase][i]);
+            }
+            out << "],\"samples\":[";
             for (size_t i = 0; i < 8; ++i) {
                 const auto& s = samples[phase][i];
                 active[phase][i] = s.activeMs; span[phase][i] = s.spanMs; cpu[phase][i] = s.cpuMs;
                 if (i) out << ',';
-                out << "{\"gpu_active_ms\":" << s.activeMs << ",\"gpu_span_ms\":" << s.spanMs
-                    << ",\"prepare_ms\":" << s.prepareMs << ",\"main_ms\":" << s.mainMs
-                    << ",\"ranges_ms\":" << s.rangeMs << ",\"cpu_sequence_ms\":" << s.cpuMs
-                    << ",\"restore_cpu_submit_wait_ms\":" << s.restoreCpuMs << '}';
+                fullSampleJson(out, s);
             }
             out << "]}";
         }
