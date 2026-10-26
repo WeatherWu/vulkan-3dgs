@@ -1,4 +1,4 @@
-// Private depth-ordered emit. gaussianCount is the GPU-produced participating count.
+// Depth-ordered emit. gaussianCount is the GPU-produced participating count.
 #include "../common/train_forward_tile_common.slang"
 [[vk::binding(3, 0)]] StructuredBuffer<ProjectedGaussian> projected;
 [[vk::binding(21, 0)]] RWStructuredBuffer<uint> tileKeys;

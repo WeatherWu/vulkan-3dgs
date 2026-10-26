@@ -1,7 +1,7 @@
 #pragma once
 #include "training_full_sort_reference.hpp"
 #include "training_range_key_session.hpp"
-#include "vulkan/diagnostic_radix_sort.hpp"
+#include "vulkan/radix_key_value.hpp"
 
 namespace full_sort {
 struct Sample {
@@ -491,7 +491,7 @@ private:
                                  kTrainingSortScratchReuseDestinationStages, {}, 0, nullptr, 1,
                                  &reuse, 0, nullptr);
         if (diagnostic)
-            recordDiagnosticRadixKeyValue(command_, sorter_.get(), count, keys.getBuffer(),
+            recordRadixKeyValue(command_, sorter_.get(), count, keys.getBuffer(),
                                           values.getBuffer(), storage_.getBuffer(), bits);
         else
             vrdxCmdSortKeyValue(command_, sorter_.get(), count, keys.getBuffer(), 0,

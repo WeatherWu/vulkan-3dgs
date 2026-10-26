@@ -1,6 +1,7 @@
 #include "training_range_key_session.hpp"
 #include "training_full_sort_session.hpp"
 #include "training_sort_downstream_session.hpp"
+#include "training_faster_sort_integration.hpp"
 #include "training_optimizer_r1_metrics.hpp"
 #include "utils/logger.hpp"
 
@@ -140,7 +141,7 @@ std::string testCase(Context& context, const Inputs& input, bool timing) {
         << ",\"gpu_producer_verified\":true,\"ranges_exact_A_B_A\":true,\"readonly_tails_canaries_verified\":true"
         << ",\"direct_source\":\"" << (input.header.source.itemCount > 1 ? "GPU_SORTED_KEYS" : "ORIGINAL_KEY_BYPASS") << '"';
     if (timing) {
-        std::array<std::vector<Sample>, 3> samples;
+        std::array<std::vector<range_keys::Sample>, 3> samples;
         for (size_t phase = 0; phase < 3; ++phase) {
             for (uint32_t i = 0; i < 2; ++i) session.run(phase == 1);
             for (uint32_t i = 0; i < 8; ++i) samples[phase].push_back(session.run(phase == 1));
@@ -286,13 +287,14 @@ std::pair<std::string, bool> testDownstreamCase(Context& context, const Inputs& 
 }
 constexpr const char* usage = "training_range_keys_gpu_tests (--synthetic | --capture INPUT.scanline.bin --inputs INPUT.sort-input.bin) "
                              "--report NEW.json [--full-sort-chain] [--require-validation | --no-validation] [--timing] [--device-index N] "
-                             "[--downstream [--portable-reference (synthetic only)]]";
+                             "[--downstream [--portable-reference (synthetic only)]] [--integrated-sort]";
 } // namespace
 
 int main(int argc, char** argv) {
     std::unique_ptr<TrainingDiagnosticReport> report;
     bool fullChain = false;
     bool downstream = false, portableReference = false;
+    bool integrated = false;
     std::string failureContext;
     try {
         std::filesystem::path capturePath, inputPath, output;
@@ -305,6 +307,7 @@ int main(int argc, char** argv) {
             else if (arg == "--full-sort-chain") fullChain = true;
             else if (arg == "--downstream") downstream = true;
             else if (arg == "--portable-reference") portableReference = true;
+            else if (arg == "--integrated-sort") integrated = true;
             else if (arg == "--timing") timing = true;
             else if (arg == "--require-validation") requireValidation = true;
             else if (arg == "--no-validation") noValidation = true;
@@ -318,6 +321,8 @@ int main(int argc, char** argv) {
         check(!downstream || (fullChain && requireValidation && !timing && !noValidation),
               "Downstream requires --full-sort-chain --require-validation without timing");
         check(!portableReference || (downstream && syntheticMode), "Portable reference is restricted to explicit downstream synthetic fixtures");
+        check(!integrated || (fullChain && requireValidation && !timing && !noValidation && !downstream),
+              "Integrated sort requires --full-sort-chain --require-validation without downstream/timing");
         check(syntheticMode ? (capturePath.empty() && inputPath.empty() && !timing)
                             : (!capturePath.empty() && !inputPath.empty()), usage);
         check(!timing || noValidation, "Timing requires explicit --no-validation and a separate validated run");
@@ -330,7 +335,7 @@ int main(int argc, char** argv) {
             check(std::filesystem::file_size(capturePath) <= (256ull << 20), "Capture exceeds input byte budget");
             auto source = readTrainingScanlineCapture(capturePath);
             input = readInputs(inputPath); verify(input, source);
-            if (downstream) downstreamSource.emplace(std::move(source));
+            if (downstream || integrated) downstreamSource.emplace(std::move(source));
         }
         Context context(requireValidation, noValidation, deviceIndex, downstream, portableReference);
         failureContext = ",\"device\":" + schedulingJsonQuote(context.properties.deviceName.data()) +
@@ -341,7 +346,12 @@ int main(int argc, char** argv) {
         Logger::get_instance().set_level(LogLevel::ERROR_VULKAN_3DGS);
         std::ostringstream cases;
         bool downstreamPassed = true;
-        if (downstream) {
+        if (integrated) {
+            const auto result = runFasterSortIntegration(*context.device,context.physical,context.queue,context.family,
+                syntheticMode ? nullptr : &*downstreamSource);
+            check(!validationErrors,"Integrated sort core/synchronization validation failed");
+            cases << result.substr(1,result.size()-2);
+        } else if (downstream) {
             bool first = true;
             auto run = [&](const Inputs& data, const TrainingScanlineCapture& source) {
                 verify(data, source);
@@ -380,8 +390,8 @@ int main(int argc, char** argv) {
         context.device->waitIdle();
         check(!validationErrors, "Range validation errors");
         std::ostringstream json;
-        json << "{\"schema\":" << schedulingJsonQuote(downstream ? "faster_sort_downstream_gpu_v1" : fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1")
-             << ",\"status\":" << schedulingJsonQuote(downstream ? (downstreamPassed ? (portableReference ?
+        json << "{\"schema\":" << schedulingJsonQuote(integrated ? "faster_sort_integration_gpu_v1" : downstream ? "faster_sort_downstream_gpu_v1" : fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1")
+             << ",\"status\":" << schedulingJsonQuote(integrated ? "PRIVATE_RENDERER_INTEGRATION_PASSED_NOT_LIVE_TRAINING_ADMISSION" : downstream ? (downstreamPassed ? (portableReference ?
                  "PRIVATE_PORTABLE_FIXTURE_PASSED_NOT_TENSOR_ADMISSION" : "PRIVATE_DOWNSTREAM_PASSED_NOT_TRAINING_ADMISSION") :
                  "STOP_DOWNSTREAM_NUMERICAL_MISMATCH") : "PRIVATE_CORRECTNESS_PASSED_NOT_TRAINING_ADMISSION")
              << ",\"device\":" << schedulingJsonQuote(context.properties.deviceName.data())
@@ -404,7 +414,9 @@ int main(int argc, char** argv) {
              << ",\"iteration\":" << (syntheticMode ? 0 : input.header.source.iteration)
              << ",\"frame\":" << (syntheticMode ? 0 : input.header.source.frame)
              << ",\"production_candidate_enabled\":false,\"training_advanced\":false,\"full_training_speedup\":null"
-             << (downstream ? ",\"full_list_sequence_measured\":false,\"scope\":\"Correctness-only GPU list production -> original composite -> original backward with fixed captured pixelGrad. No loss/projection backward/Adam/ADC.\""
+             << (integrated ? ",\"full_list_sequence_measured\":false,\"scope\":\"Actual GaussianForwardRenderer original/candidate/original list and composite. Private TrainingBuffers; optional buffer adoption exercise. No worker, loss, backward or Adam.\""
+                              ",\"renderer_candidate_exercised\":true,\"live_training_exercised\":false"
+                          : downstream ? ",\"full_list_sequence_measured\":false,\"scope\":\"Correctness-only GPU list production -> original composite -> original backward with fixed captured pixelGrad. No loss/projection backward/Adam/ADC.\""
                               ",\"candidate_bundle\":\"Stable compact + Nv depth sort + reordered prefix/emit + effective-bit tile KV sort + direct Gaussian IDs + direct-key ranges\""
                               ",\"key_storage_bits\":32,\"physical_uint16_storage\":false,\"stable_compaction\":true"
                               ",\"downstream_timing_measured\":false,\"fixed_pixel_gradient\":true,\"loss_recomputed\":false,\"optimizer_updated\":false"
@@ -416,7 +428,8 @@ int main(int argc, char** argv) {
                           : ",\"full_list_sequence_measured\":false,\"scope\":\"GPU depth sort + high-key gather + tile sort + item gather + "
                 "boundary construction + range finalize. No projection/count/prefix/emit/composite/backward/Adam.\""
                 )
-             << (downstream ? ",\"restore_policy\":\"Private producer/consumer workspace reset per A/B/A; pixelGrad readonly. GPU list producers feed consumers directly; no combined timing collected.\""
+             << (integrated ? ",\"restore_policy\":\"Private TrainingBuffers restored per A/B/A; renderer workspaces retained across growth/adoption fixtures. No timing collected.\""
+                            : downstream ? ",\"restore_policy\":\"Private producer/consumer workspace reset per A/B/A; pixelGrad readonly. GPU list producers feed consumers directly; no combined timing collected.\""
                             : ",\"restore_policy\":\"Private seeds/work/ranges/radix scratch restored outside every measured submission; "
                 "producer sorts are executed inside the measured sequence for A/B/A, not supplied by CPU. Cache-perturbed.\"");
         if (downstream) {
@@ -439,6 +452,7 @@ int main(int argc, char** argv) {
                 "train_full_sort_prepare_test", "train_full_sort_emit_test", "train_forward_gaussian_prefix_ranges",
                 "train_forward_gaussian_prefix_scratch", "train_forward_gaussian_prefix_top",
                 "train_forward_gaussian_prefix_add_scratch", "train_forward_gaussian_prefix_add_ranges"}) shaderNames.push_back(name);
+        if (integrated) shaderNames.push_back("train_forward_workgroup");
         if (downstream) {
             shaderNames.push_back("train_forward_workgroup");
             shaderNames.push_back(portableReference ? "train_backward_pixel_to_2dgs" : "train_backward_vksplat_tensor_subgroup_global_grad");
@@ -452,12 +466,12 @@ int main(int argc, char** argv) {
         json << "},\"cases\":[" << cases.str() << "]}\n";
         report->write(json.str());
         if (downstream && !downstreamPassed) { std::cerr << "Private downstream comparison failed: see report\n"; return 1; }
-        std::cout << (downstream ? "Private sort downstream comparison complete: " : fullChain ? "Private full-sort comparison complete: " :
+        std::cout << (integrated ? "Private renderer sorting integration complete: " : downstream ? "Private sort downstream comparison complete: " : fullChain ? "Private full-sort comparison complete: " :
             "Private range-key comparison complete: ") << output << '\n';
     } catch (const std::exception& error) {
         std::cerr << "Private range-key comparison failed: " << error.what() << '\n';
         if (report && !report->written()) {
-            try { report->write("{\"schema\":" + schedulingJsonQuote(downstream ? "faster_sort_downstream_gpu_v1" : fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1") + ",\"status\":\"STOP\",\"error\":" +
+            try { report->write("{\"schema\":" + schedulingJsonQuote(integrated ? "faster_sort_integration_gpu_v1" : downstream ? "faster_sort_downstream_gpu_v1" : fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1") + ",\"status\":\"STOP\",\"error\":" +
                 schedulingJsonQuote(error.what()) + ",\"validation_errors\":" + std::to_string(validationErrors.load()) +
                 failureContext + ",\"full_training_speedup\":null}\n"); } catch (...) {}
         }

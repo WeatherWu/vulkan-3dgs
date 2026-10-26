@@ -32,6 +32,7 @@ public:
             buffers_.resizeTileItems(header_.itemCount);
         renderer_.initialize(device_, physical_, queue_, family_, header_.gaussianCount,
                              {header_.width, header_.height});
+        renderer_.setFasterSortEnabled(false);
         pool_.create(device_, family_, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
         command_ = pool_.allocateCommandBuffer();
         fence_ = device_.createFenceUnique({});
@@ -65,7 +66,25 @@ public:
         result.indices = download<uint32_t>(buffers_.tileSortIndicesInfo(), header_.itemCount);
         return result;
     }
-    Sample run(bool segmented) {
+    void setFasterSortEnabled(bool enabled) { renderer_.setFasterSortEnabled(enabled); }
+    void setTileSize(uint32_t size) { push_.tileSize = size; }
+    bool fasterSortActive() const { return renderer_.fasterSortActive(); }
+    uint32_t participatingCount() const { return renderer_.fasterSortParticipatingCount(); }
+    void loadProjected(const TrainingScanlineCapture& source, bool adopt) {
+        check(header_.width == source.header.width && header_.height == source.header.height,
+              "Lifecycle replay extent mismatch");
+        if (adopt && source.header.gaussianCount) {
+            buffers_.ensureDensificationCapacity(source.header.gaussianCount);
+            buffers_.adoptDensifiedGaussians(source.header.gaussianCount);
+        } else buffers_.resize(source.header.gaussianCount, {header_.width, header_.height});
+        header_ = source.header;
+        push_.gaussianCount = header_.gaussianCount;
+        if (buffers_.tileItemCapacity() < header_.itemCount) buffers_.resizeTileItems(header_.itemCount);
+        uploadSortReplay(transfer_, buffers_.projectedInfo(), std::as_bytes(std::span(source.projected)));
+    }
+    std::vector<glm::vec4> colors() { return download<glm::vec4>(buffers_.renderedColorInfo(), uint64_t(header_.width)*header_.height); }
+    std::vector<PixelBlendState> blends() { return download<PixelBlendState>(buffers_.pixelBlendStatesInfo(), uint64_t(header_.width)*header_.height); }
+    Sample run(bool segmented, bool composite = false) {
         Sample sample;
         sample.restoreCpuMs = restore();
         renderer_.setSortDiagnosticQueryPool(segmented ? *queries_ : vk::QueryPool{});
@@ -84,7 +103,8 @@ public:
         begin();
         renderer_.setTrainingBuffers(buffers_, command_, push_);
         if (!segmented) stamp(TrainingSortTimestamp::EmitBegin);
-        renderer_.buildPreparedTileLists(header_.itemCount);
+        if (composite) renderer_.renderPreparedTiles(header_.itemCount);
+        else renderer_.buildPreparedTileLists(header_.itemCount);
         if (!segmented) stamp(TrainingSortTimestamp::RangesEnd);
         sample.mainCpuMs = submit();
         struct Query { uint64_t ticks, available; };

@@ -1,4 +1,4 @@
-// Private full-sort diagnostic. validationIteration selects flag/scatter/ordered-count operations.
+// Full-sort helper. validationIteration selects flag/scatter/ordered-count operations.
 #include "../common/train_common.slang"
 [[vk::binding(3, 0)]] StructuredBuffer<ProjectedGaussian> projected;
 [[vk::binding(32, 0)]] StructuredBuffer<uint2> originalRanges;

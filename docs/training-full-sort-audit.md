@@ -41,8 +41,8 @@ Tile keys occupy **uint32 storage**. Grids with at most 65,536 tiles use two byt
 radix passes; larger grids use the original four-pass width. This is a 16/32
 effective-width adaptation, not physical uint16 packing or exact arbitrary-bit
 CUB dispatch. Both even pass counts finish in the input key/value buffers.
-The private recorder uses the existing sorter's shader pipelines and workspace;
-it does not alter the submodule or the production sort API. It retains the
+The effective-width recorder uses the existing sorter's shader pipelines and workspace;
+it does not alter the submodule or its public sort API. It retains the
 four-histogram initialization cost, including for two-pass sorting.
 
 Candidate emit itself writes the direct-key buffer for a one-item list, so that
@@ -195,9 +195,65 @@ Tensor path, explicit `--portable-reference` is allowed only with
 `PRIVATE_PORTABLE_FIXTURE_PASSED_NOT_TENSOR_ADMISSION`, and cannot validate the
 3090 Tensor path or serve as a real-capture fallback.
 
-The shaders and production renderer are unchanged. This replay does not compute
+The downstream replay uses the original consumer shaders. This replay does not compute
 loss/SSIM or pixel gradients, project gradients back to 3D, update Adam or execute
 ADC. It establishes local downstream equivalence and diagnostic dependencies;
 live capacity growth, worker integration and training lifecycle still require
 their own bounded checks. It does not establish a combined downstream timing or
 full-training gain.
+
+## Default-off renderer integration
+
+The experimental `GaussianForwardRenderer` can use the same sorting chain on
+its actual `TrainingBuffers`. `VULKAN_3DGS_FASTER_SORT=1` requests it when the
+renderer is initialized; unset or `0` selects original sorting. Other values
+are rejected. This environment setting is not a persisted UI setting. A process
+restart/model reinitialization is needed to read a changed environment value.
+The startup/transition log reports `requested`, `active` and `tile_size`.
+
+Only Fixed16 activates the candidate. Fixed8 and Adaptive Spatial retain their
+original paths and report the fallback. The default path allocates no candidate
+workspace. An opt-in workspace is owned by the renderer, grows with Gaussian
+count, rebinds current buffers at prepare/main boundaries and is released by
+renderer cleanup. Permanent Gaussian IDs, parameters, moments and the original
+Gaussian prefix/count buffer keep their original meanings.
+
+Preparation retains original projection/count/prefix, then records flag-prefix
+compaction and a separate private `Nv` readback. That readback uses the original
+prepare submission/fence; main consumes it only after the fence. Main sorts
+`Nv`, rebuilds the ordered prefix, emits direct IDs, sorts tile keys and builds
+ranges in the canonical renderer output buffers. Alignment/capacity checks cover
+the key/value arrays; radix storage is sized for the larger possible sort and
+reused with explicit transfer/compute dependencies. The one-call `forward()` API
+rejects this mode because it has no prepare fence; live training uses
+`TrainingStepExecutor`'s existing two submissions.
+
+Profiling includes original prefix plus compaction/readback in `Tile prefix`.
+The candidate's main sorting chain, including its ordered prefix and emit, is
+included in `Tile sort/ranges`; it has no separate `Tile emit` sample. Allocation
+and CPU count handling remain in CPU record/step timings. GPU shader lists alone
+do not establish whole-step or whole-training savings.
+
+Before requesting live training, validate the actual renderer path on private
+buffers:
+
+```text
+cmake --build build --config Release
+build/bin/Release/training_range_keys_gpu_tests --full-sort-chain --integrated-sort --synthetic --require-validation --report faster_sort_integration_edges.json
+build/bin/Release/training_range_keys_gpu_tests --full-sort-chain --integrated-sort --capture build/bin/Release/output/benchmark_scanline/frame_0_iter_8037.scanline.bin --inputs sort_baseline_inputs.bin --require-validation --report faster_sort_integration.json
+```
+
+This mode requires validation and rejects timing/downstream combinations. Its
+schema is `faster_sort_integration_gpu_v1`; a successful status is
+`PRIVATE_RENDERER_INTEGRATION_PASSED_NOT_LIVE_TRAINING_ADMISSION`. Both old and
+new renderer paths execute on the same private buffers in A/B/A order. Results
+check actual path selection, `Nv`, IDs, ranges, readonly projected input, color
+and blend equality. Real inputs additionally check the captured blend.
+
+The synthetic sequence changes Gaussian counts through 1,257,33,0,513,2 on one
+renderer, exercises buffer growth, nonzero-count buffer adoption, zero-count
+reset and repeated original/candidate switching. Buffer adoption here checks
+workspace/descriptor lifecycle with uploaded projected input; it does not execute
+ADC clone/split/prune or establish Adam-state equivalence. No worker, loss,
+backward, optimizer or real training is run by this mode. Bounded live lifecycle
+and whole-step performance/quality checks remain outstanding.

@@ -1,6 +1,6 @@
 #include "training_full_sort_reference.hpp"
 #include "training_sort_downstream_reference.hpp"
-#include "vulkan/diagnostic_radix_sort.hpp"
+#include "vulkan/radix_key_value.hpp"
 #include <iostream>
 #include <tuple>
 int main() {
@@ -23,7 +23,7 @@ int main() {
                            "Effective radix width boundary failed");
         bool rejected = false;
         try {
-            vulkan3DGS::recordDiagnosticRadixKeyValue({}, {}, 0, {}, {}, {}, 8);
+            vulkan3DGS::recordRadixKeyValue({}, {}, 0, {}, {}, {}, 8);
         } catch (const std::invalid_argument&) {
             rejected = true;
         }

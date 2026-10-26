@@ -1,13 +1,13 @@
 #define VRDX_IMPLEMENTATION
 #include <vk_radix_sort.h>
 
-#include "vulkan/diagnostic_radix_sort.hpp"
+#include "vulkan/radix_key_value.hpp"
 #include <stdexcept>
 #include <utility>
 
-void vulkan3DGS::recordDiagnosticRadixKeyValue(VkCommandBuffer command, VrdxSorter sorter,
-                                               uint32_t count, VkBuffer keys, VkBuffer values,
-                                               VkBuffer storage, uint32_t bits) {
+void vulkan3DGS::recordRadixKeyValue(VkCommandBuffer command, VrdxSorter sorter, uint32_t count,
+                                     VkBuffer keys, VkBuffer values, VkBuffer storage,
+                                     uint32_t bits) {
     if (bits != 16 && bits != 32)
         throw std::invalid_argument("Diagnostic radix expects 16/32 effective bits");
     if (count <= 1) return;

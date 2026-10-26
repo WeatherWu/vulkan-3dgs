@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,6 +14,21 @@
 namespace vulkan3DGS {
 
 namespace {
+
+bool fasterSortEnvironment() {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, "VULKAN_3DGS_FASTER_SORT") != 0 || !value) return false;
+    const std::unique_ptr<char, decltype(&std::free)> owner(value, &std::free);
+#else
+    const char* value = std::getenv("VULKAN_3DGS_FASTER_SORT");
+#endif
+    if (!value) return false;
+    if (std::strcmp(value, "0") && std::strcmp(value, "1"))
+        throw std::runtime_error("VULKAN_3DGS_FASTER_SORT must be 0 or 1");
+    return std::strcmp(value, "1") == 0;
+}
 
 vk::DescriptorSetLayoutBinding storageBinding(uint32_t binding) {
     vk::DescriptorSetLayoutBinding layoutBinding{};
@@ -82,6 +98,7 @@ void GaussianForwardRenderer::initialize(vk::Device device,
     computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     gaussianCount_ = gaussianCount;
     extent_ = extent;
+    fasterSortRequested_ = fasterSortEnvironment();
     createForwardResources();
     initialized_ = true;
 
@@ -90,6 +107,7 @@ void GaussianForwardRenderer::initialize(vk::Device device,
 }
 
 void GaussianForwardRenderer::cleanup() {
+    fasterSort_.reset();
     destroyForwardResources();
     device_ = nullptr;
     physicalDevice_ = nullptr;
@@ -103,6 +121,8 @@ void GaussianForwardRenderer::cleanup() {
     sortDiagnosticQueries_ = nullptr;
     pushConstants_ = {};
     initialized_ = false;
+    fasterSortRequested_ = fasterSortPrepared_ = false;
+    fasterSortLoggedState_ = -1;
 }
 
 void GaussianForwardRenderer::setTrainingBuffers(TrainingBuffers& trainingBuffers,
@@ -118,6 +138,8 @@ void GaussianForwardRenderer::setProfilingQueryPool(vk::QueryPool queryPool) {
 }
 
 void GaussianForwardRenderer::forward() {
+    if (fasterSortRequested_ && pushConstants_.tileSize == kTrainingTileSize16)
+        throw std::logic_error("Faster sort requires separate prepare/fence/main submissions");
     if (!initialized_) {
         LOG_WARN("GaussianForwardRenderer::forward called before initialization");
         return;
@@ -156,6 +178,18 @@ void GaussianForwardRenderer::prepareProjectedTileItems() {
 
     writeProfilingTimestamp(TrainingGpuProfileStage::TilePrefix, false);
     prefixGaussianTileRanges();
+    fasterSortPrepared_ = fasterSortRequested_ && pushConstants_.tileSize == kTrainingTileSize16;
+    const int sortState = fasterSortRequested_ ? (fasterSortPrepared_ ? 2 : 1) : 0;
+    if (fasterSortLoggedState_ != sortState) {
+        LOG_INFO("Faster-GS sorting: requested={}, active={}, tile_size={}{}", fasterSortRequested_,
+                 fasterSortPrepared_, pushConstants_.tileSize,
+                 fasterSortRequested_ && !fasterSortPrepared_ ? " (original sorting fallback)" : "");
+        fasterSortLoggedState_ = sortState;
+    }
+    if (fasterSortPrepared_) {
+        if (!fasterSort_) fasterSort_ = std::make_unique<TrainingFasterSort>(device_, physicalDevice_, computeQueue_, computeQueueFamilyIndex_);
+        fasterSort_->prepare(commandBuffer_, *trainingBuffers_, pushConstants_);
+    }
     writeProfilingTimestamp(TrainingGpuProfileStage::TilePrefix, true);
     writeSortTimestamp(TrainingSortTimestamp::PrefixEnd);
 }
@@ -177,6 +211,14 @@ void GaussianForwardRenderer::emitPreparedTileItems(uint32_t tileItemCount) {
 }
 
 void GaussianForwardRenderer::buildPreparedTileLists(uint32_t tileItemCount) {
+    if (fasterSortPrepared_) {
+        pushConstants_.tileItemCount = tileItemCount;
+        writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, false);
+        fasterSort_->build(commandBuffer_, *trainingBuffers_, pushConstants_, radixSorter_);
+        writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, true);
+        writeSortTimestamp(TrainingSortTimestamp::RangesEnd);
+        return;
+    }
     emitPreparedTileItems(tileItemCount);
     writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, false);
     sortTileItems(tileItemCount);

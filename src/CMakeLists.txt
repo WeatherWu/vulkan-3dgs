@@ -64,6 +64,7 @@ add_library(vulkan_3dgs_core STATIC
     training/core/training_optimizer_capture_gpu.cpp
     training/core/training_pipeline.cpp
     training/core/gaussian_forward_renderer.cpp
+    training/core/training_faster_sort.cpp
     training/core/gaussian_backward_renderer.cpp
     training/core/backward/backward_command_utils.cpp
     training/core/backward/backward_loss_pass.cpp

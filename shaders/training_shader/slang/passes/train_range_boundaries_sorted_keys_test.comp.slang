@@ -1,4 +1,4 @@
-// Private range-key diagnostic; not selected by a training renderer.
+// Range boundaries read the GPU-produced sorted tile keys directly.
 #include "../common/train_forward_tile_common.slang"
 
 [[vk::binding(5, 0)]] RWStructuredBuffer<uint4> tileRanges;

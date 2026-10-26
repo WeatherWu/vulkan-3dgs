@@ -6,6 +6,7 @@
 #include "training/core/training_buffers.hpp"
 #include "training/core/training_tile_layout.hpp"
 #include "training/core/training_types.hpp"
+#include "training/core/training_faster_sort.hpp"
 #include "render/renderer.hpp"
 #include "vulkan/compute_pipeline.hpp"
 #include <vk_radix_sort.h>
@@ -43,6 +44,10 @@ public:
     void prepareProjectedTileItems();
     void emitPreparedTileItems(uint32_t tileItemCount);
     void buildPreparedTileLists(uint32_t tileItemCount);
+    // Change only while idle, before recording the next prepare submission.
+    void setFasterSortEnabled(bool enabled) { fasterSortRequested_ = enabled; }
+    bool fasterSortActive() const { return fasterSortPrepared_; }
+    uint32_t fasterSortParticipatingCount() const { return fasterSortPrepared_ && fasterSort_ ? fasterSort_->participatingCount() : 0u; }
 
     bool isInitialized() const override { return initialized_; }
 
@@ -164,6 +169,9 @@ private:
     uint32_t adaptiveSplitThreshold_ = 256u;
     TrainingForwardCompositeMode compositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
     bool initialized_ = false;
+    std::unique_ptr<TrainingFasterSort> fasterSort_;
+    bool fasterSortRequested_ = false, fasterSortPrepared_ = false;
+    int fasterSortLoggedState_ = -1;
 };
 
 } // namespace vulkan3DGS
