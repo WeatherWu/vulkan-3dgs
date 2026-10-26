@@ -400,6 +400,7 @@ int main(int argc, char** argv) {
              << ",\"driver_version\":" << context.properties.driverVersion
              << ",\"timestamp_valid_bits\":" << context.physical.getQueueFamilyProperties()[context.family].timestampValidBits
              << ",\"timestamp_period_ns\":" << context.properties.limits.timestampPeriod
+             << ",\"min_storage_buffer_offset_alignment\":" << context.properties.limits.minStorageBufferOffsetAlignment
              << ",\"device_index\":" << deviceIndex << ",\"validation_enabled\":" << std::boolalpha << context.validation
              << ",\"synchronization_validation_enabled\":" << context.synchronization
              << ",\"validation_errors\":" << validationErrors.load()

@@ -5,6 +5,22 @@
 #include <tuple>
 int main() {
     try {
+        using vulkan3DGS::radixKeyValueCapacity;
+        sort_replay::check(
+            radixKeyValueCapacity(822, 16) == 824 && radixKeyValueCapacity(822, 32) == 824 &&
+                radixKeyValueCapacity(822, 256) == 832 && radixKeyValueCapacity(822, 4) == 822,
+            "822-item external radix descriptor allocation regression");
+        sort_replay::check(radixKeyValueCapacity(0, 16) == 0 && radixKeyValueCapacity(1, 16) == 4 &&
+                               radixKeyValueCapacity(824, 16) == 824 &&
+                               radixKeyValueCapacity(UINT32_MAX - 3, 16) == UINT32_MAX - 3,
+                           "Radix capacity boundary regression");
+        bool overflowRejected = false;
+        try {
+            (void)radixKeyValueCapacity(UINT32_MAX, 16);
+        } catch (const std::overflow_error&) {
+            overflowRejected = true;
+        }
+        sort_replay::check(overflowRejected, "Radix uint32 alignment overflow accepted");
         for (uint32_t n :
              {0u, 1u, 2u, 31u, 32u, 33u, 255u, 256u, 257u, 4095u, 4096u, 4097u, 65537u}) {
             auto [input, source] = full_sort::synthetic(n);

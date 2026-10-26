@@ -223,7 +223,10 @@ compaction and a separate private `Nv` readback. That readback uses the original
 prepare submission/fence; main consumes it only after the fence. Main sorts
 `Nv`, rebuilds the ordered prefix, emits direct IDs, sorts tile keys and builds
 ranges in the canonical renderer output buffers. Alignment/capacity checks cover
-the key/value arrays; radix storage is sized for the larger possible sort and
+the key/value arrays. Shared `TrainingBuffers` initialization and tile-item
+growth both round allocation capacity to the device-aligned radix key/value
+descriptor span, including for the original path. Logical item counts remain
+unchanged; padding is not emitted or sorted as additional items. Radix storage is sized for the larger possible sort and
 reused with explicit transfer/compute dependencies. The one-call `forward()` API
 rejects this mode because it has no prepare fence; live training uses
 `TrainingStepExecutor`'s existing two submissions.

@@ -1,5 +1,6 @@
 #include "training/core/training_buffers.hpp"
 #include "training/core/training_tile_layout.hpp"
+#include "vulkan/radix_key_value.hpp"
 
 #include "utils/logger.hpp"
 
@@ -269,6 +270,10 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     }
 
     const uint32_t safeGaussianCount = std::max(gaussianCount, 1u);
+    const uint32_t initialTileCapacity = radixKeyValueCapacity(
+        static_cast<uint32_t>(std::min<uint64_t>(uint64_t(safeGaussianCount) * 8u,
+                                               std::numeric_limits<uint32_t>::max())),
+        physicalDevice_.getProperties().limits.minStorageBufferOffsetAlignment);
     const uint32_t safeWidth = std::max(extent.width, 1u);
     const uint32_t safeHeight = std::max(extent.height, 1u);
     const uint64_t pixelCount = static_cast<uint64_t>(safeWidth) * static_cast<uint64_t>(safeHeight);
@@ -335,9 +340,7 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
                        vk::MemoryPropertyFlagBits::eDeviceLocal,
                        {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     createStorageBuffer(projected_, sizeof(ProjectedGaussian) * safeGaussianCount);
-    tileItemCapacity_ = static_cast<uint32_t>(std::min<uint64_t>(
-        std::max<uint64_t>(static_cast<uint64_t>(safeGaussianCount) * 8ull, 1ull),
-        std::numeric_limits<uint32_t>::max()));
+    tileItemCapacity_ = initialTileCapacity;
     createStorageBuffer(tileItems_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileKeyLow_, sizeof(uint32_t) * tileItemCapacity_);
     createStorageBuffer(tileKeyHigh_, sizeof(uint32_t) * tileItemCapacity_);
@@ -428,7 +431,8 @@ void TrainingBuffers::resizeTileItems(uint32_t tileItemCapacity) {
         throw std::runtime_error("TrainingBuffers must be initialized before resizing tile items");
     }
 
-    const uint32_t safeCapacity = std::max(tileItemCapacity, 1u);
+    const uint32_t safeCapacity = radixKeyValueCapacity(std::max(tileItemCapacity, 1u),
+        physicalDevice_.getProperties().limits.minStorageBufferOffsetAlignment);
     if (safeCapacity <= tileItemCapacity_ && tileItems_.getBuffer()) {
         return;
     }
@@ -458,7 +462,8 @@ void TrainingBuffers::ensureTileSortStorage(uint32_t tileItemCapacity,
         throw std::runtime_error("TrainingBuffers must be initialized before resizing tile sort storage");
     }
 
-    const uint32_t safeCapacity = std::max(tileItemCapacity, 1u);
+    const uint32_t safeCapacity = radixKeyValueCapacity(std::max(tileItemCapacity, 1u),
+        physicalDevice_.getProperties().limits.minStorageBufferOffsetAlignment);
     if (safeCapacity > tileItemCapacity_ ||
         !tileItems_.getBuffer() ||
         !tileKeyLow_.getBuffer() ||

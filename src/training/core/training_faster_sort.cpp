@@ -234,7 +234,7 @@ void TrainingFasterSort::build(vk::CommandBuffer command, TrainingBuffers& buffe
                     (visibleCount_ == 0) == (push.tileItemCount == 0),
                 "Faster sort GPU count invalid");
     const uint64_t alignment = physical_.getProperties().limits.minStorageBufferOffsetAlignment;
-    const uint64_t alignedItems = aligned(uint64_t(push.tileItemCount) * 4, alignment) / 4;
+    const uint64_t alignedItems = radixKeyValueCapacity(push.tileItemCount, alignment);
     const auto limits = physical_.getProperties().limits;
     requireSort(alignedItems <= UINT32_MAX && alignedItems * 4 <= limits.maxStorageBufferRange &&
                     (uint64_t(push.tileItemCount) + 256) / 256 <=
