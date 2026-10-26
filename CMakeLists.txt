@@ -295,6 +295,8 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_gather
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_sort.comp.slang" "train_forward_tile_sort.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_range_boundaries.comp.slang"
                         "train_forward_tile_range_boundaries.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_range_boundaries_sorted_keys_test.comp.slang"
+                        "train_range_boundaries_sorted_keys_test.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward.comp.slang" "train_forward.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_workgroup.comp.slang"
                         "train_forward_workgroup.comp")

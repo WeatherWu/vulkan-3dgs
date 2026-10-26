@@ -84,6 +84,29 @@ foreach(sort_config IN LISTS CMAKE_CONFIGURATION_TYPES)
 endforeach()
 add_test(NAME training_sort_baseline_help COMMAND $<TARGET_FILE:training_sort_baseline_gpu_tests> --help)
 
+add_executable(training_range_key_tests training_range_key_tests.cpp)
+target_link_libraries(training_range_key_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_range_key_tests)
+
+# Private range-key candidate only; normal renderer selection is unchanged.
+add_executable(training_range_keys_gpu_tests training_range_keys_gpu_tests.cpp)
+target_link_libraries(training_range_keys_gpu_tests PRIVATE vulkan_3dgs_core)
+target_compile_definitions(training_range_keys_gpu_tests PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    RANGE_KEY_RUNTIME_DIR="${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    RANGE_KEY_BUILD_CONFIG="$<CONFIG>"
+    RANGE_KEY_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+    RANGE_KEY_SHADER_COMPILER="Slang ${OPTIMIZER_SLANG_VERSION}, debug=${VULKAN_3DGS_TRAINING_SHADER_DEBUG_INFO}"
+    RANGE_KEY_SORTER_HASH="${SORT_REPLAY_SORTER_HASH}")
+set_target_properties(training_range_keys_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+foreach(range_config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${range_config}" range_config_upper)
+    set_target_properties(training_range_keys_gpu_tests PROPERTIES
+        "RUNTIME_OUTPUT_DIRECTORY_${range_config_upper}" "${CMAKE_BINARY_DIR}/bin/${range_config}")
+endforeach()
+add_test(NAME training_range_keys_help COMMAND $<TARGET_FILE:training_range_keys_gpu_tests> --help)
+
 # Explicit S4-3 private diagnostics, not a hardware-dependent CTest.
 file(SHA256 "${CMAKE_SOURCE_DIR}/third_party/vulkan_radix_sort/include/vk_radix_sort.h"
     SCHEDULING_SORTER_HASH)
