@@ -1,5 +1,9 @@
 # Direct sorted-key range audit
 
+This page describes the default independent range-only comparison. The explicit
+`--full-sort-chain` mode has a different scope and protocol; see the
+[complete sorting-chain comparison](training-full-sort-audit.md).
+
 `tests/training_range_key_audit.py` is an independent, CPU-only audit of the
 Fixed16 range-boundary data path. It does not change shaders, select a training
 variant, execute Vulkan or combine with depth-sort reuse.

@@ -88,7 +88,11 @@ add_executable(training_range_key_tests training_range_key_tests.cpp)
 target_link_libraries(training_range_key_tests PRIVATE vulkan_3dgs_core)
 configure_vulkan_3dgs_test(training_range_key_tests)
 
-# Private range-key candidate only; normal renderer selection is unchanged.
+add_executable(training_full_sort_tests training_full_sort_tests.cpp)
+target_link_libraries(training_full_sort_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_full_sort_tests)
+
+# Private list-sorting comparisons; normal renderer selection is unchanged.
 add_executable(training_range_keys_gpu_tests training_range_keys_gpu_tests.cpp)
 target_link_libraries(training_range_keys_gpu_tests PRIVATE vulkan_3dgs_core)
 target_compile_definitions(training_range_keys_gpu_tests PRIVATE

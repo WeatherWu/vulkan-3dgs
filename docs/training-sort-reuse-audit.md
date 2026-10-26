@@ -266,3 +266,12 @@ With `--sort-input`, the memory model uses that file's replay capacity unless
 an explicit `--item-capacity` scenario overrides it. This still does not recover
 historical live capacity. Sync the two GPU JSON files and the binary back for
 evaluation; raw captures are diagnostic inputs, not source files to commit.
+
+## Private complete-chain candidate
+
+The separate `training_range_keys_gpu_tests --full-sort-chain` runner consumes
+these matching binaries, recomputes all list producers on GPU, and compares the
+complete compact/depth-sort/prefix/emit/effective-width-tile-sort package on
+private buffers. Its protocol, adaptations and target-device commands are in
+the [complete sorting-chain comparison](training-full-sort-audit.md). It does
+not change the original baseline runner or enable a training candidate.

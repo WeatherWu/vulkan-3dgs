@@ -1,4 +1,5 @@
 #include "training_range_key_session.hpp"
+#include "training_full_sort_session.hpp"
 #include "training_optimizer_r1_metrics.hpp"
 #include "utils/logger.hpp"
 
@@ -154,12 +155,63 @@ std::string testCase(Context& context, const Inputs& input, bool timing) {
     out << '}';
     return out.str();
 }
+std::string testFullCase(Context& context, const Inputs& input, bool timing) {
+    full_sort::verifyChainOracle(input);
+    full_sort::Session session(*context.device, context.physical, context.queue, context.family, input);
+    session.initialize();
+    for (bool candidate : {false, true, false}) {
+        session.run(candidate); session.verify();
+        check(!validationErrors, "Full sort core/synchronization validation failed");
+    }
+    std::ostringstream out; out.precision(10);
+    out << "{\"gaussians\":" << input.header.source.gaussianCount << ",\"participating_gaussians\":" << session.participatingCount()
+        << ",\"items\":" << input.header.source.itemCount << ",\"tiles\":" << input.header.source.tileCount
+        << ",\"capacity\":" << input.header.capacity << ",\"tile_effective_bits\":" << full_sort::tileBits(input.header.source.tileCount)
+        << ",\"tile_radix_passes\":" << full_sort::tileBits(input.header.source.tileCount) / 8
+        << ",\"exact_list_ranges_intermediates_A_B_A\":true,\"readonly_tails_canaries_verified\":true";
+    if (timing) {
+        std::array<std::vector<full_sort::Sample>, 3> samples;
+        for (size_t phase = 0; phase < 3; ++phase) {
+            for (uint32_t i = 0; i < 2; ++i) session.run(phase == 1);
+            for (uint32_t i = 0; i < 8; ++i) samples[phase].push_back(session.run(phase == 1));
+        }
+        session.verify(); session.run(true); session.verify();
+        check(!validationErrors, "Full sort timing validation errors");
+        std::array<std::array<double, 8>, 3> active{}, span{}, cpu{};
+        out << ",\"warmup_per_phase\":2,\"measured_per_phase\":8,\"phases\":[";
+        for (size_t phase = 0; phase < 3; ++phase) {
+            if (phase) out << ',';
+            out << "{\"candidate\":" << std::boolalpha << (phase == 1) << ",\"samples\":[";
+            for (size_t i = 0; i < 8; ++i) {
+                const auto& s = samples[phase][i];
+                active[phase][i] = s.activeMs; span[phase][i] = s.spanMs; cpu[phase][i] = s.cpuMs;
+                if (i) out << ',';
+                out << "{\"gpu_active_ms\":" << s.activeMs << ",\"gpu_span_ms\":" << s.spanMs
+                    << ",\"prepare_ms\":" << s.prepareMs << ",\"main_ms\":" << s.mainMs
+                    << ",\"ranges_ms\":" << s.rangeMs << ",\"cpu_sequence_ms\":" << s.cpuMs
+                    << ",\"restore_cpu_submit_wait_ms\":" << s.restoreCpuMs << '}';
+            }
+            out << "]}";
+        }
+        const bool target = context.properties.vendorID == 0x10DE &&
+            std::string_view(context.properties.deviceName.data()).find("RTX 3090") != std::string_view::npos;
+        out << "],\"gpu_active_evaluation\":";
+        evaluationJson(out, optimizer_r1::evaluate(active[0], active[1], active[2]), target, true);
+        out << ",\"gpu_span_evaluation\":";
+        evaluationJson(out, optimizer_r1::evaluate(span[0], span[1], span[2]), target, true);
+        out << ",\"cpu_sequence_evaluation\":";
+        evaluationJson(out, optimizer_r1::evaluate(cpu[0], cpu[1], cpu[2]), target, true);
+    }
+    out << '}'; return out.str();
+}
 constexpr const char* usage = "training_range_keys_gpu_tests (--synthetic | --capture INPUT.scanline.bin --inputs INPUT.sort-input.bin) "
-                             "--report NEW.json [--require-validation | --no-validation] [--timing] [--device-index N]";
+                             "--report NEW.json [--full-sort-chain] [--require-validation | --no-validation] [--timing] [--device-index N]";
 } // namespace
 
 int main(int argc, char** argv) {
     std::unique_ptr<TrainingDiagnosticReport> report;
+    bool fullChain = false;
+    std::string failureContext;
     try {
         std::filesystem::path capturePath, inputPath, output;
         bool syntheticMode = false, timing = false, requireValidation = false, noValidation = false;
@@ -168,6 +220,7 @@ int main(int argc, char** argv) {
             const std::string_view arg(argv[i]);
             if (arg == "--help") { std::cout << usage << '\n'; return 0; }
             if (arg == "--synthetic") syntheticMode = true;
+            else if (arg == "--full-sort-chain") fullChain = true;
             else if (arg == "--timing") timing = true;
             else if (arg == "--require-validation") requireValidation = true;
             else if (arg == "--no-validation") noValidation = true;
@@ -191,9 +244,27 @@ int main(int argc, char** argv) {
             input = readInputs(inputPath); verify(input, source);
         }
         Context context(requireValidation, noValidation, deviceIndex);
+        failureContext = ",\"device\":" + schedulingJsonQuote(context.properties.deviceName.data()) +
+            ",\"device_uuid\":" + schedulingJsonQuote(context.uuid) +
+            ",\"driver_version\":" + std::to_string(context.properties.driverVersion) +
+            ",\"validation_enabled\":" + (context.validation ? "true" : "false") +
+            ",\"synchronization_validation_enabled\":" + (context.synchronization ? "true" : "false");
         Logger::get_instance().set_level(LogLevel::ERROR_VULKAN_3DGS);
         std::ostringstream cases;
-        if (syntheticMode) {
+        if (syntheticMode && fullChain) {
+            bool first = true;
+            auto run = [&](auto pair) {
+                auto& [data, source] = pair; verify(data, source);
+                if (!first) cases << ',';
+                first = false; cases << testFullCase(context, data, false);
+            };
+            for (uint32_t n : {0u, 1u, 2u, 31u, 32u, 33u, 255u, 256u, 257u, 4095u, 4096u, 4097u, 65537u})
+                run(full_sort::synthetic(n));
+            run(full_sort::synthetic(33, true));
+            run(full_sort::synthetic(33, false, 2, true));
+            run(full_sort::synthetic(2, false, 65536));
+            run(full_sort::synthetic(2, false, 65537));
+        } else if (syntheticMode) {
             bool first = true;
             for (uint32_t n : {0u, 1u, 2u, 31u, 32u, 33u, 255u, 256u, 257u, 4095u, 4096u, 4097u}) {
                 auto [data, source] = synthetic(n); verify(data, source);
@@ -203,11 +274,12 @@ int main(int argc, char** argv) {
             }
             auto [data, source] = synthetic(4097, true); verify(data, source);
             cases << ',' << testCase(context, data, false);
-        } else cases << testCase(context, input, timing);
+        } else cases << (fullChain ? testFullCase(context, input, timing) : testCase(context, input, timing));
         context.device->waitIdle();
         check(!validationErrors, "Range validation errors");
         std::ostringstream json;
-        json << "{\"schema\":\"range_sorted_keys_gpu_v1\",\"status\":\"PRIVATE_CORRECTNESS_PASSED_NOT_TRAINING_ADMISSION\""
+        json << "{\"schema\":" << schedulingJsonQuote(fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1")
+             << ",\"status\":\"PRIVATE_CORRECTNESS_PASSED_NOT_TRAINING_ADMISSION\""
              << ",\"device\":" << schedulingJsonQuote(context.properties.deviceName.data())
              << ",\"device_uuid\":" << schedulingJsonQuote(context.uuid)
              << ",\"vendor_id\":" << context.properties.vendorID << ",\"device_id\":" << context.properties.deviceID
@@ -228,27 +300,39 @@ int main(int argc, char** argv) {
              << ",\"iteration\":" << (syntheticMode ? 0 : input.header.source.iteration)
              << ",\"frame\":" << (syntheticMode ? 0 : input.header.source.frame)
              << ",\"production_candidate_enabled\":false,\"training_advanced\":false,\"full_training_speedup\":null"
-             << ",\"full_list_sequence_measured\":false,\"scope\":\"GPU depth sort + high-key gather + tile sort + item gather + "
+             << (fullChain ? ",\"full_list_sequence_measured\":true,\"scope\":\"GPU count + prefixes + stable compaction + depth sort + emit + tile sort + ranges, including original prepare count readback and candidate Nv readback. No projection/composite/loss/backward/Adam/ADC.\""
+                             ",\"candidate_bundle\":\"Stable compact + Nv depth sort + reordered prefix/emit + effective-bit tile KV sort + direct Gaussian IDs + direct-key ranges\""
+                             ",\"key_storage_bits\":32,\"physical_uint16_storage\":false,\"stable_compaction\":true"
+                             ",\"cpu_sequence_includes\":\"Prepare/main recording, submissions, original fences, count readback/checks. Excludes restore, downloads/verification and timestamp query retrieval.\""
+                             ",\"gpu_active_includes\":\"Prepare and main GPU intervals including count copies; CPU scheduling gap excluded and separately reported in gpu_span_ms and cpu_sequence_ms.\""
+                          : ",\"full_list_sequence_measured\":false,\"scope\":\"GPU depth sort + high-key gather + tile sort + item gather + "
                 "boundary construction + range finalize. No projection/count/prefix/emit/composite/backward/Adam.\""
+                )
              << ",\"restore_policy\":\"Private seeds/work/ranges/radix scratch restored outside every measured submission; "
                 "producer sorts are executed inside the measured sequence for A/B/A, not supplied by CPU. Cache-perturbed.\""
              << ",\"shader_fnv1a64\":{";
         bool first = true;
-        for (const char* name : {"train_forward_tile_range_boundaries", "train_range_boundaries_sorted_keys_test",
-                 "train_forward_tile_gather_high", "train_forward_tile_gather_items", "train_forward_tile_sort"}) {
+        std::vector<const char*> shaderNames{"train_forward_tile_range_boundaries", "train_range_boundaries_sorted_keys_test",
+                 "train_forward_tile_gather_high", "train_forward_tile_gather_items", "train_forward_tile_sort"};
+        if (fullChain) for (const char* name : {"train_forward_tile_count", "train_forward_tile_emit", "train_forward_tile_clear",
+                "train_full_sort_prepare_test", "train_full_sort_emit_test", "train_forward_gaussian_prefix_ranges",
+                "train_forward_gaussian_prefix_scratch", "train_forward_gaussian_prefix_top",
+                "train_forward_gaussian_prefix_add_scratch", "train_forward_gaussian_prefix_add_ranges"}) shaderNames.push_back(name);
+        for (const char* name : shaderNames) {
             if (!first) json << ',';
             first = false;
             const auto path = std::filesystem::path(RANGE_KEY_RUNTIME_DIR) / "shaders" / (std::string(name) + ".comp.spv");
             json << schedulingJsonQuote(name) << ":\"" << optimizerShaderHash(path) << '"';
         }
         json << "},\"cases\":[" << cases.str() << "]}\n";
-        report->write(json.str()); std::cout << "Private range-key comparison complete: " << output << '\n';
+        report->write(json.str()); std::cout << (fullChain ? "Private full-sort comparison complete: " :
+            "Private range-key comparison complete: ") << output << '\n';
     } catch (const std::exception& error) {
         std::cerr << "Private range-key comparison failed: " << error.what() << '\n';
         if (report && !report->written()) {
-            try { report->write("{\"schema\":\"range_sorted_keys_gpu_v1\",\"status\":\"STOP\",\"error\":" +
+            try { report->write("{\"schema\":" + schedulingJsonQuote(fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1") + ",\"status\":\"STOP\",\"error\":" +
                 schedulingJsonQuote(error.what()) + ",\"validation_errors\":" + std::to_string(validationErrors.load()) +
-                ",\"full_training_speedup\":null}\n"); } catch (...) {}
+                failureContext + ",\"full_training_speedup\":null}\n"); } catch (...) {}
         }
         return 1;
     }
