@@ -8,6 +8,11 @@ struct Sample {
     double activeMs = 0, spanMs = 0, rangeMs = 0, prepareMs = 0, mainMs = 0;
     double restoreCpuMs = 0, cpuMs = 0;
 };
+// Borrowed for the producer session lifetime; the next run replaces their contents.
+struct OutputView {
+    vk::DescriptorBufferInfo projected, items, ranges;
+    TrainingPushConstants push;
+};
 // Frozen projected inputs; all list producers run on GPU in the timed prepare/main sequence.
 class Session {
     enum Pass : size_t {
@@ -126,7 +131,28 @@ public:
     uint32_t participatingCount() const {
         return uint32_t(visible_.size());
     }
+    OutputView outputView() const {
+        return {projected_.getDescriptorInfo(), items_[5].getDescriptorInfo(),
+                ranges_.getDescriptorInfo(), push_};
+    }
+    uint64_t logicalBufferBytes() const {
+        uint64_t bytes = 0;
+        for (const auto* buffer : {&projected_, &densification_, &prefix_, &depth_, &visibleIDs_,
+                                   &ranges_, &storage_, &readback_})
+            bytes += buffer->getSize();
+        for (const auto& buffer : banks_)
+            bytes += buffer.getSize();
+        for (const auto& buffer : controls_)
+            bytes += buffer.getSize();
+        for (const auto& buffer : items_)
+            bytes += buffer.getSize();
+        return bytes;
+    }
     Sample run(bool candidate) {
+        return runWithConsumers(candidate, [](vk::CommandBuffer, const OutputView&) {});
+    }
+    // Consumers record after list timestamps. This overload does not time the combined sequence.
+    template <class Consumer> Sample runWithConsumers(bool candidate, Consumer&& consume) {
         Sample out;
         candidate_ = candidate;
         begin();
@@ -220,6 +246,7 @@ public:
         dispatch(Finalize, t_, push_);
         computeBarrier();
         stamp(3);
+        consume(command_, outputView());
         submit();
         out.cpuMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)

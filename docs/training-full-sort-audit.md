@@ -140,3 +140,64 @@ is marked `NON_TARGET_DEVICE_NOT_ADMISSION`. A passing short comparison still
 requires downstream and lifecycle review before any production switch or
 full-training run. No independent range-only gain is added to this package's
 measured gain.
+
+## Private downstream replay
+
+`--full-sort-chain --downstream --require-validation` checks actual GPU-produced
+lists with the original Fixed16 Workgroup Shared composite and original Tensor
+Subgroup/Global backward shaders. It is a correctness diagnostic with fixed
+captured pixel gradients, not a timing run. It requires buffer float32 atomic
+add, native subgroup32, the original Tensor capability gate, and core plus
+synchronization validation. There is no automatic backward fallback.
+
+The runner executes A1/B/A2. Each invocation rebuilds the complete list on GPU
+and records the two consumers in the same main command buffer, directly binding
+the producer's projected, final-ID and range buffers. No CPU-sorted list is
+uploaded. The existing range-finalize dependency precedes the consumers; a
+transfer/compute barrier covers output initialization and producer writes, a
+compute barrier makes freshly produced blend states visible to backward, and
+output dependencies cover verification downloads. Workspaces are reset before
+each invocation. All references remain private and no worker is advanced.
+
+For the RTX 3090, build Release and run from the repository root:
+
+```text
+cmake --build build --config Release
+build/bin/Release/training_range_keys_gpu_tests --full-sort-chain --downstream --synthetic --require-validation --report full_sort_downstream_edges.json
+build/bin/Release/training_range_keys_gpu_tests --full-sort-chain --downstream --capture build/bin/Release/output/benchmark_scanline/frame_0_iter_8037.scanline.bin --inputs sort_baseline_inputs.bin --require-validation --report full_sort_downstream.json
+```
+
+Both report names must be new. Use the actual matching capture location if it
+differs. `--downstream` rejects `--timing` and `--no-validation`. A passing report
+has schema `faster_sort_downstream_gpu_v1` and status
+`PRIVATE_DOWNSTREAM_PASSED_NOT_TRAINING_ADMISSION`. A numerical mismatch preserves
+all comparisons in `STOP_DOWNSTREAM_NUMERICAL_MISMATCH` and returns nonzero;
+other failures write `STOP` when the report path has been reserved.
+
+RGBA and all blend fields must be bitwise identical between A1/B, A2/B and the
+original A1/A2 repeat. Real captures additionally require every produced blend
+to match the captured original blend exactly. Projected-gradient comparisons
+reuse `compareRowGradients`: per-component absolute tolerance `1e-5` plus relative
+tolerance `1e-3`, finite values, zero padding and identical Gaussian counts. All
+three comparisons use that same contract; baseline repeat noise never widens it.
+Reports retain the differences, relative L2, cosine and maximum-error location,
+as well as readonly, tail and canary checks. Logical producer/consumer buffer
+bytes are reported; native peak VRAM remains unmeasured. The diagnostic holds
+reference and candidate workspace together, so these bytes are not an estimate
+of production memory overhead.
+
+Synthetic downstream cases have a 31x15 partial-edge image, zero/one/multiple
+Gaussians, inactive Gaussians, tied depths and multi-tile splats. Their pixel
+gradients are deterministic fixture inputs; their colors and blends are produced
+on GPU, with no historical blend reference. On devices that cannot run the native
+Tensor path, explicit `--portable-reference` is allowed only with
+`--downstream --synthetic`. It uses the original Direct backward shader, emits
+`PRIVATE_PORTABLE_FIXTURE_PASSED_NOT_TENSOR_ADMISSION`, and cannot validate the
+3090 Tensor path or serve as a real-capture fallback.
+
+The shaders and production renderer are unchanged. This replay does not compute
+loss/SSIM or pixel gradients, project gradients back to 3D, update Adam or execute
+ADC. It establishes local downstream equivalence and diagnostic dependencies;
+live capacity growth, worker integration and training lifecycle still require
+their own bounded checks. It does not establish a combined downstream timing or
+full-training gain.
