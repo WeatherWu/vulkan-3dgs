@@ -219,6 +219,14 @@ configure_vulkan_3dgs_test(viewer_controller_tests)
 add_executable(gaussian_render_profile_tests gaussian_render_profile_tests.cpp)
 configure_vulkan_3dgs_test(gaussian_render_profile_tests)
 
+# Explicit headless GPU regression; no hardware-dependent CTest requirement.
+add_executable(graphics_depth_reuse_gpu_tests graphics_depth_reuse_gpu_tests.cpp)
+target_link_libraries(graphics_depth_reuse_gpu_tests PRIVATE vulkan_3dgs_core)
+target_compile_definitions(graphics_depth_reuse_gpu_tests PRIVATE VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1)
+set_target_properties(graphics_depth_reuse_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+add_test(NAME graphics_depth_reuse_help COMMAND $<TARGET_FILE:graphics_depth_reuse_gpu_tests> --help)
+
 add_executable(gpu_selection_tests
     gpu_selection_tests.cpp
     ../src/context/device_selection.cpp

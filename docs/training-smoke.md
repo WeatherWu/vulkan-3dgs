@@ -98,3 +98,27 @@ These validation-enabled, instrumented runs establish bounded lifecycle evidence
 They do not establish training quality, full-training speed or an end-to-end
 gain percentage. Keep both raw reports for review; uninstrumented timing and
 full-training/held-out quality assessment are separate decisions.
+
+## Shared depth-attachment synchronization
+
+The presentation framebuffers share one depth image. The render-pass external
+dependency covers early and late fragment tests and depth writes, as well as
+color attachment access. This orders the previous pass's depth store operation
+before the next clear/layout transition. `STORE_OP_DONT_CARE` and disabled splat
+depth writes do not eliminate the attachment synchronization requirement. See
+the [Vulkan synchronization examples](https://docs.vulkan.org/guide/latest/synchronization_examples.html).
+
+An explicit headless regression exercises eight graphics submissions with shared
+depth storage and the application's actual render-pass builder:
+
+```text
+build/bin/Release/graphics_depth_reuse_gpu_tests --report depth_reuse_check.json
+```
+
+The negative control intentionally uses the incomplete dependency and must
+reproduce depth WAW errors; the fixed pass must have zero validation errors.
+The report separates those expected control errors from fixed-path errors. The
+test creates no window and advances no training. It is not an automatic
+hardware-dependent CTest. Smoke startup still rejects accumulated application
+validation errors; after applying synchronization fixes, restart the application
+to begin a new validation interval rather than clearing the counter in place.
