@@ -91,6 +91,7 @@ add_library(vulkan_3dgs_core STATIC
     
     # 训练应用层与 UI
     training/app/training_controller.cpp
+    training/app/training_smoke.cpp
     training/app/training_settings.cpp
     training/ui/training_command_panel.cpp
     training/ui/training_diagnostics_panel.cpp

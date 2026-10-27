@@ -8,6 +8,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -349,6 +350,9 @@ void GaussianTraining::trainStep() {
 
     const bool pruneByScreenSize =
         currentIteration > densificationConfig_.opacityResetInterval;
+    const auto densificationPush = createDensificationPushConstants(pruneByScreenSize);
+    const uint32_t capacityBefore = buffers_.tileItemCapacity();
+    const uint32_t executedFrame = static_cast<uint32_t>(currentFrameIndex());
     if (optimizerCapture_) optimizerCapture_->setFrame(static_cast<uint32_t>(currentFrameIndex()));
     const TrainingStepExecutionResult execution = stepExecutor_.execute({
         .buffers = buffers_,
@@ -358,8 +362,7 @@ void GaussianTraining::trainStep() {
         .validation = validationService_,
         .profiling = profilingService_,
         .pushConstants = pushConstants,
-        .densificationPushConstants =
-            createDensificationPushConstants(pruneByScreenSize),
+        .densificationPushConstants = densificationPush,
         .uploadSemaphore = imageRuntime_.uploadSemaphore(),
         .uploadWaitValue = imageRuntime_.pendingUploadValue(),
         .trainableGaussianCount = trainableGaussianCount_,
@@ -461,6 +464,74 @@ void GaussianTraining::trainStep() {
 
     ++trainingIteration_;
     if (hasDataset()) frameScheduler_.advanceAfterIteration();
+    if (stepObservationEnabled_) lastStepObservation_ = {
+        .iteration = trainingIteration_, .frame = executedFrame,
+        .gaussiansBefore = pushConstants.gaussianCount, .gaussiansAfter = trainableGaussianCount_,
+        .tileItems = execution.tileItemCount, .tileCapacity = buffers_.tileItemCapacity(),
+        .activeSHDegree = pushConstants.activeSHDegree,
+        .participatingGaussians = gaussianForward->fasterSortParticipatingCount(),
+        .ssimMode = static_cast<uint32_t>(activeSsimMode()), .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
+        .tileMode = static_cast<uint32_t>(tileMode_),
+        .fasterSortRequested = gaussianForward->fasterSortRequested(), .fasterSortActive = gaussianForward->fasterSortActive(),
+        .optimizerUpdated = execution.optimizerUpdated, .densification = execution.densificationRan,
+        .opacityReset = execution.densificationRan && densificationPush.resetOpacity != 0,
+        .resized = capacityBefore != buffers_.tileItemCapacity(),
+        .validation = validationService_.stats(), .profiling = profilingService_.stats()};
+}
+
+TrainingStateFiniteCheck GaussianTraining::inspectTrainingStateFinite() {
+    if (!trainingIteration_ || !hasTrainableModel()) throw std::runtime_error("Finite inspection requires a completed training step");
+    stepExecutor_.synchronizeDiagnosticDownloads(transferQueue_);
+    validationService_.collect(buffers_.extent(), buffers_.gaussianCapacity());
+    OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_);
+    TrainingStateFiniteCheck result;
+    result.maxLoss = -std::numeric_limits<double>::infinity();
+    const uint64_t pixels = uint64_t(buffers_.extent().width) * buffers_.extent().height;
+    std::vector<float> chunk(optimizerCaptureChunkBytes / sizeof(float));
+    for (uint64_t offset = 0; offset < pixels;) {
+        const size_t count = static_cast<size_t>(std::min<uint64_t>(chunk.size(), pixels-offset));
+        transfer.download(buffers_.lossInfo(), offset*4, std::as_writable_bytes(std::span(chunk).first(count)));
+        for (size_t i=0;i<count;++i) {
+            ++result.lossValues;
+            if (!std::isfinite(chunk[i])) ++result.invalidLossValues;
+            else { result.meanLoss += double(chunk[i])/double(pixels); result.maxLoss = std::max(result.maxLoss,double(chunk[i])); }
+        }
+        offset += count;
+    }
+    if (result.invalidLossValues) result.meanLoss = result.maxLoss = std::numeric_limits<double>::quiet_NaN();
+    std::vector<GaussianTrainParam> params(optimizerCaptureChunkBytes / sizeof(GaussianTrainParam));
+    for (uint64_t offset=0;offset<trainableGaussianCount_;) {
+        const size_t count=static_cast<size_t>(std::min<uint64_t>(params.size(),trainableGaussianCount_-offset));
+        transfer.download(buffers_.gaussianParamsInfo(), offset*sizeof(GaussianTrainParam),
+            std::as_writable_bytes(std::span(params).first(count)));
+        for (size_t i=0;i<count;++i) {
+            std::array<float,sizeof(GaussianTrainParam)/sizeof(float)> values;
+            std::memcpy(values.data(),&params[i],sizeof(GaussianTrainParam));
+            for(float value:values) {++result.gaussianValues;result.invalidGaussianValues+=!std::isfinite(value);}
+            for(int axis=0;axis<3;++axis) result.invalidActivatedScales+=!std::isfinite(std::exp(params[i].scale[axis]));
+        }
+        offset+=count;
+    }
+    return result;
+}
+
+uint64_t GaussianTraining::diagnosticTrainingStateHash() {
+    if (!hasTrainableModel()) throw std::runtime_error("State fingerprint requires an initialized model");
+    stepExecutor_.synchronizeDiagnosticDownloads(transferQueue_);
+    OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_);
+    std::vector<std::byte> chunk(optimizerCaptureChunkBytes);
+    uint64_t hash = optimizerHash(std::as_bytes(std::span{&trainableGaussianCount_,1}));
+    const std::array<vk::DescriptorBufferInfo,3> buffers{buffers_.gaussianParamsInfo(),buffers_.adamStatesInfo(),buffers_.densificationStatesInfo()};
+    const std::array<size_t,3> strides{sizeof(GaussianTrainParam),sizeof(AdamState),sizeof(GaussianDensificationState)};
+    for(size_t block=0;block<buffers.size();++block) {
+        const uint64_t bytes=uint64_t(trainableGaussianCount_)*strides[block];
+        for(uint64_t offset=0;offset<bytes;) {
+            const size_t count=static_cast<size_t>(std::min<uint64_t>(chunk.size(),bytes-offset));
+            transfer.download(buffers[block],offset,std::span(chunk).first(count));
+            hash=optimizerHash(std::span<const std::byte>(chunk).first(count),hash);offset+=count;
+        }
+    }
+    return hash;
 }
 
 void GaussianTraining::loadMipNeRF360Dataset(const std::filesystem::path& sceneRoot,

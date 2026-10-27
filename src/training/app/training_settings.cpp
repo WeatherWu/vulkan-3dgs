@@ -1,6 +1,6 @@
 #include "training/app/training_settings.hpp"
-#include "training/core/training_tile_layout.hpp"
 #include "training/core/training_ssim_mode.hpp"
+#include "training/core/training_tile_layout.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -184,29 +184,23 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
         else if (key == "tensor_subgroup_reduction") {
             int value = 0;
             if (row >> value) settings.run.tensorSubgroupReduction = value != 0;
-        }
-        else if (key == "tensor_global_pixel_grad") {
+        } else if (key == "tensor_global_pixel_grad") {
             int value = 0;
             if (row >> value) settings.run.tensorGlobalPixelGrad = value != 0;
-        }
-        else if (key == "tensor_rgb_latency_hiding") {
+        } else if (key == "tensor_rgb_latency_hiding") {
             int value = 0;
             if (row >> value) settings.run.tensorRgbLatencyHiding = value != 0;
-        }
-        else if (key == "tensor_early_cull") {
+        } else if (key == "tensor_early_cull") {
             int value = 0;
             settings.run.tensorEarlyCull = (row >> value) && value == 1;
-        }
-        else if (key == "separable_ssim") {
+        } else if (key == "separable_ssim") {
             int value = 0;
             if ((row >> value) && !explicitSsimMode) settings.run.ssimMode = value != 0 ? 1 : 0;
-        }
-        else if (key == "ssim_mode") {
+        } else if (key == "ssim_mode") {
             int value = 0;
             explicitSsimMode = true;
             settings.run.ssimMode = (row >> value) ? value : 0;
-        }
-        else if (key == "steps_per_frame")
+        } else if (key == "steps_per_frame")
             row >> settings.run.benchmarkStepsPerFrame;
         else if (key == "benchmark_frame")
             row >> settings.run.benchmarkFrame;
@@ -490,6 +484,22 @@ TrainingRunConfig makeTrainingRunConfig(const TrainingSettings& settings) {
     };
 }
 
+std::string TrainingSettingsStore::describeRun(const TrainingRunConfig& config) {
+    TrainingSettings settings;
+    setTextBuffer(settings.paths.dataset, config.datasetPath.string());
+    setTextBuffer(settings.paths.outputDirectory, config.outputPath.parent_path().string());
+    setTextBuffer(settings.paths.outputName, config.outputPath.filename().string());
+    settings.gpuSelector = config.gpuSelector;
+    settings.initialization = config.initialization;
+    settings.schedule = config.schedule;
+    settings.optimizer = config.optimizer;
+    settings.densification = config.densification;
+    settings.run = config.run;
+    std::ostringstream out;
+    write(out, settings);
+    return out.str();
+}
+
 void TrainingSettingsStore::clamp(TrainingSettings& settings) {
     if (!validTrainingSsimMode(static_cast<TrainingSsimMode>(settings.run.ssimMode))) {
         settings.run.ssimMode = 0;
@@ -507,7 +517,8 @@ void TrainingSettingsStore::clamp(TrainingSettings& settings) {
     }
     settings.run.adaptiveTileSplitThreshold =
         std::clamp(settings.run.adaptiveTileSplitThreshold, 1u, 1000000u);
-    settings.run.adaptiveTensorChildBatch = normalizeAdaptiveTensorChildBatch(settings.run.adaptiveTensorChildBatch);
+    settings.run.adaptiveTensorChildBatch =
+        normalizeAdaptiveTensorChildBatch(settings.run.adaptiveTensorChildBatch);
     settings.run.benchmarkStepsPerFrame = std::max(settings.run.benchmarkStepsPerFrame, 1u);
     settings.run.benchmarkMeasuredSteps = std::max(settings.run.benchmarkMeasuredSteps, 1u);
     settings.optimizer.maxSHDegree = std::min(settings.optimizer.maxSHDegree, 3u);

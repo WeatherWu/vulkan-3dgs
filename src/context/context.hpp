@@ -26,7 +26,7 @@ public:
     friend class vulkan3DGS::Device;
     
     void initialize(GLFWwindow* window, std::optional<std::string> gpuSelector = std::nullopt,
-                    bool validationLayersEnabled = true);
+                    bool validationLayersEnabled = true, bool synchronizationValidation = false);
     void cleanup();
     
     // 查询是否已初始化
@@ -40,6 +40,8 @@ public:
     vk::Queue getTransferQueue() const { return device_->getTransferQueue(); }
     
     bool isValidationLayersEnabled() const { return enableValidationLayers_; }
+    bool isSynchronizationValidationEnabled() const { return synchronizationValidation_; }
+    static uint64_t validationErrorCount() noexcept;
     
 private:
     void createInstance();
@@ -60,6 +62,7 @@ private:
     std::unique_ptr<vulkan3DGS::Device> device_;
     
     bool enableValidationLayers_ = true;  // Startup choice; availability may disable the request.
+    bool synchronizationValidation_ = false;
 
     const std::vector<const char*> validationLayers_ = {
         "VK_LAYER_KHRONOS_validation"

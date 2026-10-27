@@ -386,6 +386,8 @@ cmake --build build --config Debug --target quality-new
 
 应用支持`--validation on|off`，两种构建都默认on。仅启动时生效，在创建实例前应用，并在可用性检查后记录requested/enabled；层不可用时保留告警并禁用行为。不改变训练数值检查、logger或shader flags。正确性检查开启，性能运行与profiling分开；独立GPU runner保留自己的严格验证选项。
 
+非持久化选项`--training-smoke-steps N --training-smoke-report NEW.json`让新初始化的Random训练在诊断边界暂停，保持30000步日程不变。该模式要求core／sync验证并保存生命周期报告，参见[有界真实训练烟测](training-smoke.md)。
+
 ## 已知限制
 
 - 训练数学是项目实现，不能宣称与 reference 3DGS 完全一致。

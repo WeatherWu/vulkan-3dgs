@@ -13,8 +13,11 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <string>
 #include <memory>
 #include <utility>
+#include <atomic>
 
 namespace vulkan3DGS {
+namespace { std::atomic<uint64_t> validationErrors{0}; }
+uint64_t Context::validationErrorCount() noexcept { return validationErrors.load(std::memory_order_relaxed); }
 
 // Vulkan调试消息回调函数
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -34,6 +37,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
             LOG_WARN("Validation layer: {}", pCallbackData->pMessage);
             break;
         case vk::DebugUtilsMessageSeverityFlagBitsEXT::eError:
+            validationErrors.fetch_add(1, std::memory_order_relaxed);
             LOG_ERROR("Validation layer: {}", pCallbackData->pMessage);
             break;
         default:
@@ -71,7 +75,7 @@ void Context::initializeVulkanLoader() {
 }
 
 void Context::initialize(GLFWwindow* window, std::optional<std::string> gpuSelector,
-                         bool validationLayersEnabled) {
+                         bool validationLayersEnabled, bool synchronizationValidation) {
     // 防止重复初始化导致设备丢失
     if (device_ != nullptr) {
         LOG_WARN("Context already initialized, skipping duplicate initialization");
@@ -80,6 +84,7 @@ void Context::initialize(GLFWwindow* window, std::optional<std::string> gpuSelec
     
     window_ = window;
     enableValidationLayers_ = validationLayersEnabled;
+    synchronizationValidation_ = synchronizationValidation;
     
     createInstance();
     
@@ -121,6 +126,8 @@ void Context::createInstance() {
         LOG_WARN("Validation layers requested, but not available!");
         enableValidationLayers_ = false;
     }
+    if (synchronizationValidation_ && !enableValidationLayers_)
+        throw std::runtime_error("Training smoke requires available Vulkan validation layers");
     
     vk::ApplicationInfo appInfo{};
     appInfo.setPApplicationName("vulkan-3dgs")
@@ -133,6 +140,16 @@ void Context::createInstance() {
     createInfo.setPApplicationInfo(&appInfo);
     
     auto extensions = getRequiredExtensions();
+    vk::ValidationFeaturesEXT validationFeatures;
+    const auto synchronizationFeature = vk::ValidationFeatureEnableEXT::eSynchronizationValidation;
+    if (synchronizationValidation_) {
+        bool available = false;
+        for (const auto& extension : vk::enumerateInstanceExtensionProperties(std::string(validationLayers_.front())))
+            available |= std::string_view(extension.extensionName.data()) == VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+        if (!available) throw std::runtime_error("Training smoke requires VK_EXT_validation_features synchronization validation");
+        extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+        validationFeatures.setEnabledValidationFeatures(synchronizationFeature);
+    }
     LOG_DEBUG("Got {} extensions", extensions.size());
     for (size_t i = 0; i < extensions.size(); ++i) {
         LOG_DEBUG("  Extension {}: {}", i, extensions[i]);
@@ -156,6 +173,10 @@ void Context::createInstance() {
         debugCreateInfo.setPfnUserCallback(&debugCallback);
         
         createInfo.setPNext(&debugCreateInfo);
+        if (synchronizationValidation_) {
+            validationFeatures.pNext = &debugCreateInfo;
+            createInfo.pNext = &validationFeatures;
+        }
     } else {
         LOG_DEBUG("Validation layers disabled");
         createInfo.setEnabledLayerCount(0);

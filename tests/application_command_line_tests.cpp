@@ -53,6 +53,25 @@ int main() {
         reject({"--disable-validation"});
         reject({"--gpu"});
         reject({"--gpu="});
+        const auto smoke =
+            parse({"--training-smoke-steps", "3200", "--training-smoke-report", "smoke A.json"});
+        check(smoke.trainingSmoke && smoke.trainingSmoke->stopIteration == 3200 &&
+                  smoke.trainingSmoke->report == "smoke A.json" && smoke.validationLayersEnabled,
+              "Smoke CLI boundary/report parsing");
+        check(parse({"--training-smoke-steps=3200", "--training-smoke-report=smoke.json"})
+                      .trainingSmoke->stopIteration == 3200,
+              "Smoke equals-form parsing");
+        for (auto invalid : {"0", "-1", "30000", "4294967296", "1x", ""})
+            reject({"--training-smoke-steps", invalid, "--training-smoke-report", "smoke.json"});
+        reject({"--training-smoke-steps", "3200"});
+        reject({"--training-smoke-report", "smoke.json"});
+        reject({"--training-smoke-steps=3200", "--training-smoke-report="});
+        reject(
+            {"--training-smoke-steps=3200", "--training-smoke-report=x.json", "--validation=off"});
+        reject({"--training-smoke-steps=2", "--training-smoke-steps=3",
+                "--training-smoke-report=x.json"});
+        reject({"--training-smoke-steps=2", "--training-smoke-report=x.json",
+                "--training-smoke-report=y.json"});
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

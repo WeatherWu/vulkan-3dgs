@@ -531,6 +531,11 @@ checks, logger level or shader flags. Keep correctness checks enabled and
 uninstrumented performance runs separate. Independent GPU runners retain their
 own strict validation option.
 
+The non-persisted `--training-smoke-steps N --training-smoke-report NEW.json`
+options pause fresh Random training at a diagnostic boundary without changing
+the 30000-step schedule. They require core/synchronization validation and save
+a lifecycle report. See [bounded real-training smoke runs](training-smoke.md).
+
 ## Known limitations
 
 - Training math is project-specific and is not claimed to match reference 3DGS

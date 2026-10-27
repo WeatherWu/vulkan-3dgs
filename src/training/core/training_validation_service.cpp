@@ -158,6 +158,7 @@ void TrainingValidationService::consumeResult(const TrainingValidationGpuResult&
                                               TrainingExtent extent, uint32_t gaussianCapacity,
                                               TrainingAdaptiveTileReadbackStats adaptiveStats) {
     TrainingValidationStats stats{};
+    stats.iteration = result.validationIteration;
     stats.parentTileItemCount = tileItemCount;
     stats.adaptiveChildItemCount = adaptiveStats.childItemCount;
     stats.adaptiveSplitParentCount = adaptiveStats.splitParentCount;

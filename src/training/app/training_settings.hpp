@@ -75,7 +75,7 @@ struct TrainingRunSettings {
     bool tensorGlobalPixelGrad = false;
     bool tensorRgbLatencyHiding = false;
     bool tensorEarlyCull = false; // Normal training only; benchmark commands override this.
-    int ssimMode = 0; // 0 = 2D, 1 = full separable, 2 = separable backward only.
+    int ssimMode = 0;             // 0 = 2D, 1 = full separable, 2 = separable backward only.
     uint32_t benchmarkStepsPerFrame = 1;
     uint32_t benchmarkFrame = 0;
     uint32_t benchmarkWarmupSteps = 200;
@@ -131,6 +131,7 @@ template <size_t N> std::string textBufferString(const std::array<char, N>& buff
 
 class TrainingSettingsStore {
 public:
+    static std::string describeRun(const TrainingRunConfig& config);
     static std::filesystem::path defaultPath();
     static void load(const std::filesystem::path& path, TrainingSettings& settings);
     static void save(const std::filesystem::path& path, const TrainingSettings& settings);

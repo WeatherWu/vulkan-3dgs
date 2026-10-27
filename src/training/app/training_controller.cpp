@@ -1,6 +1,9 @@
 #include "training/app/training_controller.hpp"
 
+#include "context/context.hpp"
 #include "context/device.hpp"
+#include "training/core/training_optimizer_capture.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/logger.hpp"
 
 #include <algorithm>
@@ -28,6 +31,19 @@ TrainingController::TrainingController() {
 
 TrainingController::~TrainingController() {
     cleanupTrainingResources();
+}
+
+void TrainingController::configureSmoke(std::optional<TrainingSmokeOptions> options) {
+    if (active_) throw std::logic_error("Pause training before configuring smoke diagnostics");
+    if (options) {
+        options->validate();
+        options->report = std::filesystem::absolute(options->report);
+    }
+    smokeOptions_ = std::move(options);
+    if (smokeOptions_)
+        LOG_INFO(
+            "Training smoke configured: stop at {}, report {}. Start Training in the UI to begin.",
+            smokeOptions_->stopIteration, smokeOptions_->report.string());
 }
 
 void TrainingController::initializeDevice(std::optional<std::string> commandLineSelector,
@@ -215,7 +231,8 @@ void TrainingController::loadDataset() {
         const uint32_t compute = *computeIndex;
         const uint32_t transfer = device.getQueueFamilyIndices().transferIndex.value_or(compute);
         training_.initialize(device.getDevice(), device.getPhysicalDevice(),
-                             device.getTransferQueue(), transfer, compute, vulkanValidationLayersEnabled_);
+                             device.getTransferQueue(), transfer, compute,
+                             vulkanValidationLayersEnabled_);
         training_.loadMipNeRF360Dataset(textBufferString(settings_.paths.dataset),
                                         static_cast<uint32_t>(settings_.initialization.downscale));
         state_.datasetLoaded = true;
@@ -394,10 +411,15 @@ void TrainingController::toggleTraining() {
         startTimer();
         saveSettings();
         startWorker();
-        setStatus(
-            activeRunConfig_->run.pureTraining
-                ? "Pure asynchronous training started; only elapsed time updates until completion."
-                : "Asynchronous training started.");
+        if (smokeOptions_)
+            setStatus("Training smoke started; normal schedule 30000, pause at " +
+                      std::to_string(smokeOptions_->stopIteration) +
+                      ". Report: " + smokeOptions_->report.string());
+        else
+            setStatus(activeRunConfig_->run.pureTraining
+                          ? "Pure asynchronous training started; only elapsed time updates until "
+                            "completion."
+                          : "Asynchronous training started.");
     } catch (const std::exception& error) {
         stopAndJoin();
         stopTimer();
@@ -447,14 +469,14 @@ void TrainingController::exportFixedBenchmarkGradients() {
         if (!benchmark.complete) {
             throw std::runtime_error("Complete a Fixed Benchmark before exporting gradients");
         }
-        const char* tileName = benchmark.tileMode == TrainingTileMode::AdaptiveSpatial
-                                   ? "adaptive"
-                                   : benchmark.tileMode == TrainingTileMode::Fixed8 ? "fixed8" : "fixed16";
+        const char* tileName = benchmark.tileMode == TrainingTileMode::AdaptiveSpatial ? "adaptive"
+                               : benchmark.tileMode == TrainingTileMode::Fixed8        ? "fixed8"
+                                                                                       : "fixed16";
         const std::filesystem::path directory =
             std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) /
             "benchmark_gradients";
         std::string stem = "frame_" + std::to_string(benchmark.frameIndex) + "_iter_" +
-                                 std::to_string(benchmark.trainingIteration) + "_" + tileName;
+                           std::to_string(benchmark.trainingIteration) + "_" + tileName;
         if (benchmark.pixelMode == TrainingPixelTo2DGSMode::CheckpointedWarp)
             stem += "_checkpoint_warp32_layout2";
         if (benchmark.tileMode == TrainingTileMode::AdaptiveSpatial &&
@@ -491,8 +513,9 @@ void TrainingController::captureOptimizerStepAndPause() {
         if (worker_.joinable()) worker_.join();
         // Keep the existing model/configuration. Do not initialize, reset schedule, or
         // apply newly edited UI controls as an undocumented part of this diagnostic.
-        const auto directory = std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) /
-                               "benchmark_optimizer";
+        const auto directory =
+            std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) /
+            "benchmark_optimizer";
         const auto stem = "step_" + std::to_string(training_.trainingIteration() + 1u);
         auto path = directory / (stem + ".optimizer.bin");
         for (uint32_t suffix = 2; std::filesystem::exists(path); ++suffix)
@@ -503,10 +526,10 @@ void TrainingController::captureOptimizerStepAndPause() {
         state_.running = true;
         state_.pureActive = false;
         publishSnapshot();
-        worker_ = std::jthread([this, path](std::stop_token stopToken) {
-            workerMain(stopToken, false, path);
-        });
-        setStatus("S4 diagnostic: trains ONE eligible ordinary step, pauses, and writes a large pre/post capture. No subsequent step is queued.");
+        worker_ = std::jthread(
+            [this, path](std::stop_token stopToken) { workerMain(stopToken, false, path); });
+        setStatus("S4 diagnostic: trains ONE eligible ordinary step, pauses, and writes a large "
+                  "pre/post capture. No subsequent step is queued.");
     } catch (const std::exception& error) {
         stopAndJoin();
         setError(error.what());
@@ -520,14 +543,20 @@ void TrainingController::exportScanlineDiagnosticInputs() {
     }
     try {
         const auto& b = training_.fixedWorkloadBenchmarkStats();
-        const auto directory = std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) / "benchmark_scanline";
-        const auto stem = "frame_" + std::to_string(b.frameIndex) + "_iter_" + std::to_string(b.trainingIteration);
+        const auto directory =
+            std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) /
+            "benchmark_scanline";
+        const auto stem = "frame_" + std::to_string(b.frameIndex) + "_iter_" +
+                          std::to_string(b.trainingIteration);
         auto path = directory / (stem + ".scanline.bin");
         for (uint32_t suffix = 2u; std::filesystem::exists(path); ++suffix)
             path = directory / (stem + "_" + std::to_string(suffix) + ".scanline.bin");
         training_.exportScanlineDiagnosticInputs(path);
-        setStatus("Saved S3-2 frozen diagnostic inputs: " + std::filesystem::absolute(path).string());
-    } catch (const std::exception& error) { setError(error.what()); }
+        setStatus("Saved S3-2 frozen diagnostic inputs: " +
+                  std::filesystem::absolute(path).string());
+    } catch (const std::exception& error) {
+        setError(error.what());
+    }
 }
 
 void TrainingController::exportAdaptiveTileDiagnostics() {
@@ -538,18 +567,22 @@ void TrainingController::exportAdaptiveTileDiagnostics() {
     try {
         const auto& benchmark = training_.fixedWorkloadBenchmarkStats();
         const std::filesystem::path directory =
-            std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) / "benchmark_tiles";
+            std::filesystem::path(textBufferString(settings_.paths.outputDirectory)) /
+            "benchmark_tiles";
         const std::string stem = "frame_" + std::to_string(benchmark.frameIndex) + "_iter_" +
                                  std::to_string(benchmark.trainingIteration) + "_threshold_" +
                                  std::to_string(benchmark.adaptiveSplitThreshold) + "_batch_" +
                                  std::to_string(benchmark.adaptiveTensorChildBatch);
         std::filesystem::path path = directory / (stem + ".csv");
-        for (uint32_t suffix = 2u; std::filesystem::exists(path) ||
-                                  std::filesystem::exists(std::filesystem::path(path).replace_extension(".masks.bin")); ++suffix) {
+        for (uint32_t suffix = 2u;
+             std::filesystem::exists(path) ||
+             std::filesystem::exists(std::filesystem::path(path).replace_extension(".masks.bin"));
+             ++suffix) {
             path = directory / (stem + "_" + std::to_string(suffix) + ".csv");
         }
         training_.exportAdaptiveTileDiagnostics(path);
-        setStatus("Saved adaptive tile CSV and .masks.bin: " + std::filesystem::absolute(path).string());
+        setStatus("Saved adaptive tile CSV and .masks.bin: " +
+                  std::filesystem::absolute(path).string());
     } catch (const std::exception& error) {
         setError(error.what());
     }
@@ -583,6 +616,61 @@ void TrainingController::startWorker() {
     }
     const bool pure = activeRunConfig_->run.pureTraining;
     if (worker_.joinable()) worker_.join();
+    smokeRun_.reset();
+    if (smokeOptions_) {
+        if (training_.trainingIteration() != 0 ||
+            activeRunConfig_->schedule.imageSelectionMode != 1 ||
+            training_.totalIterations() != 30000)
+            throw std::runtime_error(
+                "Training smoke requires a fresh model and normal 30000-step Random schedule");
+        auto& context = Context::Instance();
+        if (!context.isValidationLayersEnabled() || !context.isSynchronizationValidationEnabled())
+            throw std::runtime_error(
+                "Training smoke requires actual core and synchronization validation");
+        if (Context::validationErrorCount())
+            throw std::runtime_error("Vulkan validation errors already occurred; inspect startup "
+                                     "logs before smoke training");
+        const auto& gpu = trainingDevice_->getSelectedPhysicalDeviceInfo();
+        std::ostringstream identity;
+        identity << "{\"device\":" << schedulingJsonQuote(gpu.name)
+                 << ",\"device_uuid\":" << schedulingJsonQuote(gpu.uuid)
+                 << ",\"driver\":" << schedulingJsonQuote(gpu.driverVersion)
+                 << ",\"build\":" << trainingSmokeBuildJson()
+                 << ",\"core_validation_enabled\":true,\"synchronization_validation_enabled\":true"
+                 << ",\"validation_errors_scope\":\"Entire shared application instance, including "
+                    "presentation\""
+                 << ",\"run_configuration_text\":"
+                 << schedulingJsonQuote(TrainingSettingsStore::describeRun(*activeRunConfig_))
+                 << ",\"initial_gaussians\":" << training_.gaussianCount()
+                 << ",\"dataset_frames\":" << training_.datasetFrameCount()
+                 << ",\"width\":" << training_.buffers().extent().width
+                 << ",\"height\":" << training_.buffers().extent().height
+                 << ",\"tensor_subgroup_active\":"
+                 << (training_.tensorSubgroupReductionActive() ? "true" : "false")
+                 << ",\"tensor_global_pixel_grad_active\":"
+                 << (training_.tensorGlobalPixelGradActive() ? "true" : "false")
+                 << ",\"shader_fnv1a64\":{";
+        bool first = true;
+        for (const char* name :
+             {"train_forward_project", "train_forward_tile_count", "train_forward_tile_emit",
+              "train_forward_workgroup", "train_full_sort_prepare_test",
+              "train_full_sort_emit_test", "train_range_boundaries_sorted_keys_test",
+              "train_forward_tile_sort", "train_loss", "train_backward_loss_to_pixel",
+              "train_ssim_coefficients_horizontal", "train_backward_loss_to_pixel_separable",
+              "train_backward_vksplat_tensor_subgroup_global_grad",
+              "train_backward_2dgs_to_3dgs_optimizer", "train_optimizer"}) {
+            if (!first) identity << ',';
+            first = false;
+            identity << schedulingJsonQuote(name) << ":\""
+                     << optimizerShaderHash(
+                            FileUtils::resolvePath(std::string("shaders/") + name + ".comp.spv"))
+                     << '"';
+        }
+        identity << "},\"initial_state_fnv1a64\":\"" << training_.diagnosticTrainingStateHash()
+                 << "\"}";
+        smokeRun_ = std::make_unique<TrainingSmokeRun>(*smokeOptions_, identity.str());
+    }
+    training_.setStepObservationEnabled(smokeRun_ != nullptr);
     resultReady_.store(false, std::memory_order_release);
     active_ = true;
     stopRequested_ = false;
@@ -610,6 +698,8 @@ void TrainingController::stopAndJoin() {
     state_.running = false;
     state_.pureActive = false;
     activeRunConfig_.reset();
+    smokeRun_.reset();
+    training_.setStepObservationEnabled(false);
 }
 
 void TrainingController::consumeWorkerResult() {
@@ -625,6 +715,8 @@ void TrainingController::consumeWorkerResult() {
     stopRequested_ = false;
     state_.running = false;
     stopTimerAt(result.finishedAt);
+    training_.setStepObservationEnabled(false);
+    smokeRun_.reset();
 
     const auto snapshot = snapshotForUi();
     state_.stepsDone = snapshot.trainingIteration;
@@ -636,6 +728,13 @@ void TrainingController::consumeWorkerResult() {
         state_.pureActive = false;
         activeRunConfig_.reset();
         setError(result.error);
+    } else if (!result.smokeReportPath.empty()) {
+        state_.pureActive = false;
+        activeRunConfig_.reset();
+        setStatus(std::string(result.smokeLimitReached ? "Training smoke limit reached; paused at "
+                                                       : "Training smoke paused at ") +
+                  std::to_string(snapshot.trainingIteration) +
+                  ". Report: " + result.smokeReportPath.string());
     } else if (!result.optimizerCapturePath.empty()) {
         state_.pureActive = false;
         activeRunConfig_.reset();
@@ -843,6 +942,7 @@ void TrainingController::workerMain(std::stop_token stopToken, bool pure,
                                     std::filesystem::path optimizerCapturePath) noexcept {
     try {
         TrainingWorkerResult result{};
+        const auto loopStartedAt = std::chrono::steady_clock::now();
         result.pure = pure;
         try {
             if (!optimizerCapturePath.empty()) {
@@ -854,6 +954,16 @@ void TrainingController::workerMain(std::stop_token stopToken, bool pure,
                 uint32_t stepsSinceSnapshot = 0u;
                 while (!stopToken.stop_requested() && !training_.isTrainingComplete()) {
                     training_.trainStep();
+                    if (smokeRun_) {
+                        smokeRun_->observe(training_.lastStepObservation());
+                        if (Context::validationErrorCount())
+                            throw std::runtime_error(
+                                "Smoke detected Vulkan validation errors; inspect log and report");
+                        if (smokeRun_->reached(training_.trainingIteration())) {
+                            result.smokeLimitReached = true;
+                            break;
+                        }
+                    }
                     if (!pure && ++stepsSinceSnapshot >= kTrainingSnapshotPublishInterval) {
                         publishSnapshot();
                         stepsSinceSnapshot = 0u;
@@ -867,6 +977,47 @@ void TrainingController::workerMain(std::stop_token stopToken, bool pure,
             result.error = "Unknown exception in asynchronous training worker";
         }
         result.finishedAt = std::chrono::steady_clock::now();
+        if (smokeRun_ && optimizerCapturePath.empty()) {
+            std::optional<TrainingStateFiniteCheck> finalState;
+            try {
+                if (result.error.empty() && training_.trainingIteration()) {
+                    finalState = training_.inspectTrainingStateFinite();
+                    if (!finalState->passed())
+                        result.error = "Smoke final loss/model finite inspection failed";
+                }
+                if (Context::validationErrorCount() && result.error.empty())
+                    result.error =
+                        "Vulkan validation errors occurred during smoke/final inspection";
+                smokeRun_->finish(
+                    result.smokeLimitReached ? "diagnostic_step_limit"
+                                             : (!result.error.empty() ? "error" : "user_pause"),
+                    result.error, Context::validationErrorCount(),
+                    std::chrono::duration<double, std::milli>(result.finishedAt - loopStartedAt)
+                        .count(),
+                    finalState);
+                result.smokeReportPath = smokeRun_->path();
+                LOG_INFO("Training smoke report saved: {} (iteration {}, limit reached={})",
+                         result.smokeReportPath.string(), training_.trainingIteration(),
+                         result.smokeLimitReached);
+            } catch (const std::exception& error) {
+                if (result.error.empty()) result.error = error.what();
+                if (!smokeRun_->written()) {
+                    try {
+                        smokeRun_->finish("inspection_or_report_error", result.error,
+                                          Context::validationErrorCount(),
+                                          std::chrono::duration<double, std::milli>(
+                                              result.finishedAt - loopStartedAt)
+                                              .count(),
+                                          finalState);
+                        result.smokeReportPath = smokeRun_->path();
+                    } catch (...) {
+                        LOG_ERROR("Training smoke error report could not be written.");
+                    }
+                }
+            }
+            if (!result.error.empty() && !result.smokeReportPath.empty())
+                result.error += "; report: " + result.smokeReportPath.string();
+        }
         try {
             publishSnapshot();
         } catch (const std::exception& error) {

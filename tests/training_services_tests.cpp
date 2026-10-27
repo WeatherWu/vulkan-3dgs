@@ -30,7 +30,7 @@ bool testValidationConversionAndHistory() {
     const TrainingValidationStats& stats = service.stats();
     const TrainingCandidateProfileStats& history =
         service.candidateProfileStats();
-    if (!stats.valid || stats.tileItemCount != 12u || !near(stats.meanLoss, 0.5f) ||
+    if (!stats.valid || stats.iteration != 1u || stats.tileItemCount != 12u || !near(stats.meanLoss, 0.5f) ||
         !near(stats.meanRenderedAlpha, 0.5f) || !near(stats.meanRenderedLuminance, 0.25f) ||
         !near(stats.meanProcessedCandidatesPerPixel, 2.0f) ||
         !near(stats.meanContributorsPerPixel, 1.0f) || history.sampleCount != 1u ||

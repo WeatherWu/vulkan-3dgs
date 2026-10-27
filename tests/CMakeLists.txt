@@ -33,6 +33,13 @@ add_test(NAME application_validation_help
     COMMAND $<TARGET_FILE:vulkan_3dgs_app> --validation off --help)
 set_tests_properties(application_validation_help PROPERTIES
     PASS_REGULAR_EXPRESSION "--validation on[|]off")
+add_test(NAME application_smoke_help COMMAND $<TARGET_FILE:vulkan_3dgs_app>
+    --training-smoke-steps 3200 --training-smoke-report unused-smoke-help.json --help)
+set_tests_properties(application_smoke_help PROPERTIES PASS_REGULAR_EXPRESSION "--training-smoke-steps")
+
+add_executable(training_smoke_tests training_smoke_tests.cpp)
+target_link_libraries(training_smoke_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(training_smoke_tests)
 
 add_executable(image_cache_tests image_cache_tests.cpp)
 target_link_libraries(image_cache_tests PRIVATE vulkan_3dgs_core)

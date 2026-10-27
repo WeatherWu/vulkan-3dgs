@@ -1,6 +1,7 @@
 #pragma once
 
 #include "training/app/training_settings.hpp"
+#include "training/app/training_smoke.hpp"
 #include "training/core/gaussian_training.hpp"
 
 #include <atomic>
@@ -59,6 +60,8 @@ struct TrainingWorkerResult {
     std::string error;
     std::chrono::steady_clock::time_point finishedAt{};
     std::filesystem::path optimizerCapturePath;
+    std::filesystem::path smokeReportPath;
+    bool smokeLimitReached = false;
 };
 
 struct TrainingLifecycleState {
@@ -99,6 +102,7 @@ public:
 
     void initializeDevice(std::optional<std::string> commandLineSelector,
                           std::optional<bool> vulkanValidationLayersEnabled = std::nullopt);
+    void configureSmoke(std::optional<TrainingSmokeOptions> options);
     void tick();
     void shutdown();
 
@@ -181,6 +185,8 @@ private:
 
     TrainingSettings settings_{};
     std::unique_ptr<const TrainingRunConfig> activeRunConfig_;
+    std::optional<TrainingSmokeOptions> smokeOptions_;
+    std::unique_ptr<TrainingSmokeRun> smokeRun_;
     GaussianTraining training_;
     std::unique_ptr<Device> trainingDevice_;
     std::jthread worker_;

@@ -45,6 +45,11 @@ public:
                                      TrainingExtent extent);
 
     void trainStep();
+    const TrainingStepObservation& lastStepObservation() const { return lastStepObservation_; }
+    void setStepObservationEnabled(bool enabled) { stepObservationEnabled_ = enabled; }
+    // Worker/stopped-owner only, after a completed step; inspection does not advance training.
+    TrainingStateFiniteCheck inspectTrainingStateFinite();
+    uint64_t diagnosticTrainingStateHash();
     void loadMipNeRF360Dataset(const std::filesystem::path& sceneRoot,
                                uint32_t preferredDownscale = 4);
     void initializeModelFromDataset(const TrainingInitializationConfig& config = {});
@@ -168,6 +173,8 @@ private:
     TrainingBuffers buffers_;
     TrainingDataset dataset_;
     uint32_t trainableGaussianCount_ = 0;
+    TrainingStepObservation lastStepObservation_{};
+    bool stepObservationEnabled_ = false;
     bool usedRandomInitialization_ = false;
     std::unique_ptr<ForwardTrainingRenderer> forward_;
     std::unique_ptr<BackwardRenderer> backward_;

@@ -169,6 +169,7 @@ struct TrainingOptimizerConfig {
 };
 
 struct TrainingValidationStats {
+    uint32_t iteration = 0;
     float meanLoss = 0.0f;
     float maxLoss = 0.0f;
     float meanRenderedAlpha = 0.0f;
@@ -329,6 +330,23 @@ struct TrainingProfilingStats {
     bool gpuTimestampsAvailable = false;
     std::array<TrainingTiming, kTrainingCpuProfileStageCount> cpu{};
     std::array<TrainingTiming, kTrainingGpuProfileStageCount> gpu{};
+};
+
+// Observation of a completed ordinary training step; no scheduling or model mutation policy.
+struct TrainingStepObservation {
+    uint32_t iteration = 0, frame = 0, gaussiansBefore = 0, gaussiansAfter = 0;
+    uint32_t tileItems = 0, tileCapacity = 0, activeSHDegree = 0, participatingGaussians = 0;
+    uint32_t ssimMode = 0, pixelMode = 0, tileMode = 0;
+    bool fasterSortRequested = false, fasterSortActive = false, optimizerUpdated = false;
+    bool densification = false, opacityReset = false, resized = false;
+    TrainingValidationStats validation;
+    TrainingProfilingStats profiling;
+};
+struct TrainingStateFiniteCheck {
+    uint64_t lossValues = 0, invalidLossValues = 0, gaussianValues = 0, invalidGaussianValues = 0;
+    uint64_t invalidActivatedScales = 0;
+    double meanLoss = 0, maxLoss = 0;
+    bool passed() const { return lossValues && gaussianValues && !invalidLossValues && !invalidGaussianValues && !invalidActivatedScales; }
 };
 
 struct TrainingDensificationStats {

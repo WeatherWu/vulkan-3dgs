@@ -22,6 +22,9 @@ void printUsage(const char* executable) {
               << "  --gpu VALUE  Select a training GPU by Vulkan index, name, or UUID.\n"
               << "  --validation on|off  Request Vulkan validation layers (default: on).\n"
               << "                       Use off for timing; training numeric checks are unchanged.\n"
+              << "  --training-smoke-steps N --training-smoke-report NEW.json\n"
+              << "                       Pause after N normal steps (1..29999); requires validation on.\n"
+              << "                       Load/select the dataset and press Start Training in the UI.\n"
               << "  -h, --help   Show this help.\n";
 }
 
@@ -70,7 +73,8 @@ int main(int argc, char** argv) {
                                     720,
                                     vulkan3DGS::RenderMode::GaussianGraphics,
                                     options.gpuSelector,
-                                    options.validationLayersEnabled);
+                                    options.validationLayersEnabled,
+                                    options.trainingSmoke);
         app.run();
     } catch (const std::exception& error) {
         std::cerr << "Fatal error: " << error.what() << std::endl;

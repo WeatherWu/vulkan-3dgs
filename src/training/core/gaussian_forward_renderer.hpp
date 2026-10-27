@@ -47,6 +47,7 @@ public:
     // Change only while idle, before recording the next prepare submission.
     void setFasterSortEnabled(bool enabled) { fasterSortRequested_ = enabled; }
     bool fasterSortActive() const { return fasterSortPrepared_; }
+    bool fasterSortRequested() const { return fasterSortRequested_; }
     uint32_t fasterSortParticipatingCount() const { return fasterSortPrepared_ && fasterSort_ ? fasterSort_->participatingCount() : 0u; }
 
     bool isInitialized() const override { return initialized_; }
