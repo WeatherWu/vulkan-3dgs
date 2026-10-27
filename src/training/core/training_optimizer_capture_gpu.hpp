@@ -5,7 +5,8 @@
 #include <memory>
 
 namespace vulkan3DGS {
-// Bounded host-coherent staging, on the producer compute queue. No live buffer ownership.
+// Bounded host-coherent staging on a compute or transfer queue. No live buffer ownership.
+// Cross-queue producers require caller-provided semaphore synchronization and valid queue sharing.
 class OptimizerCaptureTransfer {
 public:
     OptimizerCaptureTransfer(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
@@ -39,14 +40,18 @@ public:
     void markSubmitted() noexcept {
         submitted_ = true;
     }
-    void markPrepareSubmitted() noexcept { prepareSubmitted_ = true; }
+    void markPrepareSubmitted() noexcept {
+        prepareSubmitted_ = true;
+    }
     void markCompleted() noexcept {
         completed_ = true;
     }
     bool submitted() const noexcept {
         return prepareSubmitted_ || submitted_;
     }
-    bool optimizerSubmitted() const noexcept { return submitted_; }
+    bool optimizerSubmitted() const noexcept {
+        return submitted_;
+    }
     bool completed() const noexcept {
         return completed_;
     }

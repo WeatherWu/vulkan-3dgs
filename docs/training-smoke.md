@@ -72,6 +72,27 @@ not add a training step or validate final Adam-state equivalence. Initial
 fingerprinting and final inspection are outside the reported worker-loop wall interval;
 ordinary training validation remains part of normal step execution.
 
+Diagnostic staging supports both compute-capable and transfer-only queues.
+Its barriers use queue-valid memory access masks; `ALL_COMMANDS` includes only
+commands supported by the queue and does not permit shader access masks on a
+transfer-only queue. Cross-queue readbacks retain the producer barrier and
+semaphore handoff in `TrainingStepExecutor::synchronizeDiagnosticDownloads`;
+queue-local staging barriers do not replace that handoff. See the
+[Vulkan stage/access rules](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkCmdPipelineBarrier-srcAccessMask-02815).
+
+An explicit headless check exercises that handoff and upload/download content
+through every transfer-capable queue family of the selected GPU:
+
+```bash
+build/bin/Release/training_diagnostic_transfer_gpu_tests \
+  --gpu "RTX 3090" --require-transfer-only --report diagnostic_transfer_check.json
+```
+
+The check requires core and synchronization validation, creates no window and
+advances no training. `--require-transfer-only` rejects missing dedicated-queue
+coverage. Without that flag, a device with only combined queues may pass with
+`transfer_only_covered=false`; this does not validate a dedicated transfer queue.
+
 Schema `training_smoke_v1` retains device/build/shader identity, the immutable
 run configuration, initial state fingerprint, every completed step's frame,
 Gaussian/item counts, actual sorting path, optimizer/ADC/reset/resize events,

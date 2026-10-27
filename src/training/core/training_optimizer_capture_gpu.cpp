@@ -10,10 +10,8 @@
 namespace vulkan3DGS {
 namespace {
 void visibility(vk::CommandBuffer command, vk::AccessFlags destination) {
-    vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
-                                  vk::AccessFlagBits::eTransferRead |
-                                  vk::AccessFlagBits::eTransferWrite |
-                                  vk::AccessFlagBits::eHostWrite,
+    // ALL_COMMANDS covers only stages supported by this queue, including transfer-only queues.
+    vk::MemoryBarrier barrier{vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
                               destination};
     command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands |
                                 vk::PipelineStageFlagBits::eHost,
@@ -66,8 +64,7 @@ void OptimizerCaptureTransfer::upload(vk::DescriptorBufferInfo destination, uint
     visibility(command_, vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eTransferRead);
     command_.copyBuffer(staging_.getBuffer(), destination.buffer,
                         vk::BufferCopy{0, destination.offset + offset, bytes.size()});
-    visibility(command_, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
-                             vk::AccessFlagBits::eTransferRead);
+    visibility(command_, vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite);
     command_.end();
     device_.resetFences(*fence_);
     vk::SubmitInfo submit;

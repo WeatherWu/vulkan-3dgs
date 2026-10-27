@@ -227,6 +227,14 @@ set_target_properties(graphics_depth_reuse_gpu_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 add_test(NAME graphics_depth_reuse_help COMMAND $<TARGET_FILE:graphics_depth_reuse_gpu_tests> --help)
 
+# Explicit queue-capability regression; GPU execution is separate from CTest.
+add_executable(training_diagnostic_transfer_gpu_tests training_diagnostic_transfer_gpu_tests.cpp)
+target_link_libraries(training_diagnostic_transfer_gpu_tests PRIVATE vulkan_3dgs_core)
+target_compile_definitions(training_diagnostic_transfer_gpu_tests PRIVATE VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1)
+set_target_properties(training_diagnostic_transfer_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+add_test(NAME training_diagnostic_transfer_help COMMAND $<TARGET_FILE:training_diagnostic_transfer_gpu_tests> --help)
+
 add_executable(gpu_selection_tests
     gpu_selection_tests.cpp
     ../src/context/device_selection.cpp
