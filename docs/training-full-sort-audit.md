@@ -205,10 +205,12 @@ full-training gain.
 ## Default-off renderer integration
 
 The experimental `GaussianForwardRenderer` can use the same sorting chain on
-its actual `TrainingBuffers`. `VULKAN_3DGS_FASTER_SORT=1` requests it when the
-renderer is initialized; unset or `0` selects original sorting. Other values
-are rejected. This environment setting is not a persisted UI setting. A process
-restart/model reinitialization is needed to read a changed environment value.
+its actual `TrainingBuffers`. The persisted **Training → Faster-GS Sorting
+(Experimental)** checkbox selects it and defaults off. The controller supplies
+the explicit choice before training and after renderer rebuilds. Changes while
+stopped apply to the next start/resume; the renderer reads no sorting environment
+setting. The UI separates this choice from the last completed step's actual path.
+See [training UI configuration and full-run comparisons](training-ui.md).
 The startup/transition log reports `requested`, `active` and `tile_size`.
 
 Only Fixed16 activates the candidate. Fixed8 and Adaptive Spatial retain their
@@ -257,6 +259,11 @@ The synthetic sequence changes Gaussian counts through 1,257,33,0,513,2 on one
 renderer, exercises buffer growth, nonzero-count buffer adoption, zero-count
 reset and repeated original/candidate switching. Buffer adoption here checks
 workspace/descriptor lifecycle with uploaded projected input; it does not execute
-ADC clone/split/prune or establish Adam-state equivalence. No worker, loss,
-backward, optimizer or real training is run by this mode. Bounded live lifecycle
-and whole-step performance/quality checks remain outstanding.
+ADC clone/split/prune or establish Adam-state equivalence. The synthetic mode
+also initializes and rebuilds the training owner to check preference propagation,
+without executing its worker, loss, backward or optimizer. That initialization
+requires the normal training float32 atomic-add capability; it does not require
+native Tensor support or change the separate downstream Tensor gate. The report
+records `training_owner_lifecycle_checked`. Empty fixtures check both Fixed8 and
+Adaptive Spatial sorting fallback. Use the separate smoke workflow for live
+lifecycle checks and the UI full-run comparison for training time and quality.

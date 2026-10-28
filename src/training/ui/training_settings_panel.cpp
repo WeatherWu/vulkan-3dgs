@@ -48,6 +48,23 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
                      IM_ARRAYSIZE(trainingModes));
         schedule.imageSelectionMode = std::clamp(schedule.imageSelectionMode, 0, 1);
 
+        if (ImGui::Checkbox("Faster-GS Sorting (Experimental)", &run.fasterSort))
+            actions.fasterSortChanged = true;
+        if (run.fasterSort && run.tileMode != 1)
+            ImGui::TextWrapped("Faster-GS requires an effective Fixed16 tile mode.");
+        if (!snapshot.lastSort.executed) {
+            ImGui::TextDisabled("Last executed sorting: not executed");
+        } else {
+            ImGui::Text("Last executed sorting: %s",
+                        snapshot.lastSort.active ? "Faster-GS" : "Original");
+            if (snapshot.lastSort.requested && !snapshot.lastSort.active)
+                ImGui::TextWrapped("Last step used original sorting fallback (tile size %u); "
+                                   "Faster-GS requires Fixed16.",
+                                   snapshot.lastSort.tileSize);
+        }
+        ImGui::TextDisabled("Selection applies to the next start/resume. Load Dataset resets the "
+                            "model for a new comparison.");
+
         static constexpr const char* pixelBackwardModes[] = {
             "Auto (Adaptive)",          "Direct",
             "Workgroup Shared",         "Subgroup",

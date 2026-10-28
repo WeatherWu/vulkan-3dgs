@@ -523,7 +523,10 @@ mean accepted numerical equivalence or performance.
 - Three-timestamp scheduling and private sort probes are described in the
   [scheduling guide](scheduling-diagnostics.md); GPU-driven training is not implemented.
 
-The application supports `--validation on|off`, default on in both builds.
+The application saves its next-launch validation preference in **Application Settings**
+(initial default on in both builds). `--validation on|off` overrides it for the current
+process without persisting the override. The panel displays requested/actual state
+and pending restart; changing the preference does not recreate Vulkan.
 The startup-only option is applied before instance creation and logs
 requested/enabled state after availability checking. Unavailable requested
 layers retain warning-and-disable behavior. It does not change training numeric
@@ -535,6 +538,10 @@ The non-persisted `--training-smoke-steps N --training-smoke-report NEW.json`
 options pause fresh Random training at a diagnostic boundary without changing
 the 30000-step schedule. They require core/synchronization validation and save
 a lifecycle report. See [bounded real-training smoke runs](training-smoke.md).
+
+The persisted **Faster-GS Sorting (Experimental)** checkbox defaults off and is
+applied through the immutable training configuration. The UI reports last-step
+sorting separately; see [UI training and full-run comparisons](training-ui.md).
 
 ## Known limitations
 

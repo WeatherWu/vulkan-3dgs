@@ -21,7 +21,7 @@ Build and run from the repository root on Linux:
 ```bash
 cmake --build build --config Release
 
-VULKAN_3DGS_FASTER_SORT=0 build/bin/Release/vulkan-3dgs \
+build/bin/Release/vulkan-3dgs \
   --gpu "RTX 3090" --validation on \
   --training-smoke-steps 3200 --training-smoke-report smoke_A_3200.json
 ```
@@ -29,6 +29,7 @@ VULKAN_3DGS_FASTER_SORT=0 build/bin/Release/vulkan-3dgs \
 In the UI, select the same dataset, downscale and seed used for both runs.
 Use 3DGS Random, Fixed16, Tensor Subgroup/Global, RGB Baseline and mixed SSIM
 for the sorting experiment. Preserve optimizer and densification settings.
+Leave **Faster-GS Sorting (Experimental)** off for A.
 Click **Start Training**. The CLI configures a boundary; it does not automatically
 start training. Do not run Fixed Benchmark or optimizer captures beforehand.
 
@@ -46,15 +47,17 @@ Close the application after the first report is saved. Start a fresh process
 for the candidate, preserving the same UI configuration:
 
 ```bash
-VULKAN_3DGS_FASTER_SORT=1 build/bin/Release/vulkan-3dgs \
+build/bin/Release/vulkan-3dgs \
   --gpu "RTX 3090" --validation on \
   --training-smoke-steps 3200 --training-smoke-report smoke_B_3200.json
 ```
 
-Click **Start Training** again. Report paths must be new; existing files are
+Enable **Faster-GS Sorting (Experimental)** for B, then click **Start Training**
+again. Report paths must be new; existing files are
 never overwritten. A resumed nonzero-iteration model is rejected for smoke
-runs. On Windows, use the corresponding `.exe` and set the same process
-environment variable before launch.
+runs. On Windows, use the corresponding `.exe` and the same UI sorting selection.
+Ordinary full training uses UI configuration without smoke options; see
+[training UI configuration](training-ui.md).
 
 ## Training and report contract
 

@@ -60,10 +60,12 @@ A training GPU can also be selected at startup by Vulkan enumeration index, devi
 
 Without `--gpu`, automatic selection prefers a discrete GPU that passes the training requirements.
 
-Vulkan validation layers are requested by default in both Debug and Release.
-Use `--validation off` for performance measurements and `--validation on` for
-correctness checks; training numeric validation is unchanged. The startup log
-shows the requested and enabled state. No source edits are needed.
+Configure validation in **Application Settings → Vulkan Validation Layers (next launch)**,
+then restart. The initial default is on in Debug and Release; `--validation on|off`
+is an optional override for the current process. Training numeric checks are
+unchanged. The panel and startup log show the request and actual state. Training
+methods, including experimental Faster-GS sorting, are selected in the UI; see
+[training configuration and full-run comparisons](docs/training-ui.md).
 
 Ubuntu example:
 

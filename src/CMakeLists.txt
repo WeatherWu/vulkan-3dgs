@@ -105,6 +105,8 @@ add_library(vulkan_3dgs_core STATIC
     # 应用组合根与两条渲染路径的共同接口
     app/window.cpp
     app/application.cpp
+    app/application_settings.cpp
+    app/application_settings_panel.cpp
     render/renderer.cpp
 )
 

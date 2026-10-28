@@ -25,6 +25,7 @@ struct TrainingUiSnapshot {
     bool hasDataset = false;
     bool hasTrainableModel = false;
     bool trainingComplete = false;
+    TrainingSortState lastSort{};
     bool subgroupSupported = false;
     bool tileGaussianSupported = false;
     bool vkSplatPerSplatSupported = false;

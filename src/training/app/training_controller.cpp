@@ -258,6 +258,7 @@ void TrainingController::applyLiveSettings() {
     training_.setTensorGlobalPixelGrad(settings_.run.tensorGlobalPixelGrad);
     training_.setTensorRgbLatencyHiding(settings_.run.tensorRgbLatencyHiding);
     training_.setTensorEarlyCull(settings_.run.tensorEarlyCull);
+    training_.setFasterSortEnabled(settings_.run.fasterSort);
     try {
         training_.setSsimMode(static_cast<TrainingSsimMode>(settings_.run.ssimMode));
     } catch (const std::exception& error) {
@@ -295,6 +296,7 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     training_.setTensorGlobalPixelGrad(config.run.tensorGlobalPixelGrad);
     training_.setTensorRgbLatencyHiding(config.run.tensorRgbLatencyHiding);
     training_.setTensorEarlyCull(config.run.tensorEarlyCull);
+    training_.setFasterSortEnabled(config.run.fasterSort);
     training_.setSsimMode(static_cast<TrainingSsimMode>(config.run.ssimMode));
     training_.setValidationInterval(config.schedule.validationInterval);
 
@@ -901,6 +903,7 @@ TrainingUiSnapshot TrainingController::captureSnapshot() const {
     snapshot.hasDataset = training_.hasDataset();
     snapshot.hasTrainableModel = training_.hasTrainableModel();
     snapshot.trainingComplete = training_.isTrainingComplete();
+    snapshot.lastSort = training_.lastSortState();
     snapshot.subgroupSupported = training_.subgroupPixelTo2DGSSupported();
     snapshot.tileGaussianSupported = training_.tileGaussianPixelTo2DGSSupported();
     snapshot.vkSplatPerSplatSupported = training_.vkSplatPerSplatSupported();

@@ -57,8 +57,9 @@ is outside GPU intervals but may affect the final CPU step.
 
 ## Validation control
 
-`--validation on|off` is an application startup option, default on for Debug
-and Release. Equal-sign syntax is accepted; invalid/missing/duplicate values
+Application Settings saves the next-launch validation preference (initially on
+for Debug and Release). `--validation on|off` optionally overrides that preference
+for the current process. Equal-sign syntax is accepted; invalid/missing/duplicate values
 fail before window creation. It does not change numeric checks, logger level
 or shader flags. Startup logs show requested/enabled values. An unavailable
 requested layer retains the warning-and-disable behavior.

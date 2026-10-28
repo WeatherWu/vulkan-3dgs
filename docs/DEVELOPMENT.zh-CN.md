@@ -384,9 +384,11 @@ cmake --build build --config Debug --target quality-new
 - Optimizer捕获、回放及流式Adam见[优化器指南](optimizer-diagnostics.md)，捕获会实际训练一步。
 - 三时间戳调度及私有排序探针见[调度指南](scheduling-diagnostics.md)，未实现GPU-driven训练。
 
-应用支持`--validation on|off`，两种构建都默认on。仅启动时生效，在创建实例前应用，并在可用性检查后记录requested/enabled；层不可用时保留告警并禁用行为。不改变训练数值检查、logger或shader flags。正确性检查开启，性能运行与profiling分开；独立GPU runner保留自己的严格验证选项。
+应用在 **Application Settings** 保存下次启动的验证层偏好（两种构建的初始默认值均为on）；`--validation on|off`只覆盖当前进程，不写回保存值。面板显示requested／actual及重启提示，修改偏好不重建Vulkan实例。偏好在创建实例前应用，可用性检查后记录requested/enabled；层不可用时保留告警并禁用行为。不改变训练数值检查、logger或shader flags。正确性检查开启，性能运行与profiling分开；独立GPU runner保留自己的严格验证选项。
 
 非持久化选项`--training-smoke-steps N --training-smoke-report NEW.json`让新初始化的Random训练在诊断边界暂停，保持30000步日程不变。该模式要求core／sync验证并保存生命周期报告，参见[有界真实训练烟测](training-smoke.md)。
+
+持久化的 **Faster-GS Sorting (Experimental)** 复选框默认关闭，经不可变训练配置传递。UI单独显示最近一步的实际排序，参见[UI训练与完整对照](training-ui.md)。
 
 ## 已知限制
 

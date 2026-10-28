@@ -26,6 +26,7 @@ TrainingSettings populatedSettings() {
     settings.run.tensorGlobalPixelGrad = true;
     settings.run.tensorRgbLatencyHiding = true;
     settings.run.tensorEarlyCull = true;
+    settings.run.fasterSort = true;
     settings.run.ssimMode = 2;
     settings.run.pureTraining = true;
     settings.optimizer.positionLearningRate = 0.012345f;
@@ -41,24 +42,18 @@ bool testRoundTrip(const std::filesystem::path& path) {
     TrainingSettings loaded{};
     TrainingSettingsStore::load(path, loaded);
     return textBufferString(loaded.paths.dataset) == "dataset with spaces" &&
-        textBufferString(loaded.paths.outputDirectory) == "output dir" &&
-        textBufferString(loaded.paths.outputName) == "model.ply" &&
-        loaded.gpuSelector == "GPU-uuid" &&
-        loaded.initialization.downscale == 8 &&
-        loaded.run.pixelTo2DGSMode == 6 && loaded.run.tileMode == 0 &&
-        loaded.run.adaptiveTileSplitThreshold == 192 &&
-        loaded.run.adaptiveTensorChildBatch == 32 &&
-        loaded.run.tensorSubgroupReduction &&
-        loaded.run.tensorGlobalPixelGrad &&
-        loaded.run.tensorRgbLatencyHiding &&
-        loaded.run.tensorEarlyCull &&
-        loaded.run.ssimMode == 2 &&
-        loaded.run.pureTraining &&
-        loaded.optimizer.positionLearningRate ==
-            source.optimizer.positionLearningRate &&
-        loaded.densification.maxGaussians == 7654321 &&
-        loaded.densification.splitChildren == 7 &&
-        loaded.densification.gradientMode == 1;
+           textBufferString(loaded.paths.outputDirectory) == "output dir" &&
+           textBufferString(loaded.paths.outputName) == "model.ply" &&
+           loaded.gpuSelector == "GPU-uuid" && loaded.initialization.downscale == 8 &&
+           loaded.run.pixelTo2DGSMode == 6 && loaded.run.tileMode == 0 &&
+           loaded.run.adaptiveTileSplitThreshold == 192 &&
+           loaded.run.adaptiveTensorChildBatch == 32 && loaded.run.tensorSubgroupReduction &&
+           loaded.run.tensorGlobalPixelGrad && loaded.run.tensorRgbLatencyHiding &&
+           loaded.run.tensorEarlyCull && loaded.run.fasterSort && loaded.run.ssimMode == 2 &&
+           loaded.run.pureTraining &&
+           loaded.optimizer.positionLearningRate == source.optimizer.positionLearningRate &&
+           loaded.densification.maxGaussians == 7654321 &&
+           loaded.densification.splitChildren == 7 && loaded.densification.gradientMode == 1;
 }
 
 bool testValidationAndImmutableRunConfig() {

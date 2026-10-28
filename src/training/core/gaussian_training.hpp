@@ -70,6 +70,10 @@ public:
     void setTensorSubgroupReduction(bool enabled);
     void setTensorGlobalPixelGrad(bool enabled);
     void setTensorRgbLatencyHiding(bool enabled);
+    void setFasterSortEnabled(bool enabled);
+    const TrainingSortState& lastSortState() const {
+        return lastSortState_;
+    }
     void setTensorEarlyCull(bool enabled) { tensorEarlyCull_ = enabled; }
     TrainingPixelCullStatus tensorEarlyCullStatus() const;
     void resetTensorEarlyCullRunStats();
@@ -202,6 +206,8 @@ private:
     bool tensorGlobalPixelGrad_ = false;
     bool tensorRgbLatencyHiding_ = false;
     bool tensorEarlyCull_ = false;
+    bool fasterSortEnabled_ = false;
+    TrainingSortState lastSortState_{};
     TrainingSsimMode ssimMode_ = TrainingSsimMode::TwoDimensional;
     float sceneExtent_ = 1.0f;
     TrainingOptimizerCaptureSession* optimizerCapture_ = nullptr;

@@ -101,6 +101,7 @@ void GaussianTraining::cleanup() {
     stepExecutor_.cleanup();
     buffers_.cleanup();
     trainableGaussianCount_ = 0;
+    lastSortState_ = {};
     usedRandomInitialization_ = false;
     frameScheduler_.clear();
     lastDensificationStats_ = {};
@@ -197,6 +198,8 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
     validationService_.initialize(device, physicalDevice);
     stepExecutor_.initialize(device, computeQueue, computeQueueFamilyIndex);
     createTrainingProfilingResources(device, physicalDevice, computeQueueFamilyIndex);
+    if (auto* renderer = dynamic_cast<GaussianForwardRenderer*>(forward_.get()))
+        renderer->setFasterSortEnabled(fasterSortEnabled_);
     rendererInitialized_ = true;
 }
 
@@ -383,6 +386,8 @@ void GaussianTraining::trainStep() {
         .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
         .compositeMode = static_cast<uint32_t>(forwardCompositeMode_),
     });
+    lastSortState_ = {true, gaussianForward->fasterSortRequested(),
+                      gaussianForward->fasterSortActive(), pushConstants.tileSize};
     imageRuntime_.clearPendingUpload();
     if (!fixedBenchmarkThisStep) pixelCullRunStats_.record(pixelCullStatus);
     if (execution.gpuProfilingDisabled) {
@@ -570,6 +575,7 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     buffers_.uploadGaussianParams(params.data(), static_cast<uint32_t>(params.size()));
     trainableGaussianCount_ = static_cast<uint32_t>(params.size());
     trainingIteration_ = 0;
+    lastSortState_ = {};
     optimizerStep_ = 0;
     optimizerCaptureStateUncertain_ = false;
     frameScheduler_.restartSequence();
@@ -955,6 +961,12 @@ void GaussianTraining::setSsimMode(TrainingSsimMode mode) {
 TrainingSsimMode GaussianTraining::activeSsimMode() const {
     const auto* renderer = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
     return renderer ? renderer->activeSsimMode() : TrainingSsimMode::TwoDimensional;
+}
+
+void GaussianTraining::setFasterSortEnabled(bool enabled) {
+    fasterSortEnabled_ = enabled;
+    if (auto* renderer = dynamic_cast<GaussianForwardRenderer*>(forward_.get()))
+        renderer->setFasterSortEnabled(enabled);
 }
 
 void GaussianTraining::setTensorRgbLatencyHiding(bool enabled) {

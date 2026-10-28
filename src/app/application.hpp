@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/application_settings.hpp"
 #include "training/app/training_controller.hpp"
 #include "training/ui/training_panel.hpp"
 #include "viewer/viewer_controller.hpp"
@@ -31,7 +32,7 @@ public:
     Application(const std::string& title, int width, int height,
                 RenderMode mode = RenderMode::GaussianGraphics,
                 std::optional<std::string> gpuSelector = std::nullopt,
-                bool validationLayersEnabled = true,
+                std::optional<bool> validationLayersOverride = std::nullopt,
                 std::optional<TrainingSmokeOptions> trainingSmoke = std::nullopt);
     virtual ~Application();
 
@@ -65,6 +66,10 @@ private:
     void handleScroll(double xoffset, double yoffset);
     void handleDroppedFiles(const std::vector<std::string>& paths);
 
+    ApplicationSettings applicationSettings_;
+    ApplicationValidationSelection validationSelection_;
+    std::filesystem::path applicationSettingsPath_;
+    std::string applicationSettingsError_;
     ViewerController viewerController_;
     TrainingController trainingController_;
     TrainingPanel trainingPanel_;

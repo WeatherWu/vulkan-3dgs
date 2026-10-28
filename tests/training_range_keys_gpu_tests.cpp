@@ -337,7 +337,8 @@ int main(int argc, char** argv) {
             input = readInputs(inputPath); verify(input, source);
             if (downstream || integrated) downstreamSource.emplace(std::move(source));
         }
-        Context context(requireValidation, noValidation, deviceIndex, downstream, portableReference);
+        Context context(requireValidation, noValidation, deviceIndex,
+                        downstream || (integrated && syntheticMode), portableReference || integrated);
         failureContext = ",\"device\":" + schedulingJsonQuote(context.properties.deviceName.data()) +
             ",\"device_uuid\":" + schedulingJsonQuote(context.uuid) +
             ",\"driver_version\":" + std::to_string(context.properties.driverVersion) +
@@ -390,7 +391,8 @@ int main(int argc, char** argv) {
         context.device->waitIdle();
         check(!validationErrors, "Range validation errors");
         std::ostringstream json;
-        json << "{\"schema\":" << schedulingJsonQuote(integrated ? "faster_sort_integration_gpu_v1" : downstream ? "faster_sort_downstream_gpu_v1" : fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1")
+        json << "{\"training_owner_lifecycle_checked\":" << std::boolalpha << (integrated && syntheticMode)
+             << ",\"schema\":" << schedulingJsonQuote(integrated ? "faster_sort_integration_gpu_v1" : downstream ? "faster_sort_downstream_gpu_v1" : fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1")
              << ",\"status\":" << schedulingJsonQuote(integrated ? "PRIVATE_RENDERER_INTEGRATION_PASSED_NOT_LIVE_TRAINING_ADMISSION" : downstream ? (downstreamPassed ? (portableReference ?
                  "PRIVATE_PORTABLE_FIXTURE_PASSED_NOT_TENSOR_ADMISSION" : "PRIVATE_DOWNSTREAM_PASSED_NOT_TRAINING_ADMISSION") :
                  "STOP_DOWNSTREAM_NUMERICAL_MISMATCH") : "PRIVATE_CORRECTNESS_PASSED_NOT_TRAINING_ADMISSION")

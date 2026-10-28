@@ -24,17 +24,19 @@ void reject(std::initializer_list<std::string_view> arguments) {
 int main() {
     try {
         const auto defaults = parse({});
-        check(defaults.validationLayersEnabled && !defaults.showHelp && !defaults.gpuSelector,
-              "Default validation must remain on in every build configuration");
+        check(!defaults.validationLayersOverride.has_value() && !defaults.showHelp &&
+                  !defaults.gpuSelector,
+              "Unspecified validation must defer to application settings");
         for (const auto argument : {"on", "off"}) {
             const auto separated = parse({"--validation", argument});
             const auto joined = std::string("--validation=") + argument;
-            check(separated.validationLayersEnabled == (std::string_view(argument) == "on") &&
-                      parse({joined}).validationLayersEnabled == separated.validationLayersEnabled,
+            check(separated.validationLayersOverride == (std::string_view(argument) == "on") &&
+                      parse({joined}).validationLayersOverride ==
+                          separated.validationLayersOverride,
                   "Validation argument forms disagree");
         }
         const auto combined = parse({"--gpu", "RTX 3090", "--validation=off"});
-        check(combined.gpuSelector == "RTX 3090" && !combined.validationLayersEnabled,
+        check(combined.gpuSelector == "RTX 3090" && combined.validationLayersOverride == false,
               "GPU selector was lost");
         check(parse({"--validation", "on", "--gpu=uuid:abc"}).gpuSelector == "uuid:abc",
               "GPU equals form was lost");
@@ -56,7 +58,8 @@ int main() {
         const auto smoke =
             parse({"--training-smoke-steps", "3200", "--training-smoke-report", "smoke A.json"});
         check(smoke.trainingSmoke && smoke.trainingSmoke->stopIteration == 3200 &&
-                  smoke.trainingSmoke->report == "smoke A.json" && smoke.validationLayersEnabled,
+                  smoke.trainingSmoke->report == "smoke A.json" &&
+                  !smoke.validationLayersOverride.has_value(),
               "Smoke CLI boundary/report parsing");
         check(parse({"--training-smoke-steps=3200", "--training-smoke-report=smoke.json"})
                       .trainingSmoke->stopIteration == 3200,

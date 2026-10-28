@@ -29,6 +29,9 @@ endfunction()
 add_executable(application_command_line_tests application_command_line_tests.cpp)
 target_include_directories(application_command_line_tests PRIVATE ../src)
 configure_vulkan_3dgs_test(application_command_line_tests)
+add_executable(application_settings_tests application_settings_tests.cpp)
+target_link_libraries(application_settings_tests PRIVATE vulkan_3dgs_core)
+configure_vulkan_3dgs_test(application_settings_tests)
 add_test(NAME application_validation_help
     COMMAND $<TARGET_FILE:vulkan_3dgs_app> --validation off --help)
 set_tests_properties(application_validation_help PROPERTIES

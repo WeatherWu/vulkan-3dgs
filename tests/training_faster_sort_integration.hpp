@@ -1,12 +1,41 @@
 #pragma once
+#include "training/core/gaussian_training.hpp"
 #include "training_sort_baseline_session.hpp"
 #include "training_sort_downstream_reference.hpp"
+
+inline void checkTrainingSortingLifecycle(vk::Device device, vk::PhysicalDevice physical,
+                                          vk::Queue queue, uint32_t family) {
+    using namespace vulkan3DGS;
+    GaussianTraining training;
+    training.initialize(device, physical, queue, family, family);
+    training.setFasterSortEnabled(true);
+    const auto checkRenderer = [&](uint32_t count, bool requested) {
+        training.initializeTrainingRenderers(device, physical, queue, family, count, {31, 15});
+        const auto& forward = dynamic_cast<const GaussianForwardRenderer&>(training.forward());
+        sort_replay::check(forward.fasterSortRequested() == requested,
+                           "Training sorting preference lost on renderer creation/rebuild");
+        sort_replay::check(!training.lastSortState().executed,
+                           "Renderer initialization reported an executed sorting step");
+    };
+    checkRenderer(1, true);
+    training.setFasterSortEnabled(false);
+    sort_replay::check(
+        !dynamic_cast<const GaussianForwardRenderer&>(training.forward()).fasterSortRequested(),
+        "Stopped-owner sorting change did not reach renderer");
+    checkRenderer(257, false);
+    training.setFasterSortEnabled(true);
+    checkRenderer(33, true);
+    training.cleanup();
+    training.initialize(device, physical, queue, family, family);
+    checkRenderer(2, true);
+}
 
 inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevice physical,
                                             vk::Queue queue, uint32_t family,
                                             const vulkan3DGS::TrainingScanlineCapture* capture) {
     using namespace vulkan3DGS;
     using sort_replay::check;
+    if (!capture) checkTrainingSortingLifecycle(device, physical, queue, family);
     std::vector<TrainingScanlineCapture> fixtures;
     if (capture)
         fixtures.push_back(*capture);
@@ -62,21 +91,23 @@ inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevic
             check(std::memcmp(referenceBlend.data(), source.blends.data(),
                               source.blends.size() * 16) == 0,
                   "Integrated original blend differs from capture");
-        bool fixed8Fallback = false;
+        bool fixed8Fallback = false, adaptiveFallback = false;
         if (!source.header.gaussianCount) {
             session.setFasterSortEnabled(true);
-            session.setTileSize(8);
-            session.run(false, true);
-            check(!session.fasterSortActive(), "Fixed8 unexpectedly selected Faster sort");
-            const auto fallbackColor = session.colors();
-            const auto fallbackBlend = session.blends();
-            check(std::memcmp(referenceColor.data(), fallbackColor.data(),
-                              referenceColor.size() * 16) == 0 &&
-                      std::memcmp(referenceBlend.data(), fallbackBlend.data(),
-                                  referenceBlend.size() * 16) == 0,
-                  "Empty Fixed8 original fallback output changed");
+            for (uint32_t tileSize : {8u, 32u}) {
+                session.setTileSize(tileSize);
+                session.run(false, true);
+                check(!session.fasterSortActive(), "Non-Fixed16 unexpectedly selected Faster sort");
+                const auto fallbackColor = session.colors();
+                const auto fallbackBlend = session.blends();
+                check(std::memcmp(referenceColor.data(), fallbackColor.data(),
+                                  referenceColor.size() * 16) == 0 &&
+                          std::memcmp(referenceBlend.data(), fallbackBlend.data(),
+                                      referenceBlend.size() * 16) == 0,
+                      "Empty non-Fixed16 original fallback output changed");
+            }
             session.setTileSize(16);
-            fixed8Fallback = true;
+            fixed8Fallback = adaptiveFallback = true;
         }
         if (frame) out << ',';
         out << "{\"passed\":true,\"gaussians\":" << source.header.gaussianCount
@@ -87,6 +118,7 @@ inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevic
             << ",\"projected_adoption_exercised\":" << (frame && source.header.gaussianCount != 0)
             << ",\"tile_capacity\":" << session.capacity()
             << ",\"fixed8_empty_fallback_verified\":" << fixed8Fallback
+            << ",\"adaptive_empty_fallback_verified\":" << adaptiveFallback
             << ",\"lists_ranges_projected_exact\":true,\"color_blend_exact\":true"
             << ",\"adam_state_equivalence_checked\":false}";
     }

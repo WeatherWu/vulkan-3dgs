@@ -18,14 +18,15 @@
 namespace {
 
 void printUsage(const char* executable) {
-    std::cout << "Usage: " << executable << " [--gpu <index|name|uuid>] [--validation <on|off>]\n"
-              << "  --gpu VALUE  Select a training GPU by Vulkan index, name, or UUID.\n"
-              << "  --validation on|off  Request Vulkan validation layers (default: on).\n"
-              << "                       Use off for timing; training numeric checks are unchanged.\n"
-              << "  --training-smoke-steps N --training-smoke-report NEW.json\n"
-              << "                       Pause after N normal steps (1..29999); requires validation on.\n"
-              << "                       Load/select the dataset and press Start Training in the UI.\n"
-              << "  -h, --help   Show this help.\n";
+    std::cout
+        << "Usage: " << executable << " [--gpu <index|name|uuid>] [--validation <on|off>]\n"
+        << "  --gpu VALUE  Select a training GPU by Vulkan index, name, or UUID.\n"
+        << "  --validation on|off  Override saved Vulkan validation preference for this launch.\n"
+        << "                       Use off for timing; training numeric checks are unchanged.\n"
+        << "  --training-smoke-steps N --training-smoke-report NEW.json\n"
+        << "                       Pause after N normal steps (1..29999); requires validation on.\n"
+        << "                       Load/select the dataset and press Start Training in the UI.\n"
+        << "  -h, --help   Show this help.\n";
 }
 
 #ifndef _WIN32
@@ -68,13 +69,9 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        vulkan3DGS::Application app("vulkan-3dgs",
-                                    1280,
-                                    720,
-                                    vulkan3DGS::RenderMode::GaussianGraphics,
-                                    options.gpuSelector,
-                                    options.validationLayersEnabled,
-                                    options.trainingSmoke);
+        vulkan3DGS::Application app("vulkan-3dgs", 1280, 720,
+                                    vulkan3DGS::RenderMode::GaussianGraphics, options.gpuSelector,
+                                    options.validationLayersOverride, options.trainingSmoke);
         app.run();
     } catch (const std::exception& error) {
         std::cerr << "Fatal error: " << error.what() << std::endl;

@@ -12,7 +12,7 @@ namespace vulkan3DGS {
 
 struct ApplicationCommandLineOptions {
     std::optional<std::string> gpuSelector;
-    bool validationLayersEnabled = true;
+    std::optional<bool> validationLayersOverride;
     bool showHelp = false;
     std::optional<TrainingSmokeOptions> trainingSmoke;
 };
@@ -46,7 +46,7 @@ parseApplicationCommandLine(std::span<const std::string_view> arguments) {
                     : argument.substr(13);
             if (value != "on" && value != "off")
                 throw std::invalid_argument("--validation requires 'on' or 'off'");
-            options.validationLayersEnabled = value == "on";
+            options.validationLayersOverride = value == "on";
         } else if (argument == "--training-smoke-steps" ||
                    argument.starts_with("--training-smoke-steps=")) {
             if (smokeStepsSpecified)
@@ -80,7 +80,8 @@ parseApplicationCommandLine(std::span<const std::string_view> arguments) {
         }
     }
     if (smokeStepsSpecified || smokeReportSpecified) {
-        if (!smokeStepsSpecified || !smokeReportSpecified || !options.validationLayersEnabled)
+        if (!smokeStepsSpecified || !smokeReportSpecified ||
+            options.validationLayersOverride == false)
             throw std::invalid_argument(
                 "Training smoke requires both smoke options and --validation on");
         smoke.validate();

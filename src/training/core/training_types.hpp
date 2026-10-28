@@ -333,6 +333,13 @@ struct TrainingProfilingStats {
 };
 
 // Observation of a completed ordinary training step; no scheduling or model mutation policy.
+struct TrainingSortState {
+    bool executed = false;
+    bool requested = false;
+    bool active = false;
+    uint32_t tileSize = 0;
+};
+
 struct TrainingStepObservation {
     uint32_t iteration = 0, frame = 0, gaussiansBefore = 0, gaussiansAfter = 0;
     uint32_t tileItems = 0, tileCapacity = 0, activeSHDegree = 0, participatingGaussians = 0;

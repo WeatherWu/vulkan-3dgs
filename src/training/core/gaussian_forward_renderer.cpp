@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,21 +13,6 @@
 namespace vulkan3DGS {
 
 namespace {
-
-bool fasterSortEnvironment() {
-#ifdef _WIN32
-    char* value = nullptr;
-    size_t length = 0;
-    if (_dupenv_s(&value, &length, "VULKAN_3DGS_FASTER_SORT") != 0 || !value) return false;
-    const std::unique_ptr<char, decltype(&std::free)> owner(value, &std::free);
-#else
-    const char* value = std::getenv("VULKAN_3DGS_FASTER_SORT");
-#endif
-    if (!value) return false;
-    if (std::strcmp(value, "0") && std::strcmp(value, "1"))
-        throw std::runtime_error("VULKAN_3DGS_FASTER_SORT must be 0 or 1");
-    return std::strcmp(value, "1") == 0;
-}
 
 vk::DescriptorSetLayoutBinding storageBinding(uint32_t binding) {
     vk::DescriptorSetLayoutBinding layoutBinding{};
@@ -98,7 +82,6 @@ void GaussianForwardRenderer::initialize(vk::Device device,
     computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     gaussianCount_ = gaussianCount;
     extent_ = extent;
-    fasterSortRequested_ = fasterSortEnvironment();
     createForwardResources();
     initialized_ = true;
 

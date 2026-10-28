@@ -60,7 +60,7 @@ cmake --build build --config Release
 
 未指定 `--gpu` 时，程序自动选择通过训练适用性检查的独立显卡。
 
-Debug和Release默认都请求开启Vulkan验证层。性能测量使用`--validation off`，正确性检查使用`--validation on`；训练数值检查不变。启动日志显示请求值及实际启用状态，无需修改源码。
+在 **Application Settings → Vulkan Validation Layers (next launch)** 中选择验证层，关闭并重启程序后生效。Debug和Release的初始默认值均为开启；`--validation on|off`仅作为当前进程的可选覆盖，不修改保存值。面板和启动日志显示请求值及实际状态，训练数值检查不变。包括实验性Faster-GS排序在内的训练方法直接在UI中选择，参见[训练配置与完整对照](docs/training-ui.md)。
 
 Ubuntu 示例：
 

@@ -1,5 +1,6 @@
 #include "app/application.hpp"
 
+#include "app/application_settings_panel.hpp"
 #include "app/window.hpp"
 #include "context/context.hpp"
 #include "graphics/gaussian_model.hpp"
@@ -31,7 +32,8 @@ bool hasExtension(const std::filesystem::path& path, const std::string& extensio
 } // namespace
 
 Application::Application(const std::string& title, int width, int height, RenderMode mode,
-                         std::optional<std::string> gpuSelector, bool validationLayersEnabled,
+                         std::optional<std::string> gpuSelector,
+                         std::optional<bool> validationLayersOverride,
                          std::optional<TrainingSmokeOptions> trainingSmoke)
     : currentMode_(mode) {
 #ifdef _DEBUG
@@ -39,6 +41,16 @@ Application::Application(const std::string& title, int width, int height, Render
 #endif
     LOG_INFO("Initializing Vulkan+3DGS Application");
 
+    applicationSettingsPath_ = TrainingSettingsStore::defaultPath();
+    try {
+        ApplicationSettingsStore::load(applicationSettingsPath_, applicationSettings_);
+    } catch (const std::exception& error) {
+        applicationSettingsError_ = error.what();
+        LOG_WARN("Could not load application settings: {}", error.what());
+    }
+    validationSelection_ = resolveApplicationValidation(
+        applicationSettings_, validationLayersOverride, trainingSmoke.has_value());
+    const bool validationLayersEnabled = validationSelection_.requested;
     viewerController_.loadSettings();
     Context::initializeVulkanLoader();
     if (!glfwInit()) {
@@ -57,8 +69,8 @@ Application::Application(const std::string& title, int width, int height, Render
                  vulkanContext_->isValidationLayersEnabled(),
                  vulkanContext_->isSynchronizationValidationEnabled());
     if (!vulkanContext_->isValidationLayersEnabled()) {
-        LOG_WARN(
-            "Vulkan validation layers are disabled; use --validation on for correctness checks.");
+        LOG_WARN("Vulkan validation layers are disabled; enable them in Application Settings and "
+                 "restart for correctness checks.");
     }
 
     renderer_ = createRenderer(currentMode_);
@@ -251,6 +263,19 @@ void Application::drawImGuiControls() {
     glfwGetFramebufferSize(window_->get_handle(), &width, &height);
     ViewerPanel::draw(viewerController_, ImGui::GetIO().Framerate, width, height);
     trainingPanel_.draw(trainingController_);
+    const auto savedSettings = applicationSettings_;
+    if (ApplicationSettingsPanel::draw(applicationSettings_, validationSelection_,
+                                       vulkanContext_->isValidationLayersEnabled(),
+                                       applicationSettingsError_)) {
+        try {
+            ApplicationSettingsStore::save(applicationSettingsPath_, applicationSettings_);
+            applicationSettingsError_.clear();
+        } catch (const std::exception& error) {
+            applicationSettings_ = savedSettings;
+            applicationSettingsError_ = error.what();
+            LOG_WARN("Could not save application settings: {}", error.what());
+        }
+    }
 }
 
 void Application::handleScroll(double xOffset, double yOffset) {
