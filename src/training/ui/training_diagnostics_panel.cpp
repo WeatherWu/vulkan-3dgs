@@ -77,11 +77,19 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
 
     if (ImGui::CollapsingHeader("Training Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
         static constexpr const char* cpuStageNames[] = {
-            "Frame upload",        "Image request/wait",  "Target RGBA8 upload",
-            "Prepare submit/wait", "Tile count readback", "Tile buffer resize",
-            "Main command record", "Main submit/wait",    "Validation",
-            "Densify adopt",       "Total step",
+            "Frame upload",
+            "Image request/wait",
+            "Target RGBA8 upload",
+            "Prepare submit/wait",
+            "Tile count readback",
+            "Tile buffer resize",
+            "Main command record",
+            "Main submit/wait",
+            "Validation",
+            "Densify adopt",
+            "Total step",
             "Checkpoint capacity",
+            "Z-order reorder (complete)",
         };
         static constexpr const char* gpuStageNames[] = {
             "Gaussian projection",
@@ -110,6 +118,7 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
             "Checkpoint state build",
             "Checkpoint tasks",
             "Checkpoint warp backward (inside Pixel to 2DGS)",
+            "Z-order reorder",
         };
         static_assert(sizeof(cpuStageNames) / sizeof(cpuStageNames[0]) ==
                       kTrainingCpuProfileStageCount);

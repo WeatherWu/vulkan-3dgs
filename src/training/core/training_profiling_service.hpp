@@ -23,6 +23,7 @@ public:
     void resetLastSamples();
     void resetStats();
     void recordCpu(TrainingCpuProfileStage stage, float milliseconds);
+    void recordGpu(TrainingGpuProfileStage stage, float milliseconds);
     [[nodiscard]] bool collectGpu();
 
     [[nodiscard]] bool gpuTimestampsAvailable() const noexcept {
@@ -39,8 +40,6 @@ public:
     }
 
 private:
-    void recordGpu(TrainingGpuProfileStage stage, float milliseconds);
-
     vk::Device device_ = nullptr;
     vk::QueryPool queryPool_ = nullptr;
     float timestampPeriodNanoseconds_ = 0.0f;

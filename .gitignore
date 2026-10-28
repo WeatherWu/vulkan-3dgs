@@ -28,6 +28,7 @@ benchmark_tiles/
 /docs/training-flow.dot
 
 plan*.md
+/bias_fastergs.md
 analysis.json
 frame_0_**
 s4_**.json

@@ -125,6 +125,7 @@ bool TrainingProfilingService::collectGpu() {
         "Checkpoint state build",
         "Checkpoint tasks",
         "Checkpoint warp backward",
+        "Morton physical reorder",
     };
     for (uint32_t index = 0; index < kTrainingGpuProfileStageCount; ++index) {
         const auto stage = static_cast<TrainingGpuProfileStage>(index);

@@ -278,6 +278,7 @@ endforeach()
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_checkpoint_warp.comp.slang"
                         "train_backward_checkpoint_warp.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_clear.comp.slang" "train_forward_tile_clear.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_morton_reorder.comp.slang" "train_morton_reorder.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_count.comp.slang" "train_forward_tile_count.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_ranges.comp.slang"
                         "train_forward_gaussian_prefix_ranges.comp")

@@ -99,6 +99,8 @@ void GaussianTraining::cleanup() {
     destroyTrainingProfilingResources();
     validationService_.cleanup();
     stepExecutor_.cleanup();
+    mortonReorder_.reset();
+    mortonStats_ = {};
     buffers_.cleanup();
     trainableGaussianCount_ = 0;
     lastSortState_ = {};
@@ -121,6 +123,8 @@ void GaussianTraining::cleanup() {
 }
 
 void GaussianTraining::resize(uint32_t gaussianCount, TrainingExtent extent) {
+    mortonReorder_.reset();
+    mortonStats_ = {};
     buffers_.resize(gaussianCount, extent);
     buffers_.configureSsimScratch(ssimMode_);
     trainableGaussianCount_ = gaussianCount;
@@ -135,6 +139,7 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                                                    uint32_t computeQueueFamilyIndex,
                                                     uint32_t gaussianCount,
                                                     TrainingExtent extent) {
+    mortonReorder_.reset();
     destroyTrainingProfilingResources();
     if (rendererInitialized_) {
         if (forward_) {
@@ -204,6 +209,10 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
 }
 
 void GaussianTraining::captureOptimizerStepAndPause(const std::filesystem::path& path) {
+    if (trainingMortonDue(mortonOrderingEnabled_, fixedBenchmarkStats_.active, trainingIteration_,
+                          mortonStats_))
+        throw std::runtime_error("Optimizer capture cannot include a scheduled Z-order reorder; "
+                                 "complete the step first");
     auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get());
     if (!initialized_ || !rendererInitialized_ || !stepExecutor_.initialized() || !hasDataset() ||
         !hasTrainableModel() || !renderer || !renderer->fusedOptimizerEnabled())
@@ -310,6 +319,33 @@ void GaussianTraining::trainStep() {
     const auto totalStart = Clock::now();
     const auto pixelCullStatus = tensorEarlyCullStatus();
     resetProfilingLastSamples();
+
+    const bool mortonThisStep = trainingMortonDue(mortonOrderingEnabled_, fixedBenchmarkThisStep,
+                                                  trainingIteration_, mortonStats_);
+    if (mortonThisStep) {
+        const auto start = Clock::now();
+        if (!mortonReorder_)
+            mortonReorder_ = std::make_unique<TrainingMortonReorder>(
+                device_, physicalDevice_, stepExecutor_.computeQueue(), computeQueueFamilyIndex_);
+        const auto result = mortonReorder_->execute(buffers_, trainableGaussianCount_);
+        ++mortonStats_.reorderCount;
+        mortonStats_.lastCompletedSteps = trainingIteration_;
+        mortonStats_.lastGaussianCount = trainableGaussianCount_;
+        mortonStats_.lastCpuMs =
+            std::chrono::duration<float, std::milli>(Clock::now() - start).count();
+        mortonStats_.gpuTimed = result.gpuMs.has_value();
+        mortonStats_.lastGpuMs = result.gpuMs.value_or(0);
+        mortonStats_.peakWorkspaceBytes =
+            std::max(mortonStats_.peakWorkspaceBytes, result.workspaceBytes);
+        profilingService_.recordCpu(TrainingCpuProfileStage::MortonReorder, mortonStats_.lastCpuMs);
+        if (result.gpuMs)
+            profilingService_.recordGpu(TrainingGpuProfileStage::MortonReorder, *result.gpuMs);
+        LOG_INFO("Training Z-order physical reorder before iteration {}: count={}, events={}, "
+                 "CPU={} ms, GPU={} ms (timed={}), workspace={} bytes",
+                 trainingIteration_ + 1u, trainableGaussianCount_, mortonStats_.reorderCount,
+                 mortonStats_.lastCpuMs, mortonStats_.lastGpuMs, mortonStats_.gpuTimed,
+                 result.workspaceBytes);
+    }
 
     const bool runDensificationThisStep = !fixedBenchmarkThisStep && shouldRunDensification();
     if (runDensificationThisStep) {
@@ -469,19 +505,30 @@ void GaussianTraining::trainStep() {
 
     ++trainingIteration_;
     if (hasDataset()) frameScheduler_.advanceAfterIteration();
-    if (stepObservationEnabled_) lastStepObservation_ = {
-        .iteration = trainingIteration_, .frame = executedFrame,
-        .gaussiansBefore = pushConstants.gaussianCount, .gaussiansAfter = trainableGaussianCount_,
-        .tileItems = execution.tileItemCount, .tileCapacity = buffers_.tileItemCapacity(),
-        .activeSHDegree = pushConstants.activeSHDegree,
-        .participatingGaussians = gaussianForward->fasterSortParticipatingCount(),
-        .ssimMode = static_cast<uint32_t>(activeSsimMode()), .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
-        .tileMode = static_cast<uint32_t>(tileMode_),
-        .fasterSortRequested = gaussianForward->fasterSortRequested(), .fasterSortActive = gaussianForward->fasterSortActive(),
-        .optimizerUpdated = execution.optimizerUpdated, .densification = execution.densificationRan,
-        .opacityReset = execution.densificationRan && densificationPush.resetOpacity != 0,
-        .resized = capacityBefore != buffers_.tileItemCapacity(),
-        .validation = validationService_.stats(), .profiling = profilingService_.stats()};
+    if (stepObservationEnabled_)
+        lastStepObservation_ = {
+            .iteration = trainingIteration_,
+            .frame = executedFrame,
+            .gaussiansBefore = pushConstants.gaussianCount,
+            .gaussiansAfter = trainableGaussianCount_,
+            .tileItems = execution.tileItemCount,
+            .tileCapacity = buffers_.tileItemCapacity(),
+            .activeSHDegree = pushConstants.activeSHDegree,
+            .participatingGaussians = gaussianForward->fasterSortParticipatingCount(),
+            .ssimMode = static_cast<uint32_t>(activeSsimMode()),
+            .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
+            .tileMode = static_cast<uint32_t>(tileMode_),
+            .fasterSortRequested = gaussianForward->fasterSortRequested(),
+            .fasterSortActive = gaussianForward->fasterSortActive(),
+            .optimizerUpdated = execution.optimizerUpdated,
+            .densification = execution.densificationRan,
+            .opacityReset = execution.densificationRan && densificationPush.resetOpacity != 0,
+            .resized = capacityBefore != buffers_.tileItemCapacity(),
+            .mortonOrderingRequested = mortonOrderingEnabled_,
+            .mortonReordered = mortonThisStep,
+            .morton = mortonStats_,
+            .validation = validationService_.stats(),
+            .profiling = profilingService_.stats()};
 }
 
 TrainingStateFiniteCheck GaussianTraining::inspectTrainingStateFinite() {

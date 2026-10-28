@@ -134,6 +134,29 @@ int main(int argc, char** argv) {
             }
             check(rejected, "Skipped step accepted");
         }
+        for (uint32_t mode = 0; mode < 3; ++mode) {
+            ReportFile morton;
+            TrainingSmokeRun run({2, morton.path}, "{}");
+            auto first = observation(1);
+            first.mortonOrderingRequested = true;
+            first.mortonReordered = mode != 1;
+            first.morton.reorderCount = mode == 1 ? 0u : 1u;
+            rejected = false;
+            try {
+                run.observe(first);
+                auto second = observation(2);
+                second.mortonOrderingRequested = true;
+                second.mortonReordered = mode == 2;
+                second.morton.reorderCount = 1;
+                run.observe(second);
+            } catch (const std::runtime_error&) {
+                rejected = true;
+            }
+            check(rejected == (mode != 0), "Smoke did not verify actual Z-order event schedule");
+            run.finish("unit_test", "", 0, 0, std::nullopt);
+            check(morton.read().find("\"morton_requested\":true") != std::string::npos,
+                  "Smoke omitted actual Z-order metadata");
+        }
         std::cout << "Smoke boundaries, report reservation, interruption and validation contracts "
                      "passed\n";
     } catch (const std::exception& error) {

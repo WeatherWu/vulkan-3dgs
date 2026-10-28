@@ -132,9 +132,10 @@ void TrainingPanel::dispatch(TrainingController& controller,
     if (actions.settings.pixelBackwardChanged || actions.settings.adaptiveTensorBatchChanged ||
         actions.settings.tensorReductionChanged || actions.settings.tensorPixelGradSourceChanged ||
         actions.settings.tensorRgbScheduleChanged || actions.settings.tensorEarlyCullChanged ||
-        actions.settings.fasterSortChanged || actions.settings.tileModeChanged ||
-        actions.settings.ssimModeChanged || actions.settings.subgroupUtilizationChanged ||
-        actions.settings.forwardCompositeChanged || actions.settings.validationIntervalChanged) {
+        actions.settings.fasterSortChanged || actions.settings.mortonOrderingChanged ||
+        actions.settings.tileModeChanged || actions.settings.ssimModeChanged ||
+        actions.settings.subgroupUtilizationChanged || actions.settings.forwardCompositeChanged ||
+        actions.settings.validationIntervalChanged) {
         controller.applyLiveSettings();
     }
     if (actions.toggleTraining) controller.toggleTraining();

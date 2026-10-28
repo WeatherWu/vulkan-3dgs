@@ -34,6 +34,9 @@ public:
     void ensureTileSortStorage(uint32_t tileItemCapacity, vk::DeviceSize sortStorageSize, vk::BufferUsageFlags sortStorageUsage);
     void ensureDensificationCapacity(uint32_t gaussianCapacity);
     void adoptDensifiedGaussians(uint32_t gaussianCount);
+    std::array<Buffer, 3> createGaussianReorderTargets();
+    // Completed compute work only; all three arrays change ownership together.
+    void adoptGaussianReorder(std::array<Buffer, 3>& targets);
     void uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount);
     std::vector<GaussianTrainParam> downloadGaussianParams(uint32_t gaussianCount);
     std::vector<ProjectedGaussianGrad> downloadProjectedGrads(uint32_t gaussianCount);

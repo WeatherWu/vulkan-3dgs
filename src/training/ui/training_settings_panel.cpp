@@ -65,6 +65,21 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         ImGui::TextDisabled("Selection applies to the next start/resume. Load Dataset resets the "
                             "model for a new comparison.");
 
+        if (ImGui::Checkbox("Faster-GS Z-ordering (Experimental)", &run.mortonOrdering))
+            actions.mortonOrderingChanged = true;
+        ImGui::TextDisabled("Physical reorder before steps 1 / 5001 / 10001 / 15001.");
+        ImGui::TextWrapped("Turning this off stops future reorders; it does not restore the old "
+                           "model order. Load Dataset for a fresh comparison.");
+        const auto& morton = snapshot.mortonStats;
+        if (morton.reorderCount) {
+            ImGui::Text("Z-order events %u, last before step %u (%u Gaussians)",
+                        morton.reorderCount, morton.lastCompletedSteps + 1u,
+                        morton.lastGaussianCount);
+            ImGui::Text("Last reorder CPU %.3f ms", morton.lastCpuMs);
+            if (morton.gpuTimed) ImGui::Text("Last reorder GPU %.3f ms", morton.lastGpuMs);
+        } else
+            ImGui::TextDisabled("Z-order: not executed");
+
         static constexpr const char* pixelBackwardModes[] = {
             "Auto (Adaptive)",          "Direct",
             "Workgroup Shared",         "Subgroup",

@@ -142,6 +142,13 @@ endforeach()
 # Explicit independent S4 runner: no checkpoint/scanline suite or Tensor capability gate.
 add_executable(training_optimizer_gpu_tests training_optimizer_gpu_tests.cpp)
 target_link_libraries(training_optimizer_gpu_tests PRIVATE vulkan_3dgs_core)
+add_custom_target(optimizer_gpu_test_shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/shaders"
+        "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/shaders"
+    DEPENDS compile_shaders
+    VERBATIM)
+add_dependencies(training_optimizer_gpu_tests optimizer_gpu_test_shaders)
 target_compile_definitions(training_optimizer_gpu_tests PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
     OPTIMIZER_RUNTIME_DIR="${CMAKE_BINARY_DIR}/bin/$<CONFIG>")

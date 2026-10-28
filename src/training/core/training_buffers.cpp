@@ -578,6 +578,25 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     }
 }
 
+std::array<Buffer, 3> TrainingBuffers::createGaussianReorderTargets() {
+    std::array<Buffer, 3> targets;
+    createStorageBuffer(targets[0], gaussianParams_.getSize());
+    createStorageBuffer(targets[1], adamStates_.getSize());
+    createStorageBuffer(targets[2], densificationStates_.getSize());
+    return targets;
+}
+
+void TrainingBuffers::adoptGaussianReorder(std::array<Buffer, 3>& targets) {
+    if (!targets[0].getBuffer() || !targets[1].getBuffer() || !targets[2].getBuffer() ||
+        targets[0].getSize() != gaussianParams_.getSize() ||
+        targets[1].getSize() != adamStates_.getSize() ||
+        targets[2].getSize() != densificationStates_.getSize())
+        throw std::invalid_argument("Gaussian reorder targets do not match live capacities");
+    std::swap(gaussianParams_, targets[0]);
+    std::swap(adamStates_, targets[1]);
+    std::swap(densificationStates_, targets[2]);
+}
+
 void TrainingBuffers::uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount) {
     if (!params) {
         throw std::runtime_error("Training gaussian params are null");

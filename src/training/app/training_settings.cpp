@@ -56,6 +56,7 @@ const std::unordered_set<std::string>& trainingKeys() {
                                                       "tensor_global_pixel_grad",
                                                       "tensor_rgb_latency_hiding",
                                                       "faster_sort",
+                                                      "morton_ordering",
                                                       "separable_ssim",
                                                       "ssim_mode",
                                                       "total_iterations",
@@ -194,6 +195,9 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
         } else if (key == "faster_sort") {
             int value = 0;
             settings.run.fasterSort = (row >> value) && value == 1;
+        } else if (key == "morton_ordering") {
+            int value = 0;
+            settings.run.mortonOrdering = (row >> value) && value == 1;
         } else if (key == "tensor_early_cull") {
             int value = 0;
             settings.run.tensorEarlyCull = (row >> value) && value == 1;
@@ -325,6 +329,7 @@ void TrainingSettingsStore::write(std::ostream& output, const TrainingSettings& 
     output << "tensor_global_pixel_grad " << (run.tensorGlobalPixelGrad ? 1 : 0) << '\n';
     output << "tensor_rgb_latency_hiding " << (run.tensorRgbLatencyHiding ? 1 : 0) << '\n';
     output << "faster_sort " << (run.fasterSort ? 1 : 0) << '\n';
+    output << "morton_ordering " << (run.mortonOrdering ? 1 : 0) << '\n';
     output << "tensor_early_cull " << (run.tensorEarlyCull ? 1 : 0) << '\n';
     output << "ssim_mode " << run.ssimMode << '\n';
     output << "steps_per_frame " << run.benchmarkStepsPerFrame << '\n';

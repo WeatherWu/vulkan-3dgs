@@ -51,6 +51,7 @@ add_library(vulkan_3dgs_core STATIC
 
     # Gaussian Training 训练核心
     training/core/gaussian_training.cpp
+    training/core/training_morton_reorder.cpp
     training/core/training_validation_service.cpp
     training/core/training_profiling_service.cpp
     training/core/training_scheduling_diagnostics.cpp

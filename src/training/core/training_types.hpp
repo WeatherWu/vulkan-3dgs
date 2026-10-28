@@ -1,5 +1,6 @@
 #pragma once
 
+#include "training/core/training_morton_policy.hpp"
 #include "training/core/training_ssim_mode.hpp"
 
 #include <array>
@@ -278,6 +279,7 @@ enum class TrainingCpuProfileStage : uint32_t {
     DensificationAdopt,
     Total,
     CheckpointCapacity,
+    MortonReorder,
     Count,
 };
 
@@ -308,6 +310,7 @@ enum class TrainingGpuProfileStage : uint32_t {
     CheckpointStateBuild,
     CheckpointTasks,
     CheckpointWarpBackward,
+    MortonReorder,
     Count,
 };
 
@@ -346,6 +349,8 @@ struct TrainingStepObservation {
     uint32_t ssimMode = 0, pixelMode = 0, tileMode = 0;
     bool fasterSortRequested = false, fasterSortActive = false, optimizerUpdated = false;
     bool densification = false, opacityReset = false, resized = false;
+    bool mortonOrderingRequested = false, mortonReordered = false;
+    TrainingMortonStats morton{};
     TrainingValidationStats validation;
     TrainingProfilingStats profiling;
 };

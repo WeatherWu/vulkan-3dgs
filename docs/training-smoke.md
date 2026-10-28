@@ -123,6 +123,13 @@ They do not establish training quality, full-training speed or an end-to-end
 gain percentage. Keep both raw reports for review; uninstrumented timing and
 full-training/held-out quality assessment are separate decisions.
 
+When Z-ordering is selected in the UI, each step records `morton_requested`,
+`morton_reordered`, `morton_event_count` and `morton_last_completed_steps`.
+The diagnostic rejects missing or duplicated events. A 3200-step smoke covers
+only the initial reorder; use the existing step-limit option with 15001 to cover
+all four fixed events. Configuration and quality boundaries otherwise remain
+the same. See [physical Z-ordering](training-morton-ordering.md).
+
 ## Shared depth-attachment synchronization
 
 The presentation framebuffers share one depth image. The render-pass external

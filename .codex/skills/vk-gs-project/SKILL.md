@@ -31,6 +31,25 @@ confirmed current state of the branch. `plan.md` is the only exception.
   implementation and usage documentation belong on the experimental branch;
   an available switch is not evidence of accepted correctness or performance.
 
+## Hard Rule: Faithful Paper Reproduction
+
+When adopting a method from another paper, reproduce the selected method as
+faithfully and completely as possible. Identify its paper version, official
+implementation/branch and relevant configuration before choosing the design.
+Do not silently replace, omit, simplify or add algorithmic details, including
+visibility predicates, optimizer state/step rules, numerical formulas, schedules,
+data layouts or method components. Distinguish a complete reproduction from an
+approved adaptation or a partial implementation; never present them as equivalent.
+
+If faithful reproduction conflicts with the project's existing path, numerical
+contract or architecture, explain the concrete conflict and ask the user whether
+to adopt the paper's original path or retain the project's path with an explicit
+adaptation. Obtain that choice before implementing the conflicting part; an
+existing explicit choice remains valid and must not be requested again.
+Unspecified or unavailable upstream details remain unresolved, not permission to
+invent them. Routine Vulkan/API translation that preserves the selected method's
+behavior may proceed within the authorized scope; disclose material differences.
+
 ## Working rules
 
 - Reuse the existing CMake configuration; do not introduce build-system churn.

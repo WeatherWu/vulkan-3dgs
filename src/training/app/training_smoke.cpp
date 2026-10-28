@@ -67,6 +67,12 @@ void TrainingSmokeRun::observe(const TrainingStepObservation& sample) {
         throw std::runtime_error("Smoke detected non-finite/invalid training validation data");
     if (sample.fasterSortRequested && !sample.fasterSortActive)
         throw std::runtime_error("Smoke requested Faster sorting but the actual path fell back");
+    if (sample.mortonOrderingRequested &&
+        (sample.morton.reorderCount != std::min(4u, (sample.iteration - 1u) / 5000u + 1u) ||
+         sample.mortonReordered !=
+             ((sample.iteration - 1u) <= 15000u && (sample.iteration - 1u) % 5000u == 0u)))
+        throw std::runtime_error(
+            "Smoke requested Z-order but actual events differ from the fixed schedule");
 }
 void TrainingSmokeRun::finish(std::string_view reason, std::string_view error,
                               std::optional<uint64_t> errors, std::optional<double> wall,
@@ -142,6 +148,10 @@ void TrainingSmokeRun::finish(std::string_view reason, std::string_view error,
             out << "null";
         out << ",\"optimizer_updated\":" << s.optimizerUpdated << ",\"adc\":" << s.densification
             << ",\"opacity_reset\":" << s.opacityReset << ",\"tile_resized\":" << s.resized
+            << ",\"morton_requested\":" << s.mortonOrderingRequested
+            << ",\"morton_reordered\":" << s.mortonReordered
+            << ",\"morton_event_count\":" << s.morton.reorderCount
+            << ",\"morton_last_completed_steps\":" << s.morton.lastCompletedSteps
             << ",\"ssim_mode\":" << s.ssimMode << ",\"pixel_mode\":" << s.pixelMode
             << ",\"tile_mode\":" << s.tileMode << ",\"validation_iteration\":" << v.iteration
             << ",\"validation_valid\":";

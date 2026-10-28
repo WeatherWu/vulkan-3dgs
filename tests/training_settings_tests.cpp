@@ -1,4 +1,5 @@
 #include "training/app/training_settings.hpp"
+#include "training/core/training_morton_policy.hpp"
 #include "training/core/training_ssim_mode.hpp"
 
 #include <filesystem>
@@ -27,6 +28,7 @@ TrainingSettings populatedSettings() {
     settings.run.tensorRgbLatencyHiding = true;
     settings.run.tensorEarlyCull = true;
     settings.run.fasterSort = true;
+    settings.run.mortonOrdering = true;
     settings.run.ssimMode = 2;
     settings.run.pureTraining = true;
     settings.optimizer.positionLearningRate = 0.012345f;
@@ -49,8 +51,8 @@ bool testRoundTrip(const std::filesystem::path& path) {
            loaded.run.adaptiveTileSplitThreshold == 192 &&
            loaded.run.adaptiveTensorChildBatch == 32 && loaded.run.tensorSubgroupReduction &&
            loaded.run.tensorGlobalPixelGrad && loaded.run.tensorRgbLatencyHiding &&
-           loaded.run.tensorEarlyCull && loaded.run.fasterSort && loaded.run.ssimMode == 2 &&
-           loaded.run.pureTraining &&
+           loaded.run.tensorEarlyCull && loaded.run.fasterSort && loaded.run.mortonOrdering &&
+           loaded.run.ssimMode == 2 && loaded.run.pureTraining &&
            loaded.optimizer.positionLearningRate == source.optimizer.positionLearningRate &&
            loaded.densification.maxGaussians == 7654321 &&
            loaded.densification.splitChildren == 7 && loaded.densification.gradientMode == 1;
@@ -61,6 +63,7 @@ bool testValidationAndImmutableRunConfig() {
     if (TrainingSettings{}.run.tensorGlobalPixelGrad) return false;
     if (TrainingSettings{}.run.tensorRgbLatencyHiding) return false;
     if (TrainingSettings{}.run.tensorEarlyCull) return false;
+    if (TrainingSettings{}.run.mortonOrdering) return false;
     if (TrainingSettings{}.run.ssimMode != 0) return false;
     TrainingSettings settings = populatedSettings();
     if (!TrainingSettingsStore::validate(settings)) return false;
@@ -74,18 +77,16 @@ bool testValidationAndImmutableRunConfig() {
     settings.run.tensorGlobalPixelGrad = false;
     settings.run.tensorRgbLatencyHiding = false;
     settings.run.tensorEarlyCull = false;
+    settings.run.mortonOrdering = false;
     settings.run.ssimMode = 0;
     settings.optimizer.positionLearningRate = 99.0f;
     if (config.datasetPath != "dataset with spaces" ||
         config.outputPath != std::filesystem::path("output dir") / "model.ply" ||
         !config.run.pureTraining || config.run.tileMode != 0 ||
-        config.run.adaptiveTileSplitThreshold != 192 ||
-        config.run.adaptiveTensorChildBatch != 32 ||
-        !config.run.tensorSubgroupReduction ||
-        !config.run.tensorGlobalPixelGrad ||
-        !config.run.tensorRgbLatencyHiding ||
-        !config.run.tensorEarlyCull ||
-        config.run.ssimMode != 2 ||
+        config.run.adaptiveTileSplitThreshold != 192 || config.run.adaptiveTensorChildBatch != 32 ||
+        !config.run.tensorSubgroupReduction || !config.run.tensorGlobalPixelGrad ||
+        !config.run.tensorRgbLatencyHiding || !config.run.tensorEarlyCull ||
+        !config.run.mortonOrdering || config.run.ssimMode != 2 ||
         config.optimizer.positionLearningRate != 0.012345f ||
         config.densification.gradientMode != 1) {
         return false;
@@ -223,6 +224,35 @@ bool testSsimModesAndMigration(const std::filesystem::path& path) {
            std::string(trainingSsimModeFileTag(Mode::BackwardSeparable)) == "ssim_backward_separable";
 }
 
+bool testMortonConfigAndSchedule(const std::filesystem::path& path) {
+    for (const auto& entry :
+         {std::pair{"morton_ordering 0\n", false}, std::pair{"morton_ordering 1\n", true},
+          std::pair{"morton_ordering invalid\n", false}, std::pair{"morton_ordering 2\n", false}}) {
+        {
+            std::ofstream output(path);
+            output << entry.first;
+        }
+        TrainingSettings loaded;
+        TrainingSettingsStore::load(path, loaded);
+        if (loaded.run.mortonOrdering != entry.second) return false;
+    }
+    TrainingMortonStats stats;
+    uint32_t events = 0;
+    for (uint32_t completed = 0; completed <= 30000; ++completed) {
+        if (trainingMortonDue(false, false, completed, stats) ||
+            trainingMortonDue(true, true, completed, stats))
+            return false;
+        if (trainingMortonDue(true, false, completed, stats)) {
+            if (completed != events * 5000 || events == 4) return false;
+            ++stats.reorderCount;
+            stats.lastCompletedSteps = completed;
+            ++events;
+            if (trainingMortonDue(true, false, completed, stats)) return false;
+        }
+    }
+    return events == 4;
+}
+
 bool testClamp() {
     const auto path = std::filesystem::temp_directory_path() /
         "vulkan-3dgs-training-settings-clamp-test.cfg";
@@ -260,11 +290,13 @@ int main() {
     const bool clamp = testClamp();
     const bool ssimModes = testSsimModesAndMigration(path);
     const bool earlyCull = testEarlyCullConfig(path);
+    const bool morton = testMortonConfigAndSchedule(path);
     std::filesystem::remove(path);
-    if (!roundTrip || !validation || !legacyKeys || !legacyGlobal || !clamp || !ssimModes || !earlyCull) {
-        std::cerr << "Training settings tests failed: roundTrip=" << roundTrip
-                  << ", validation=" << validation << ", legacyKeys=" << legacyKeys
-                  << ", legacyGlobal=" << legacyGlobal
+    if (!roundTrip || !validation || !legacyKeys || !legacyGlobal || !clamp || !ssimModes ||
+        !earlyCull || !morton) {
+        std::cerr << "Training settings tests failed: morton=" << morton
+                  << " roundTrip=" << roundTrip << ", validation=" << validation
+                  << ", legacyKeys=" << legacyKeys << ", legacyGlobal=" << legacyGlobal
                   << ", clamp=" << clamp << ", ssimModes=" << ssimModes
                   << ", earlyCull=" << earlyCull << '\n';
         return 1;

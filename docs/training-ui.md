@@ -24,6 +24,21 @@ completed step, including a fallback reason; it shows **not executed** before th
 first step. Changing the checkbox does not rewrite that observation or clear the
 model. The experimental label does not establish a speed or quality improvement.
 
+## Physical Z-ordering selection
+
+**Training → Faster-GS Z-ordering (Experimental)** independently enables physical
+model reordering. It defaults off, is saved, and is locked while training runs.
+It moves parameters, Adam moments and ADC statistics together before displayed
+steps 1, 5001, 10001 and 15001. The panel shows actual event count and latest
+CPU/GPU cost. Disabling it stops future events without undoing the existing order;
+Load Dataset creates a fresh comparison. Fixed Benchmark does not reorder.
+
+See [physical Z-ordering](training-morton-ordering.md) for the pinned reference,
+state contract, memory costs and correctness command. For a Z-order A/B, keep
+Faster-GS Sorting and all other settings identical and toggle only Z-ordering.
+Use independent PLY/quality filenames such as `bonsai_zorder_A_30000` and
+`bonsai_zorder_B_30000`. Keep Z-ordering off when measuring sorting alone.
+
 ## Validation preferences
 
 **Application Settings → Vulkan Validation Layers (next launch)** saves the
@@ -40,7 +55,8 @@ their startup warning and actual-disabled status. Numeric training validation,
 profiling and shader build flags are separate controls.
 
 Application, viewer and training settings share the existing settings file.
-The application owns `vulkan_validation`; training owns `faster_sort`. Each
+The application owns `vulkan_validation`; training owns `faster_sort` and
+`morton_ordering`. Each
 settings writer preserves keys owned by the other domains. A failed application
 settings save is displayed and the checkbox returns to its previous value.
 

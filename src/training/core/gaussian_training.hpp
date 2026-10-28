@@ -7,20 +7,22 @@
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
-#include "training/core/training_buffers.hpp"
-#include "training/core/training_dataset.hpp"
+#include "render/renderer.hpp"
 #include "training/core/gaussian_backward_renderer.hpp"
 #include "training/core/gaussian_densification_renderer.hpp"
 #include "training/core/gaussian_forward_renderer.hpp"
+#include "training/core/training_buffers.hpp"
+#include "training/core/training_dataset.hpp"
 #include "training/core/training_frame_scheduler.hpp"
-#include "training/core/training_model_io.hpp"
 #include "training/core/training_image_runtime.hpp"
+#include "training/core/training_model_io.hpp"
+#include "training/core/training_morton_policy.hpp"
+#include "training/core/training_morton_reorder.hpp"
+#include "training/core/training_pixel_culling_policy.hpp"
+#include "training/core/training_profiling_service.hpp"
 #include "training/core/training_step_executor.hpp"
 #include "training/core/training_tile_layout.hpp"
-#include "training/core/training_profiling_service.hpp"
 #include "training/core/training_validation_service.hpp"
-#include "training/core/training_pixel_culling_policy.hpp"
-#include "render/renderer.hpp"
 
 namespace vulkan3DGS {
 
@@ -71,6 +73,15 @@ public:
     void setTensorGlobalPixelGrad(bool enabled);
     void setTensorRgbLatencyHiding(bool enabled);
     void setFasterSortEnabled(bool enabled);
+    void setMortonOrderingEnabled(bool enabled) {
+        mortonOrderingEnabled_ = enabled;
+    }
+    bool mortonOrderingEnabled() const {
+        return mortonOrderingEnabled_;
+    }
+    const TrainingMortonStats& mortonStats() const {
+        return mortonStats_;
+    }
     const TrainingSortState& lastSortState() const {
         return lastSortState_;
     }
@@ -207,6 +218,9 @@ private:
     bool tensorRgbLatencyHiding_ = false;
     bool tensorEarlyCull_ = false;
     bool fasterSortEnabled_ = false;
+    bool mortonOrderingEnabled_ = false;
+    TrainingMortonStats mortonStats_{};
+    std::unique_ptr<TrainingMortonReorder> mortonReorder_;
     TrainingSortState lastSortState_{};
     TrainingSsimMode ssimMode_ = TrainingSsimMode::TwoDimensional;
     float sceneExtent_ = 1.0f;
