@@ -3,14 +3,15 @@
 #include <initializer_list>
 #include <vulkan/vulkan.hpp>
 
+#include "render/renderer.hpp"
 #include "training/core/training_buffers.hpp"
+#include "training/core/training_direct_projection.hpp"
+#include "training/core/training_faster_sort.hpp"
 #include "training/core/training_tile_layout.hpp"
 #include "training/core/training_types.hpp"
-#include "training/core/training_faster_sort.hpp"
-#include "render/renderer.hpp"
 #include "vulkan/compute_pipeline.hpp"
-#include <vk_radix_sort.h>
 #include <array>
+#include <vk_radix_sort.h>
 
 namespace vulkan3DGS {
 
@@ -47,9 +48,17 @@ public:
     // Change only while idle, before recording the next prepare submission.
     void setDirectIntrinsics(bool enabled) {
         directIntrinsics_ = enabled;
+        if (!enabled) directProjection_.reset();
     }
     void setPhysicalTileKey16(bool requested) {
         key16Requested_ = requested;
+        if (!requested && fasterSort_) fasterSort_->releaseKey16();
+    }
+    bool hasDirectResources() const {
+        return bool(directProjection_);
+    }
+    bool hasPhysical16Resources() const {
+        return fasterSort_ && fasterSort_->key16AllocatedBytes() != 0;
     }
     const TrainingKey16State& key16State() const {
         return key16State_;
@@ -152,8 +161,7 @@ private:
     bool directIntrinsics_ = false;
     bool key16Requested_ = false;
     TrainingKey16State key16State_{};
-    ComputePipeline directProjectPipeline_;
-    vk::DescriptorSet directProjectSet_ = nullptr;
+    std::unique_ptr<TrainingDirectProjection> directProjection_;
     ComputePipeline projectPipeline_;
     ComputePipeline gaussianPrefixRangesPipeline_;
     ComputePipeline gaussianPrefixScratchPipeline_;

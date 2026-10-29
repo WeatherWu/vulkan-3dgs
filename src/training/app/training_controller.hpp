@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include "training/app/training_settings.hpp"
 #include "training/app/training_smoke.hpp"
@@ -99,7 +100,8 @@ struct TrainingGpuInfo {
 // lifecycle policy, timer and persisted training settings.
 class TrainingController {
 public:
-    TrainingController();
+    using DeviceFactory = std::function<std::unique_ptr<Device>(std::optional<std::string>, bool)>;
+    explicit TrainingController(DeviceFactory deviceFactory = {});
     ~TrainingController();
 
     TrainingController(const TrainingController&) = delete;
@@ -135,6 +137,9 @@ public:
 
     [[nodiscard]] std::vector<TrainingGpuInfo> gpuOptions() const;
     void selectGpu(const std::string& selector);
+    bool storage16Requested() const;
+    bool storage16Enabled() const;
+    bool requiresDatasetReload() const;
 
     void invalidateDataset(std::string message);
     void setDatasetPath(const std::filesystem::path& path, bool validateNow);
@@ -161,6 +166,8 @@ public:
     void saveSettings();
 
 private:
+    DeviceFactory deviceFactory_;
+    std::unique_ptr<Device> makeTrainingDevice(std::optional<std::string> selector);
     std::optional<bool> vulkanValidationLayersEnabled_;
     void createTrainingDevice(std::optional<std::string> selector);
     void replaceTrainingDevice(std::optional<std::string> selector);

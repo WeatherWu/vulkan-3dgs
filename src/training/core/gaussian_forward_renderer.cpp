@@ -90,6 +90,7 @@ void GaussianForwardRenderer::initialize(vk::Device device,
 }
 
 void GaussianForwardRenderer::cleanup() {
+    directProjection_.reset();
     fasterSort_.reset();
     destroyForwardResources();
     device_ = nullptr;
@@ -174,7 +175,8 @@ void GaussianForwardRenderer::prepareProjectedTileItems() {
     key16State_ =
         resolveTrainingKey16(key16Requested_, fasterSortPrepared_, pushConstants_.tileSize,
                              trainingBuffers_->storage16Enabled(), tileCount);
-    if (fasterSort_) key16State_.allocatedBytes = fasterSort_->key16AllocatedBytes();
+    if (key16State_.active && fasterSort_)
+        key16State_.allocatedBytes = fasterSort_->key16AllocatedBytes();
     if (fasterSortPrepared_) {
         if (!fasterSort_) fasterSort_ = std::make_unique<TrainingFasterSort>(device_, physicalDevice_, computeQueue_, computeQueueFamilyIndex_);
         fasterSort_->prepare(commandBuffer_, *trainingBuffers_, pushConstants_);
@@ -203,8 +205,11 @@ void GaussianForwardRenderer::buildPreparedTileLists(uint32_t tileItemCount) {
     if (fasterSortPrepared_) {
         pushConstants_.tileItemCount = tileItemCount;
         writeProfilingTimestamp(TrainingGpuProfileStage::TileSortAndRanges, false);
-        fasterSort_->build(commandBuffer_, *trainingBuffers_, pushConstants_, radixSorter_,
-                           key16State_.active);
+        if (key16State_.active)
+            fasterSort_->buildPhysical16(commandBuffer_, *trainingBuffers_, pushConstants_,
+                                         radixSorter_);
+        else
+            fasterSort_->build(commandBuffer_, *trainingBuffers_, pushConstants_, radixSorter_);
         if (key16State_.active) {
             key16State_.logicalKeyBytes = uint64_t(tileItemCount) * 2;
             key16State_.allocatedBytes = fasterSort_->key16AllocatedBytes();
@@ -390,10 +395,6 @@ GaussianForwardRenderer::activeTileVariant() const {
 void GaussianForwardRenderer::createForwardResources() {
     projectPipeline_.initialize(device_, "shaders/train_forward_project.comp.spv",
                                  pipelineConfig({storageBinding(0), storageBinding(3), uniformBinding(11)}));
-    directProjectPipeline_.initialize(device_,
-                                      "shaders/train_forward_project_direct_intrinsics.comp.spv",
-                                      pipelineConfig({storageBinding(0), storageBinding(3),
-                                                      uniformBinding(11), uniformBinding(64)}));
     initializeTileVariant(tileVariants_[0], kTrainingTileSize8);
     initializeTileVariant(tileVariants_[1], kTrainingTileSize16);
     initializeAdaptivePipelines();
@@ -424,13 +425,13 @@ void GaussianForwardRenderer::createForwardResources() {
     vrdxCreateSorter(&sorterInfo, &radixSorter_);
 
     std::array<vk::DescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].setType(vk::DescriptorType::eStorageBuffer).setDescriptorCount(240);
-    poolSizes[1].setType(vk::DescriptorType::eUniformBuffer).setDescriptorCount(3);
+    poolSizes[0].setType(vk::DescriptorType::eStorageBuffer).setDescriptorCount(224);
+    poolSizes[1].setType(vk::DescriptorType::eUniformBuffer).setDescriptorCount(1);
 
     vk::DescriptorPoolCreateInfo poolInfo{};
     poolInfo.setPoolSizeCount(static_cast<uint32_t>(poolSizes.size()))
         .setPPoolSizes(poolSizes.data())
-        .setMaxSets(36);
+        .setMaxSets(35);
     descriptorPool_ = device_.createDescriptorPool(poolInfo);
 
     std::vector<vk::DescriptorSetLayout> layouts;
@@ -467,7 +468,6 @@ void GaussianForwardRenderer::createForwardResources() {
         layouts.push_back(pipeline.getDescriptorSetLayout());
     }
 
-    layouts.push_back(directProjectPipeline_.getDescriptorSetLayout());
     vk::DescriptorSetAllocateInfo allocInfo{};
     allocInfo.setDescriptorPool(descriptorPool_)
              .setDescriptorSetCount(static_cast<uint32_t>(layouts.size()))
@@ -475,7 +475,6 @@ void GaussianForwardRenderer::createForwardResources() {
 
     std::vector<vk::DescriptorSet> sets = device_.allocateDescriptorSets(allocInfo);
     size_t setIndex = 0u;
-    directProjectSet_ = sets.back();
     projectDescriptorSet_ = sets[setIndex++];
     gaussianPrefixRangesDescriptorSet_ = sets[setIndex++];
     gaussianPrefixScratchDescriptorSet_ = sets[setIndex++];
@@ -548,19 +547,18 @@ void GaussianForwardRenderer::destroyForwardResources() {
     gaussianPrefixTopPipeline_.cleanup();
     gaussianPrefixScratchPipeline_.cleanup();
     gaussianPrefixRangesPipeline_.cleanup();
-    directProjectSet_ = nullptr;
-    directProjectPipeline_.cleanup();
     projectPipeline_.cleanup();
 }
 
 void GaussianForwardRenderer::projectGaussians() {
     if (directIntrinsics_ && trainingBuffers_->hasExactIntrinsics()) {
-        updateDescriptorSet(directProjectSet_, {0, 3, 11, 64});
-        bindAndDispatch(directProjectPipeline_, directProjectSet_,
-                        ceilDiv(pushConstants_.gaussianCount, 256u));
+        if (!directProjection_)
+            directProjection_ = std::make_unique<TrainingDirectProjection>(device_, true);
+        directProjection_->recordForward(commandBuffer_, *trainingBuffers_, pushConstants_);
         shaderMemoryBarrier();
         return;
     }
+
     updateDescriptorSet(projectDescriptorSet_, {0, 3, 11});
     bindAndDispatch(projectPipeline_, projectDescriptorSet_, ceilDiv(pushConstants_.gaussianCount, 256u));
     shaderBufferBarrier({trainingBuffers_->projectedInfo()},
@@ -1088,7 +1086,7 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     auto pixelBlendStatesInfo = trainingBuffers_->pixelBlendStatesInfo();
     auto densificationStatesInfo = trainingBuffers_->densificationStatesInfo();
 
-    std::array<vk::DescriptorBufferInfo, 65> infos{};
+    std::array<vk::DescriptorBufferInfo, 42> infos{};
     infos[0] = gaussianParamsInfo;
     infos[1] = gaussianGradsInfo;
     infos[3] = projectedInfo;
@@ -1098,7 +1096,6 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
     infos[8] = lossInfo;
     infos[9] = countersInfo;
     infos[11] = cameraInfo;
-    infos[64] = trainingBuffers_->cameraIntrinsicsInfo();
     infos[14] = pixelBlendStatesInfo;
     infos[16] = densificationStatesInfo;
     infos[20] = trainingBuffers_->tileKeyLowInfo();
@@ -1127,9 +1124,8 @@ void GaussianForwardRenderer::updateDescriptorSet(vk::DescriptorSet descriptorSe
             .setDstSet(descriptorSet)
             .setDstBinding(binding)
             .setDescriptorCount(1)
-            .setDescriptorType((binding == 11 || binding == 64)
-                                   ? vk::DescriptorType::eUniformBuffer
-                                   : vk::DescriptorType::eStorageBuffer)
+            .setDescriptorType(binding == 11 ? vk::DescriptorType::eUniformBuffer
+                                             : vk::DescriptorType::eStorageBuffer)
             .setPBufferInfo(&infos[binding]);
         ++writeCount;
     }

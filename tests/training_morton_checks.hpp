@@ -103,9 +103,11 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
         camera.projection[2][2] = 1;
         camera.projection[2][3] = 1;
     }
-    training.buffers().uploadCamera(
-        camera,
-        direct ? std::optional(TrainingCameraIntrinsics{glm::vec4(8, 8, 8, 8)}) : std::nullopt);
+    if (direct)
+        training.buffers().uploadCameraWithIntrinsics(
+            camera, TrainingCameraIntrinsics{glm::vec4(8, 8, 8, 8)});
+    else
+        training.buffers().uploadCamera(camera);
     std::array<uint32_t, 256> target{};
     training.buffers().uploadTargetColor(reinterpret_cast<const uint8_t*>(target.data()), 16, 16);
     std::array<GaussianTrainParam, 4> seed{};
@@ -135,10 +137,21 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
             training.setMortonOrderingEnabled(false);
             training.setDirectIntrinsicsProjection(false);
             training.setPhysicalTileKey16(false);
+            require(!training.buffers().hasDirectIntrinsicsResources(),
+                    "Disabled direct uniform retained");
+            require(!dynamic_cast<const GaussianForwardRenderer&>(training.forward())
+                         .hasDirectResources(),
+                    "Disabled direct forward resources retained");
+            require(!dynamic_cast<const GaussianBackwardRenderer&>(training.backward())
+                         .hasDirectResources(),
+                    "Disabled direct backward resources retained");
         }
         if (i == 3) {
             training.setMortonOrderingEnabled(true);
             training.setDirectIntrinsicsProjection(direct);
+            if (direct)
+                training.buffers().uploadCameraWithIntrinsics(
+                    camera, TrainingCameraIntrinsics{glm::vec4(8, 8, 8, 8)});
             training.setPhysicalTileKey16(key16);
         }
         if (i == 4) {
@@ -150,6 +163,16 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
         if (direct && i == 8) training.buffers().uploadCamera(camera);
         training.trainStep();
         ++steps;
+        const auto& forward = dynamic_cast<const GaussianForwardRenderer&>(training.forward());
+        require(forward.hasPhysical16Resources() == (key16 && i != 2),
+                "Disabled key16 workspace retained or active workspace missing");
+        if (!direct || i == 2) {
+            require(!training.buffers().hasDirectIntrinsicsResources() &&
+                        !forward.hasDirectResources() &&
+                        !dynamic_cast<const GaussianBackwardRenderer&>(training.backward())
+                             .hasDirectResources(),
+                    "Baseline lifecycle retained direct resources");
+        }
         const auto& observation = training.lastStepObservation();
         require(observation.projection.requested == (direct && i != 2) &&
                     observation.projection.active == (direct && i != 2 && i < 8),

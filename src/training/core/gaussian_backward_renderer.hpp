@@ -84,6 +84,10 @@ public:
     void setOptimizerCapture(TrainingOptimizerCaptureSession* capture) { optimizerCapture_ = capture; }
     void setDirectIntrinsics(bool enabled) {
         directIntrinsics_ = enabled;
+        if (!enabled) projectionOptimizer_.releaseDirectResources();
+    }
+    bool hasDirectResources() const {
+        return projectionOptimizer_.hasDirectResources();
     }
     bool fusedOptimizerEnabled() const { return projectionOptimizer_.fusedEnabled(); }
     [[nodiscard]] bool tensorEarlyCullSupported() const {

@@ -1,10 +1,10 @@
 # Direct intrinsics and physical 16-bit tile keys
 
-These independent experimental options default off. Select them in **Training**,
-then use the existing **Start Training** control. Running workers lock both
-choices. A stopped change applies to the next start/resume; it does not reset the
-model. Renderer rebuilds retain the requested settings. Use fresh models for
-independent training comparisons.
+These independent experimental options default off. Running workers lock both
+choices. Direct projection changes apply to the next start/resume without
+resetting the model. Changing physical key width requires **Load Dataset**, which
+creates a fresh training state and replaces the training device if its feature
+request differs. Use fresh models for independent training comparisons.
 
 ## Direct intrinsics projection
 
@@ -24,6 +24,13 @@ binding64. The camera, push-constant and capture binary layouts are unchanged.
 Replacing a camera without exact intrinsics invalidates the direct path; forward
 and backward both use the matrix fallback. The UI displays the last executed
 path and the missing-intrinsics reason, or **not executed** before the first step.
+
+Direct forward/backward pipelines and descriptors have separate owners and are
+created only when direct projection actually executes. The intrinsics uniform is
+allocated/uploaded only through the explicit intrinsics path. Disabling direct
+projection while stopped releases these resources; the ordinary camera upload
+uses only the original camera buffer. Matrix descriptors retain their original
+pool sizes and bindings.
 
 Different FP32 operation order can change XY, coverage, rendered values and the
 training trajectory. It is not a bitwise replacement of matrix projection. The
@@ -50,6 +57,15 @@ enabled feature set includes Vulkan11 `storageBuffer16BitAccess`,
 `uniformAndStorageBuffer16BitAccess` and core `shaderInt16`. Physical support alone
 is insufficient; callers pass the logical device's actual enabled status.
 
+These features are requested only by a training device configured for physical16;
+ordinary training devices do not enable them. The UI separates the device request
+from actual enabled capability. Changing the checkbox does not recreate a device
+or clear a paused model. Start/resume and benchmarks are blocked until **Load
+Dataset** applies the new request; reverting the checkbox cancels that pending
+change. A device-creation failure retains the existing device/model and reports
+the error. Unsupported hardware uses the stated uint32 fallback without repeatedly
+requesting a reload.
+
 Emit writes uint16 tile keys directly. The two stable byte-radix passes read/write
 uint16 keys and use a physically 16-bit temporary key bank. IDs, histograms,
 offsets and the separate depth sort remain uint32. Range construction consumes
@@ -61,6 +77,12 @@ submodule. Key buffers and temporary storage include canary space used by the
 diagnostics. The UI/report expose active key width, logical key bytes and the
 allocated 16-bit key/scratch bytes. Existing fallback buffers may coexist, so
 these byte counts do not establish whole-training or native peak-VRAM savings.
+
+The uint32 sorting recorder and uint16 recorder are separate. The ordinary
+recorder does not visit a physical16 workspace. With both candidates off, candidate
+uniforms, pipelines, descriptor pools and key workspaces are absent; only method
+selection and observation metadata remain on the CPU. Shader compilation can
+still produce candidate modules without creating their runtime GPU resources.
 
 ## Independent correctness commands
 
@@ -100,6 +122,13 @@ They do not establish native Tensor performance, held-out quality or full-traini
 speed. No separate performance executable is added.
 
 ## Target-device training comparison
+
+Establish the disabled baseline first. Compare the reference build and the build
+with both candidates off using the existing Fixed Benchmark or diagnostic replay
+on the same frozen input, GPU and build flags. Keep both backward kernels in the
+comparison. Different trained models are different workloads. A resource/source
+isolation check alone does not demonstrate recovered training time; investigate
+any repeatable remaining regression before adding candidates.
 
 After target-device correctness checks, use the existing smoke entry for bounded
 real lifecycle checks, separately selecting one candidate. Smoke reports include

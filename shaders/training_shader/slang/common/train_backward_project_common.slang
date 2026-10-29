@@ -15,13 +15,8 @@ ProjectionLocalState trainBuildProjectionLocalState(GaussianTrainParam gaussian)
     ProjectionLocalState state;
     state.modelPosition = mul(trainingCamera.model, float4(gaussian.positionOpacity.xyz, 1.0));
     state.cameraPosition = mul(trainingCamera.view, state.modelPosition);
-#if TRAIN_DIRECT_INTRINSICS
-    state.clipPosition = float4(0.0);
-    state.ndc = float3(0.0);
-#else
     state.clipPosition = mul(trainingCamera.projection, state.cameraPosition);
     state.ndc = state.clipPosition.xyz / max(state.clipPosition.w, 1e-6);
-#endif
 
     float3x3 modelMatrix = trainMat3FromMat4(trainingCamera.model);
     state.covariance3D = trainCovariance3D(gaussian);
@@ -31,14 +26,6 @@ ProjectionLocalState trainBuildProjectionLocalState(GaussianTrainParam gaussian)
 }
 
 float3 backwardPixelCenterToPosition(ProjectionLocalState state, float2 dLoss_dCenter) {
-#if TRAIN_DIRECT_INTRINSICS
-    float invZ = 1.0 / state.cameraPosition.z;
-    float2 weighted = dLoss_dCenter * trainingIntrinsics.xy;
-    float3 dCamera = float3(weighted * invZ,
-        -dot(weighted, state.cameraPosition.xy) * invZ * invZ);
-    float4 dModel = mul(transpose(trainingCamera.view), float4(dCamera, 0.0));
-    return mul(transpose(trainingCamera.model), dModel).xyz;
-#else
     float2 screenSize = max(trainingCamera.viewport.zw, float2(1.0));
     float3 dLoss_dNdc = float3(
         dLoss_dCenter.x * 0.5 * screenSize.x,
@@ -57,7 +44,6 @@ float3 backwardPixelCenterToPosition(ProjectionLocalState state, float2 dLoss_dC
     float4 dLoss_dModel = mul(transpose(trainingCamera.view), dLoss_dCamera);
     float4 dLoss_dObject = mul(transpose(trainingCamera.model), dLoss_dModel);
     return dLoss_dObject.xyz;
-#endif
 }
 
 float3 backwardDepthToPosition(float dLoss_dDepth) {

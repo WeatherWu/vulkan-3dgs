@@ -76,7 +76,8 @@ void TrainingImageRuntime::cleanup(TrainingBuffers& buffers) {
 TrainingImageUploadResult TrainingImageRuntime::uploadFrame(size_t frameIndex,
                                                             const TrainingCameraFrame& frame,
                                                             const TrainingForwardCamera& camera,
-                                                            TrainingBuffers& buffers) {
+                                                            TrainingBuffers& buffers,
+                                                            bool directIntrinsics) {
     const TrainingExtent extent = buffers.extent();
     if (frame.width != extent.width || frame.height != extent.height) {
         throw std::runtime_error("Dataset frame size does not match GaussianTraining extent. "
@@ -109,8 +110,12 @@ TrainingImageUploadResult TrainingImageRuntime::uploadFrame(size_t frameIndex,
             pendingUploadValue_ = 0;
             buffers.uploadTargetColor(image.pixels.data(), image.width, image.height);
         }
-        buffers.uploadCamera(
-            camera, TrainingCameraIntrinsics{glm::vec4(frame.fx, frame.fy, frame.cx, frame.cy)});
+        if (directIntrinsics)
+            buffers.uploadCameraWithIntrinsics(
+                camera,
+                TrainingCameraIntrinsics{glm::vec4(frame.fx, frame.fy, frame.cx, frame.cy)});
+        else
+            buffers.uploadCamera(camera);
         result.targetUploadMilliseconds =
             std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - uploadStart)
                 .count();
@@ -129,8 +134,11 @@ TrainingImageUploadResult TrainingImageRuntime::uploadFrame(size_t frameIndex,
     buffers.clearTargetColorDescriptor();
     pendingUploadValue_ = 0;
     buffers.uploadTargetColor(image.pixels.data(), image.width, image.height);
-    buffers.uploadCamera(
-        camera, TrainingCameraIntrinsics{glm::vec4(frame.fx, frame.fy, frame.cx, frame.cy)});
+    if (directIntrinsics)
+        buffers.uploadCameraWithIntrinsics(
+            camera, TrainingCameraIntrinsics{glm::vec4(frame.fx, frame.fy, frame.cx, frame.cy)});
+    else
+        buffers.uploadCamera(camera);
     result.targetUploadMilliseconds =
         std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - uploadStart)
             .count();

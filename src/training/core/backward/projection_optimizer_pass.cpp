@@ -33,6 +33,7 @@ bool forceSeparateProjectionOptimizer() {
 void ProjectionOptimizerPass::initialize(vk::Device device, const std::filesystem::path& shaderDirectory) {
     cleanup();
     device_ = device;
+    directShaderDirectory_ = shaderDirectory;
     fusedEnabled_ = !forceSeparateProjectionOptimizer();
 
     ComputePipelineConfig projectionConfig{};
@@ -66,25 +67,13 @@ void ProjectionOptimizerPass::initialize(vk::Device device, const std::filesyste
                               fusedConfig);
     fusedShaderHash_ = optimizerShaderHash(shaderPath("train_backward_2dgs_to_3dgs_optimizer.comp.spv"));
     optimizerPipeline_.initialize(device_, shaderPath("train_optimizer.comp.spv"), optimizerConfig);
-    auto directProjectionConfig = projectionConfig;
-    auto directFusedConfig = fusedConfig;
-    directProjectionConfig.descriptorBindings.push_back(backwardUniformBinding(64));
-    directFusedConfig.descriptorBindings.push_back(backwardUniformBinding(64));
-    directPipelines_[0].initialize(
-        device_, shaderPath("train_backward_2dgs_to_3dgs_direct_intrinsics.comp.spv"),
-        directProjectionConfig);
-    directPipelines_[1].initialize(
-        device_, shaderPath("train_backward_2dgs_to_3dgs_optimizer_direct_intrinsics.comp.spv"),
-        directFusedConfig);
     const std::vector<vk::DescriptorSet> sets = descriptorPool_.create(
-        device_, 27u, 6u,
+        device_, 15u, 2u,
         {projectionPipeline_.getDescriptorSetLayout(), fusedPipeline_.getDescriptorSetLayout(),
-         optimizerPipeline_.getDescriptorSetLayout(), directPipelines_[0].getDescriptorSetLayout(),
-         directPipelines_[1].getDescriptorSetLayout()});
+         optimizerPipeline_.getDescriptorSetLayout()});
     projectionDescriptorSet_ = sets[0];
     fusedDescriptorSet_ = sets[1];
     optimizerDescriptorSet_ = sets[2];
-    directSets_ = {sets[3], sets[4]};
 
     if (fusedEnabled_) {
         LOG_INFO("Fused projection backward and optimizer enabled");
@@ -95,10 +84,8 @@ void ProjectionOptimizerPass::initialize(vk::Device device, const std::filesyste
 }
 
 void ProjectionOptimizerPass::cleanup() {
+    directProjection_.reset();
     descriptorPool_.reset();
-    directSets_ = {};
-    for (auto& pipeline : directPipelines_)
-        pipeline.cleanup();
     projectionDescriptorSet_ = nullptr;
     fusedDescriptorSet_ = nullptr;
     optimizerDescriptorSet_ = nullptr;
@@ -206,42 +193,10 @@ void ProjectionOptimizerPass::recordProjectionAndOptimize(const BackwardPassCont
 }
 
 void ProjectionOptimizerPass::recordDirect(const BackwardPassContext& context, bool fused) {
-    if (!context.buffers.hasExactIntrinsics() || context.optimizerCapture)
-        throw std::runtime_error("Direct projection requires exact intrinsics and cannot write "
-                                 "legacy optimizer captures");
-    auto& pipeline = directPipelines_[fused ? 1 : 0];
-    const auto set = directSets_[fused ? 1 : 0];
-    const std::array<vk::DescriptorBufferInfo, 8> infos{context.buffers.gaussianParamsInfo(),
-                                                        fused ? context.buffers.adamStatesInfo()
-                                                              : context.buffers.gaussianGradsInfo(),
-                                                        context.buffers.projectedInfo(),
-                                                        context.buffers.projectedGradsInfo(),
-                                                        context.buffers.densificationStatesInfo(),
-                                                        context.buffers.gaussianTileRangesInfo(),
-                                                        context.buffers.cameraInfo(),
-                                                        context.buffers.cameraIntrinsicsInfo()};
-    const std::array<uint32_t, 8> bindings{0, fused ? 2u : 1u, 3, 13, 16, 32, 11, 64};
-    std::array<vk::WriteDescriptorSet, 8> writes;
-    for (size_t i = 0; i < writes.size(); ++i)
-        writes[i]
-            .setDstSet(set)
-            .setDstBinding(bindings[i])
-            .setDescriptorCount(1)
-            .setDescriptorType(i >= 6 ? vk::DescriptorType::eUniformBuffer
-                                      : vk::DescriptorType::eStorageBuffer)
-            .setPBufferInfo(&infos[i]);
-    device_.updateDescriptorSets(writes, {});
-    context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.getPipeline());
-    context.commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                             pipeline.getPipelineLayout(), 0, set, {});
-    context.commandBuffer.pushConstants(pipeline.getPipelineLayout(),
-                                        vk::ShaderStageFlagBits::eCompute, 0,
-                                        sizeof(TrainingPushConstants), &context.pushConstants);
-    if (!context.pushConstants.gaussianCount) return;
-    context.commandBuffer.dispatch((context.pushConstants.gaussianCount + 255u) / 256u, 1, 1);
-    recordBackwardBufferBarrier(context.commandBuffer, {infos[0], infos[1], infos[4]},
-                                vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
-                                    vk::AccessFlagBits::eTransferRead);
+    if (!directProjection_)
+        directProjection_ =
+            std::make_unique<TrainingDirectProjection>(device_, false, directShaderDirectory_);
+    directProjection_->recordBackward(context, fused);
 }
 
 void ProjectionOptimizerPass::recordOptimizer(const BackwardPassContext& context) {

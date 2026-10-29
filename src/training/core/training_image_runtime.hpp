@@ -34,7 +34,8 @@ public:
     [[nodiscard]] TrainingImageUploadResult uploadFrame(size_t frameIndex,
                                                         const TrainingCameraFrame& frame,
                                                         const TrainingForwardCamera& camera,
-                                                        TrainingBuffers& buffers);
+                                                        TrainingBuffers& buffers,
+                                                        bool directIntrinsics = false);
     void prefetch(std::span<const size_t> frameIndices);
     void reserveForDensification(uint32_t trainingIteration, TrainingBuffers& buffers);
     void refreshBudget(uint32_t trainingIteration, TrainingBuffers& buffers);

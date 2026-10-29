@@ -148,10 +148,10 @@ std::string suitableDeviceList(const std::vector<Device::PhysicalDeviceInfo>& de
 
 } // namespace
 
-Device::Device(vk::SurfaceKHR surface,
-               std::optional<std::string> gpuSelector,
-               DeviceRole role)
-    : surface_(surface), gpuSelector_(std::move(gpuSelector)), role_(role) {}
+Device::Device(vk::SurfaceKHR surface, std::optional<std::string> gpuSelector, DeviceRole role,
+               TrainingDeviceOptions trainingOptions)
+    : surface_(surface), gpuSelector_(std::move(gpuSelector)), role_(role),
+      trainingOptions_(trainingOptions) {}
 
 Device::~Device() {
     cleanup();
@@ -259,7 +259,7 @@ void Device::createDevice() {
     phyDevice_.getFeatures2(&supportedFeatures2);
 
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
-    storage16Enabled_ = role_ == DeviceRole::Training &&
+    storage16Enabled_ = trainingStorage16Requested() &&
                         supportedVulkan11Features.storageBuffer16BitAccess &&
                         supportedVulkan11Features.uniformAndStorageBuffer16BitAccess &&
                         supportedFeatures2.features.shaderInt16;

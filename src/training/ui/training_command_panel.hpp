@@ -11,6 +11,8 @@ namespace vulkan3DGS {
 
 struct TrainingCommandPanelState {
     bool datasetValid = false;
+    bool storage16Requested = false;
+    bool storage16Enabled = false;
     bool datasetLoaded = false;
     bool trainingInitialized = false;
     bool trainingRunning = false;

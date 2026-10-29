@@ -43,6 +43,8 @@ void TrainingPanel::draw(TrainingController& controller) {
     const std::string elapsed = controller.elapsedText();
     const TrainingCommandPanelState state{
         .datasetValid = lifecycle.datasetValid,
+        .storage16Requested = controller.storage16Requested(),
+        .storage16Enabled = controller.storage16Enabled(),
         .datasetLoaded = lifecycle.datasetLoaded,
         .trainingInitialized = lifecycle.initialized,
         .trainingRunning = lifecycle.running,

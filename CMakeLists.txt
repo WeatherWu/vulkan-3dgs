@@ -274,7 +274,8 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_project.com
 foreach(direct_pass IN ITEMS train_forward_project train_backward_2dgs_to_3dgs train_backward_2dgs_to_3dgs_optimizer)
     compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/${direct_pass}_direct_intrinsics.comp.slang"
                             "${direct_pass}_direct_intrinsics.comp"
-                            "${TRAINING_SHADER_PASSES_DIR}/${direct_pass}.comp.slang")
+                            "${TRAINING_SHADER_COMMON_DIR}/train_forward_project_direct_intrinsics.slang"
+                            "${TRAINING_SHADER_COMMON_DIR}/train_backward_project_direct_intrinsics.slang")
 endforeach()
 foreach(checkpoint_pass IN ITEMS layout prefix state tasks)
     compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_checkpoint_${checkpoint_pass}.comp.slang"
@@ -284,15 +285,14 @@ compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_backward_checkpoint
                         "train_backward_checkpoint_warp.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_clear.comp.slang" "train_forward_tile_clear.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_morton_reorder.comp.slang" "train_morton_reorder.comp")
-compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_direct_intrinsics_probe.comp.slang" "train_direct_intrinsics_probe.comp")
+compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_direct_intrinsics_probe.comp.slang" "train_direct_intrinsics_probe.comp" "${TRAINING_SHADER_COMMON_DIR}/train_forward_project_direct_intrinsics.slang" "${TRAINING_SHADER_COMMON_DIR}/train_backward_project_direct_intrinsics.slang")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_matrix_projection_probe.comp.slang" "train_matrix_projection_probe.comp" "${TRAINING_SHADER_PASSES_DIR}/train_direct_intrinsics_probe.comp.slang")
 foreach(key16_pass IN ITEMS train_tile_key16_upsweep train_tile_key16_downsweep)
-    compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/${key16_pass}.comp.slang" "${key16_pass}.comp")
+    compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/${key16_pass}.comp.slang" "${key16_pass}.comp" "${TRAINING_SHADER_COMMON_DIR}/tile_key16_constants.slang")
 endforeach()
 foreach(key16_wrapper IN ITEMS train_full_sort_emit_test train_range_boundaries_sorted_keys_test)
     compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/${key16_wrapper}_u16.comp.slang"
-                            "${key16_wrapper}_u16.comp"
-                            "${TRAINING_SHADER_PASSES_DIR}/${key16_wrapper}.comp.slang")
+                            "${key16_wrapper}_u16.comp")
 endforeach()
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_tile_count.comp.slang" "train_forward_tile_count.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_gaussian_prefix_ranges.comp.slang"

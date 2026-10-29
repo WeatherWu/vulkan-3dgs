@@ -70,6 +70,8 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
             actions.methodVariantsChanged = true;
         if (ImGui::Checkbox("Physical 16-bit Tile Keys (Experimental)", &run.physicalTileKey16))
             actions.methodVariantsChanged = true;
+        ImGui::TextDisabled(
+            "Physical16 changes require Load Dataset; the current model is kept until then.");
         if (!snapshot.projection.executed) {
             ImGui::TextDisabled("Projection/key storage: not executed");
         } else {

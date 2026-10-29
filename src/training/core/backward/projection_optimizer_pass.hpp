@@ -2,6 +2,7 @@
 
 #include "training/core/backward/backward_command_utils.hpp"
 #include "training/core/backward/backward_pass_context.hpp"
+#include "training/core/training_direct_projection.hpp"
 #include "vulkan/compute_pipeline.hpp"
 #include <filesystem>
 
@@ -18,11 +19,17 @@ public:
     void recordProjection(const BackwardPassContext& context);
     void recordProjectionAndOptimize(const BackwardPassContext& context);
     void recordOptimizer(const BackwardPassContext& context);
+    void releaseDirectResources() {
+        directProjection_.reset();
+    }
+    bool hasDirectResources() const {
+        return bool(directProjection_);
+    }
 
 private:
     void recordDirect(const BackwardPassContext& context, bool fused);
-    std::array<ComputePipeline, 2> directPipelines_;
-    std::array<vk::DescriptorSet, 2> directSets_{};
+    std::unique_ptr<TrainingDirectProjection> directProjection_;
+    std::filesystem::path directShaderDirectory_;
     vk::Device device_ = nullptr;
     ComputePipeline projectionPipeline_;
     ComputePipeline fusedPipeline_;

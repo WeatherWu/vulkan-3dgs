@@ -45,6 +45,11 @@ Use independent PLY/quality filenames such as `bonsai_zorder_A_30000` and
 (Experimental)** are independent, default-off, saved settings. Both are locked
 while training runs. The panel reports the last actual projection path and key
 width, with fallback reasons; selecting a method does not clear the model.
+Direct projection changes apply to the next start/resume. Physical16 changes
+require **Load Dataset** before training or benchmarks can continue; that explicit
+action starts a fresh model and applies the training device's feature request.
+Reverting the checkbox cancels the pending reload. The UI displays both the
+device's 16-bit request and its actual enabled state.
 
 Direct projection needs original camera intrinsics. Physical16 needs enabled
 device capabilities and a Fixed16 Faster-GS sorting path with at most 65536 tiles.

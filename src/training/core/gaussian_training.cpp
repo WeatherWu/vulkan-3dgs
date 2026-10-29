@@ -1211,8 +1211,8 @@ void GaussianTraining::uploadCurrentTrainingFrame() {
 
     const size_t frameIndex = frameScheduler_.currentFrame();
     const TrainingImageUploadResult result = imageRuntime_.uploadFrame(
-        frameIndex, dataset_.frames[frameIndex],
-        createTrainingCamera(dataset_.frames[frameIndex]), buffers_);
+        frameIndex, dataset_.frames[frameIndex], createTrainingCamera(dataset_.frames[frameIndex]),
+        buffers_, directIntrinsicsRequested_);
     recordCpuProfilingSample(TrainingCpuProfileStage::ImageRequest,
                              result.imageRequestMilliseconds);
     recordCpuProfilingSample(TrainingCpuProfileStage::TargetUpload,

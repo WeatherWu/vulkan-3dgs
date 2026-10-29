@@ -1,4 +1,5 @@
 #pragma once
+#include <stdexcept>
 
 #include <array>
 #include <optional>
@@ -55,8 +56,16 @@ public:
     void clearTargetColorDescriptor() {
         targetColorDescriptorOverride_.reset();
     }
-    void uploadCamera(const TrainingForwardCamera& camera,
-                      std::optional<TrainingCameraIntrinsics> intrinsics = std::nullopt);
+    void uploadCamera(const TrainingForwardCamera& camera);
+    void uploadCameraWithIntrinsics(const TrainingForwardCamera& camera,
+                                    const TrainingCameraIntrinsics& intrinsics);
+    void releaseDirectIntrinsics() {
+        cameraIntrinsics_.reset();
+        exactIntrinsics_ = false;
+    }
+    bool hasDirectIntrinsicsResources() const {
+        return bool(cameraIntrinsics_);
+    }
     bool hasExactIntrinsics() const {
         return exactIntrinsics_;
     }
@@ -64,7 +73,9 @@ public:
         return storage16Enabled_;
     }
     vk::DescriptorBufferInfo cameraIntrinsicsInfo() const {
-        return cameraIntrinsics_.getDescriptorInfo();
+        if (!cameraIntrinsics_)
+            throw std::logic_error("Direct intrinsics uniform is not allocated");
+        return cameraIntrinsics_->getDescriptorInfo();
     }
     const TrainingCameraIntrinsics& uploadedIntrinsics() const {
         return uploadedIntrinsics_;
@@ -227,7 +238,7 @@ private:
     void* densificationStatsReadbackMapped_ = nullptr;
     Buffer previewInstances_;
     Buffer camera_;
-    Buffer cameraIntrinsics_;
+    std::unique_ptr<Buffer> cameraIntrinsics_;
     TrainingCameraIntrinsics uploadedIntrinsics_{};
     bool exactIntrinsics_ = false;
     bool storage16Enabled_ = false;

@@ -44,10 +44,26 @@ inline Snapshot snapshot(vk::Device device, vk::PhysicalDevice physical, vk::Que
     training.initializeTrainingRenderers(device, physical, queue, family, uint32_t(params.size()),
                                          {37, 23});
     training.buffers().uploadGaussianParams(params.data(), uint32_t(params.size()));
-    training.buffers().uploadCamera(camera, intrinsics);
+    if (direct)
+        training.buffers().uploadCameraWithIntrinsics(camera, intrinsics);
+    else
+        training.buffers().uploadCamera(camera);
     std::vector<uint32_t> target(37 * 23, 0xff302010);
     training.buffers().uploadTargetColor(reinterpret_cast<const uint8_t*>(target.data()), 37, 23);
     training.trainStep();
+    if (!direct) {
+        require(!training.buffers().hasDirectIntrinsicsResources(),
+                "Matrix snapshot allocated direct uniform");
+        require(
+            !dynamic_cast<const GaussianForwardRenderer&>(training.forward()).hasDirectResources(),
+            "Matrix snapshot allocated direct forward pipeline");
+        require(!dynamic_cast<const GaussianBackwardRenderer&>(training.backward())
+                     .hasDirectResources(),
+                "Matrix snapshot allocated direct backward pipelines");
+        require(!dynamic_cast<const GaussianForwardRenderer&>(training.forward())
+                     .hasPhysical16Resources(),
+                "Baseline snapshot allocated key16 workspace");
+    }
     require(training.lastProjectionState().active == direct, "Paired direct/matrix path mismatch");
     require(!training.lastStepObservation().optimizerUpdated, "Paired snapshot changed parameters");
     OptimizerCaptureTransfer transfer(device, physical, queue, family);
@@ -120,14 +136,6 @@ inline std::string run(vk::Device device, vk::PhysicalDevice physical, vk::Queue
                 .setPBufferInfo(&infos[i]);
         device.updateDescriptorSets(writes, {});
     };
-    bind(sets[0], {0, 3, 65, 66, 67, 11, 64},
-         {buffers.gaussianParamsInfo(), buffers.projectedInfo(), gradients.getDescriptorInfo(),
-          outputs.getDescriptorInfo(), coordinates.getDescriptorInfo(), buffers.cameraInfo(),
-          buffers.cameraIntrinsicsInfo()});
-    bind(sets[1], {0, 3, 65, 66, 67, 11, 64},
-         {buffers.gaussianParamsInfo(), buffers.projectedInfo(), gradients.getDescriptorInfo(),
-          outputs.getDescriptorInfo(), coordinates.getDescriptorInfo(), buffers.cameraInfo(),
-          buffers.cameraIntrinsicsInfo()});
     CommandPool pool;
     pool.create(device, family, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     auto command = pool.allocateCommandBuffer();
@@ -198,8 +206,16 @@ inline std::string run(vk::Device device, vk::PhysicalDevice physical, vk::Queue
         pairCamera = camera;
         pairIntrinsics = {intrinsics};
         pairParams = params;
-        buffers.uploadCamera(camera, TrainingCameraIntrinsics{intrinsics});
+        buffers.uploadCameraWithIntrinsics(camera, TrainingCameraIntrinsics{intrinsics});
         require(buffers.hasExactIntrinsics(), "Exact direct intrinsics unavailable");
+        bind(sets[0], {0, 3, 65, 66, 67, 11, 64},
+             {buffers.gaussianParamsInfo(), buffers.projectedInfo(), gradients.getDescriptorInfo(),
+              outputs.getDescriptorInfo(), coordinates.getDescriptorInfo(), buffers.cameraInfo(),
+              buffers.cameraIntrinsicsInfo()});
+        bind(sets[1], {0, 3, 65, 66, 67, 11, 64},
+             {buffers.gaussianParamsInfo(), buffers.projectedInfo(), gradients.getDescriptorInfo(),
+              outputs.getDescriptorInfo(), coordinates.getDescriptorInfo(), buffers.cameraInfo(),
+              buffers.cameraIntrinsicsInfo()});
         std::vector<glm::vec4> centerGrad(count, glm::vec4(0.25f, -0.375f, 0, 0));
         upload(transfer, gradients.getDescriptorInfo(), centerGrad);
         dispatch(matrix, sets[1]);
@@ -294,7 +310,7 @@ inline std::string run(vk::Device device, vk::PhysicalDevice physical, vk::Queue
         << ",\"max_color_difference\":" << maxColorDifference
         << ",\"max_projected_gradient_difference\":" << maxProjectedGradientDifference
         << ",\"expected_missing_intrinsics_fallback_checks\":1,\"positive_direct_owner_steps\":6,"
-           "\"stopped_reconfiguration_checked\":true,"
+           "\"stopped_reconfiguration_checked\":true,\"baseline_candidate_resources_absent\":true,"
            "\"intrinsics_fp32\":[25.25,19.75,11.3000002,7.19999981],\"direct_probe_shader_"
            "fnv1a64\":\""
         << optimizerShaderHash(

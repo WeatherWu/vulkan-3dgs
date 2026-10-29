@@ -21,7 +21,7 @@ constexpr uint32_t kTrainingSnapshotPublishInterval = 100u;
 
 } // namespace
 
-TrainingController::TrainingController() {
+TrainingController::TrainingController(DeviceFactory factory) : deviceFactory_(std::move(factory)) {
     setTextBuffer(settings_.paths.dataset, "data/mipnerf360/bicycle");
     setTextBuffer(settings_.paths.outputDirectory, "output");
     setTextBuffer(settings_.paths.outputName, "bicycle.ply");
@@ -91,20 +91,30 @@ void TrainingController::shutdown() {
     state_.initialized = false;
 }
 
+std::unique_ptr<Device>
+TrainingController::makeTrainingDevice(std::optional<std::string> selector) {
+    if (deviceFactory_) {
+        auto device = deviceFactory_(std::move(selector), settings_.run.physicalTileKey16);
+        if (!device) throw std::runtime_error("Training device factory returned no device");
+        return device;
+    }
+    auto device =
+        std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training,
+                                 TrainingDeviceOptions{settings_.run.physicalTileKey16});
+    device->createDevice();
+    return device;
+}
+
 void TrainingController::createTrainingDevice(std::optional<std::string> selector) {
     if (trainingDevice_) {
         throw std::runtime_error("Training device is already initialized");
     }
-    auto device =
-        std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training);
-    device->createDevice();
+    auto device = makeTrainingDevice(std::move(selector));
     trainingDevice_ = std::move(device);
 }
 
 void TrainingController::replaceTrainingDevice(std::optional<std::string> selector) {
-    auto replacement =
-        std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training);
-    replacement->createDevice();
+    auto replacement = makeTrainingDevice(std::move(selector));
     stopAndJoin();
     training_.cleanup();
     trainingDevice_ = std::move(replacement);
@@ -207,19 +217,39 @@ void TrainingController::validateDataset() {
     }
 }
 
+bool TrainingController::storage16Requested() const {
+    return trainingDevice_ && trainingDevice_->trainingStorage16Requested();
+}
+bool TrainingController::storage16Enabled() const {
+    return trainingDevice_ && trainingDevice_->trainingStorage16Enabled();
+}
+bool TrainingController::requiresDatasetReload() const {
+    return trainingDevice_ && storage16Requested() != settings_.run.physicalTileKey16;
+}
+
 void TrainingController::loadDataset() {
     if (state_.running || active_) {
         setError("Pause training before loading a dataset.");
         return;
     }
-    validateDataset();
-    if (!state_.datasetValid) return;
     if (!trainingDevice_) {
         setError("Training GPU is not initialized");
         return;
     }
     try {
         stopAndJoin();
+        std::unique_ptr<Device> replacement;
+        if (requiresDatasetReload()) {
+            const auto& info = trainingDevice_->getSelectedPhysicalDeviceInfo();
+            replacement = makeTrainingDevice(info.uuid.empty() ? std::to_string(info.vulkanIndex)
+                                                               : info.uuid);
+        }
+        validateDataset();
+        if (!state_.datasetValid) return;
+        if (replacement) {
+            training_.cleanup();
+            trainingDevice_ = std::move(replacement);
+        }
         resetTimer();
         state_.datasetLoaded = false;
         state_.initialized = false;
@@ -261,7 +291,7 @@ void TrainingController::applyLiveSettings() {
     training_.setFasterSortEnabled(settings_.run.fasterSort);
     training_.setMortonOrderingEnabled(settings_.run.mortonOrdering);
     training_.setDirectIntrinsicsProjection(settings_.run.directIntrinsicsProjection);
-    training_.setPhysicalTileKey16(settings_.run.physicalTileKey16);
+    if (!requiresDatasetReload()) training_.setPhysicalTileKey16(settings_.run.physicalTileKey16);
     try {
         training_.setSsimMode(static_cast<TrainingSsimMode>(settings_.run.ssimMode));
     } catch (const std::exception& error) {
@@ -406,6 +436,11 @@ void TrainingController::toggleTraining() {
         return;
     }
 
+    if (requiresDatasetReload()) {
+        setError(
+            "Physical tile key setting changed. Click Load Dataset to apply it to a new model.");
+        return;
+    }
     try {
         if (!state_.datasetLoaded) {
             loadDataset();
@@ -440,6 +475,11 @@ void TrainingController::toggleTraining() {
 void TrainingController::startFixedBenchmark(bool checkpointDiagnostics, bool checkpointWarp,
                                              bool tensorEarlyCull) {
     if (state_.running) return;
+    if (requiresDatasetReload()) {
+        setError(
+            "Physical tile key setting changed. Click Load Dataset to apply it to a new model.");
+        return;
+    }
     try {
         if (!state_.datasetLoaded) {
             loadDataset();
@@ -514,6 +554,11 @@ void TrainingController::exportFixedBenchmarkGradients() {
 }
 
 void TrainingController::captureOptimizerStepAndPause() {
+    if (requiresDatasetReload()) {
+        setError(
+            "Physical tile key setting changed. Click Load Dataset before advancing training.");
+        return;
+    }
     if (state_.running || active_) {
         setError("Pause and join training before requesting an S4 optimizer capture.");
         return;

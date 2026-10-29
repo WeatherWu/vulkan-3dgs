@@ -73,9 +73,20 @@ public:
     void setFasterSortEnabled(bool enabled);
     void setDirectIntrinsicsProjection(bool enabled) {
         directIntrinsicsRequested_ = enabled;
+        if (!enabled) {
+            buffers_.releaseDirectIntrinsics();
+            if (auto* renderer = dynamic_cast<GaussianForwardRenderer*>(forward_.get()))
+                renderer->setDirectIntrinsics(false);
+            if (auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get()))
+                renderer->setDirectIntrinsics(false);
+        }
     }
     void setPhysicalTileKey16(bool enabled) {
         key16Requested_ = enabled;
+        if (!enabled) {
+            if (auto* renderer = dynamic_cast<GaussianForwardRenderer*>(forward_.get()))
+                renderer->setPhysicalTileKey16(false);
+        }
     }
     const TrainingProjectionState& lastProjectionState() const {
         return lastProjectionState_;

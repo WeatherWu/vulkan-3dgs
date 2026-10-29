@@ -34,6 +34,10 @@ set(VULKAN_3DGS_QUALITY_RELATIVE_FILES
     training/core/training_profiling_service.cpp
     training/core/training_profiling_service.hpp
     training/core/training_method_policy.hpp
+    training/core/training_direct_projection.cpp
+    training/core/training_direct_projection.hpp
+    training/core/training_faster_sort_key16.cpp
+    training/core/training_faster_sort_key16.hpp
     vulkan/radix_key16.cpp
     vulkan/radix_key16.hpp
     training/core/training_morton_policy.hpp

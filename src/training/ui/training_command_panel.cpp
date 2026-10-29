@@ -51,7 +51,14 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
                                                                            state.trainingRunning);
 
     const bool hasDatasetPath = !textBufferString(settings.paths.dataset).empty();
-    if (!hasDatasetPath) {
+    const bool deviceSettingsPending = settings.run.physicalTileKey16 != state.storage16Requested;
+    if (deviceSettingsPending)
+        ImGui::TextWrapped(
+            "Physical tile key setting pending: click Load Dataset to apply it to a new model.");
+    ImGui::TextDisabled("Device 16-bit request: %s; enabled: %s",
+                        state.storage16Requested ? "on" : "off",
+                        state.storage16Enabled ? "on" : "off");
+    if (!hasDatasetPath || (deviceSettingsPending && !state.trainingRunning)) {
         ImGui::BeginDisabled();
     }
     const bool benchmarkActive = snapshot.fixedBenchmark.active;
@@ -85,13 +92,14 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Experimental backward-only exp culling. Requires Tensor Subgroup/Global Baseline; forward and normal training are unchanged.");
     }
-    if (!hasDatasetPath) {
+    if (!hasDatasetPath || (deviceSettingsPending && !state.trainingRunning)) {
         ImGui::EndDisabled();
     }
 
     if (!state.trainingRunning) {
         ImGui::BeginDisabled(!snapshot.rendererInitialized || !snapshot.hasTrainableModel ||
-                             snapshot.trainingComplete || state.workerActive);
+                             snapshot.trainingComplete || state.workerActive ||
+                             deviceSettingsPending);
         if (ImGui::Button("Capture One Optimizer Step and Pause")) actions.captureOptimizerStep = true;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("ACTUALLY TRAINS ONE STEP using the paused model's existing configuration, then pauses and exports pre/post state (~1.97 GB at 1.25M Gaussians). Next step must be ordinary fused, not final/ADC/reset. No automatic extra steps or layout changes.");

@@ -209,7 +209,7 @@ void TrainingBuffers::cleanup() {
     tileItemCountReadbackMapped_ = nullptr;
     tileItemCountReadback_.cleanup();
     camera_.cleanup();
-    cameraIntrinsics_.cleanup();
+    cameraIntrinsics_.reset();
     exactIntrinsics_ = false;
     previewInstances_.cleanup();
     counters_.cleanup();
@@ -331,7 +331,7 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     counters_.cleanup();
     previewInstances_.cleanup();
     camera_.cleanup();
-    cameraIntrinsics_.cleanup();
+    cameraIntrinsics_.reset();
     exactIntrinsics_ = false;
 
     createStorageBuffer(gaussianParams_, sizeof(GaussianTrainParam) * safeGaussianCount);
@@ -403,11 +403,8 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
                      {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * safeGaussianCount);
     createUniformBuffer(camera_, sizeof(TrainingForwardCamera));
-    cameraIntrinsics_.cleanup();
-    createUniformBuffer(cameraIntrinsics_, sizeof(TrainingCameraIntrinsics));
     uploadedIntrinsics_ = {};
     exactIntrinsics_ = false;
-    cameraIntrinsics_.upload(&uploadedIntrinsics_, sizeof(uploadedIntrinsics_));
 
     gaussianCapacity_ = safeGaussianCount;
     gaussianWorkspaceCapacity_ = safeGaussianCount;
@@ -815,20 +812,27 @@ void TrainingBuffers::uploadTargetColor(const uint8_t* pixels, uint32_t width, u
     targetColor_.upload(pixels, uploadSize);
 }
 
-void TrainingBuffers::uploadCamera(const TrainingForwardCamera& camera,
-                                   std::optional<TrainingCameraIntrinsics> intrinsics) {
+void TrainingBuffers::uploadCamera(const TrainingForwardCamera& camera) {
     exactIntrinsics_ = false;
     camera_.upload(&camera, sizeof(TrainingForwardCamera));
     uploadedCamera_ = camera;
-    if (intrinsics) {
-        const auto& v = intrinsics->focalPrincipal;
-        if (std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && std::isfinite(v.w) &&
-            v.x > 0 && v.y > 0) {
-            cameraIntrinsics_.upload(&*intrinsics, sizeof(TrainingCameraIntrinsics));
-            uploadedIntrinsics_ = *intrinsics;
-            exactIntrinsics_ = true;
-        }
+}
+
+void TrainingBuffers::uploadCameraWithIntrinsics(const TrainingForwardCamera& camera,
+                                                 const TrainingCameraIntrinsics& intrinsics) {
+    uploadCamera(camera);
+    const auto& v = intrinsics.focalPrincipal;
+    if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z) || !std::isfinite(v.w) ||
+        v.x <= 0 || v.y <= 0)
+        return;
+    if (!cameraIntrinsics_) {
+        auto buffer = std::make_unique<Buffer>();
+        createUniformBuffer(*buffer, sizeof(TrainingCameraIntrinsics));
+        cameraIntrinsics_ = std::move(buffer);
     }
+    cameraIntrinsics_->upload(&intrinsics, sizeof(intrinsics));
+    uploadedIntrinsics_ = intrinsics;
+    exactIntrinsics_ = true;
 }
 
 void TrainingBuffers::recordTileItemCountReadback(vk::CommandBuffer commandBuffer) {

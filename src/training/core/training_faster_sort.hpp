@@ -7,6 +7,7 @@
 #include <vk_radix_sort.h>
 
 namespace vulkan3DGS {
+class TrainingFasterSortKey16;
 // Forward-renderer owned experimental workspace. Call with no pending commands using its buffers.
 class TrainingFasterSort {
 public:
@@ -16,10 +17,11 @@ public:
     void prepare(vk::CommandBuffer command, TrainingBuffers& buffers,
                  const TrainingPushConstants& push);
     void build(vk::CommandBuffer command, TrainingBuffers& buffers,
-               const TrainingPushConstants& push, VrdxSorter sorter, bool physical16 = false);
-    uint64_t key16AllocatedBytes() const {
-        return key16_ ? key16_->allocatedBytes() : 0;
-    }
+               const TrainingPushConstants& push, VrdxSorter sorter);
+    void buildPhysical16(vk::CommandBuffer command, TrainingBuffers& buffers,
+                         const TrainingPushConstants& push, VrdxSorter sorter);
+    void releaseKey16();
+    uint64_t key16AllocatedBytes() const;
     uint32_t participatingCount() const {
         return visibleCount_;
     }
@@ -28,6 +30,7 @@ public:
     }
 
 private:
+    friend class TrainingFasterSortKey16;
     void ensureCapacity(uint32_t count);
     void bindInputs(TrainingBuffers& buffers);
     void prefix(vk::CommandBuffer command, uint32_t bank, uint32_t count);
@@ -45,10 +48,7 @@ private:
     Buffer depth_, ids_, prefixScratch_, readback_, sortStorage_;
     void* mapped_ = nullptr;
     std::array<ComputePipeline, 4> pipelines_;
-    std::unique_ptr<RadixKey16> key16_;
-    std::array<ComputePipeline, 2> key16Pipelines_;
-    BackwardDescriptorPool key16Descriptors_;
-    std::array<vk::DescriptorSet, 2> key16Sets_{};
+    std::unique_ptr<TrainingFasterSortKey16> key16_;
     std::array<ComputePipeline, 5> prefixPipelines_;
     BackwardDescriptorPool descriptors_;
     std::array<vk::DescriptorSet, 4> sets_{};

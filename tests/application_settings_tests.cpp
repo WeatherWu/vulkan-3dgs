@@ -1,6 +1,8 @@
 #include "app/application_settings.hpp"
 #include "app/application_settings_panel.hpp"
 #include "app/command_line_options.hpp"
+#include "context/device.hpp"
+#include "training/app/training_controller.hpp"
 #include "training/app/training_settings.hpp"
 #include "viewer/viewer_settings.hpp"
 #include <imgui.h>
@@ -21,6 +23,53 @@ void check(bool value, const char* message) {
 std::string contents(const std::filesystem::path& path) {
     std::ifstream file(path);
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+void checkDeviceIsolation() {
+    Device ordinary(vk::SurfaceKHR{}, {}, DeviceRole::Training);
+    Device requested(vk::SurfaceKHR{}, {}, DeviceRole::Training, TrainingDeviceOptions{true});
+    check(!ordinary.trainingStorage16Requested() && !ordinary.trainingStorage16Enabled(),
+          "Baseline device requested 16-bit features");
+    check(requested.trainingStorage16Requested() && !requested.trainingStorage16Enabled(),
+          "Physical support mistaken for enabled features");
+    bool failReplacement = false;
+    uint32_t creates = 0;
+    TrainingController controller([&](std::optional<std::string> selector, bool key16) {
+        ++creates;
+        if (failReplacement) throw std::runtime_error("injected device creation failure");
+        return std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training,
+                                        TrainingDeviceOptions{key16});
+    });
+    auto& settings = controller.editableSettings();
+    settings.run.physicalTileKey16 = false;
+    controller.initializeDevice(std::string("test"));
+    check(!controller.requiresDatasetReload(), "Fresh baseline needs reload");
+    settings.run.physicalTileKey16 = true;
+    check(controller.requiresDatasetReload(), "Changed request did not require reload");
+    controller.toggleTraining();
+    check(!controller.state().running && creates == 1 &&
+              controller.state().error.find("Load Dataset") != std::string::npos,
+          "Pending setting advanced training or rebuilt device");
+    settings.run.physicalTileKey16 = false;
+    check(!controller.requiresDatasetReload(), "Reverted setting did not cancel pending reload");
+    settings.run.physicalTileKey16 = true;
+    failReplacement = true;
+    const auto before = controller.state();
+    controller.loadDataset();
+    check(creates == 2 && !controller.storage16Requested() && controller.requiresDatasetReload() &&
+              controller.state().stepsDone == before.stepsDone &&
+              controller.state().initialized == before.initialized &&
+              controller.state().datasetLoaded == before.datasetLoaded &&
+              controller.state().error.find("injected device") != std::string::npos,
+          "Failed replacement changed existing device or lifecycle");
+    TrainingController unsupported([](std::optional<std::string> selector, bool key16) {
+        return std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training,
+                                        TrainingDeviceOptions{key16});
+    });
+    unsupported.editableSettings().run.physicalTileKey16 = true;
+    unsupported.initializeDevice(std::string("test"));
+    check(unsupported.storage16Requested() && !unsupported.storage16Enabled() &&
+              !unsupported.requiresDatasetReload(),
+          "Unavailable capability caused a repeated reload request");
 }
 void checkResolution() {
     const ApplicationSettings enabled, disabled{false};
@@ -93,6 +142,7 @@ void checkValidationUi() {
 
 int main() {
     try {
+        checkDeviceIsolation();
         checkResolution();
         checkValidationUi();
         const auto root =
