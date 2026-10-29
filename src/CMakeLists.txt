@@ -37,6 +37,7 @@ add_library(vulkan_3dgs_core STATIC
     vulkan/swapchain.cpp
     vulkan/compute_pipeline.cpp
     vulkan/vrdx_impl.cpp
+    vulkan/radix_key16.cpp
     
     # Gaussian Splatting 渲染模块
     graphics/gaussian_model.cpp

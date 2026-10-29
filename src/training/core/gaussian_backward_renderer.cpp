@@ -119,7 +119,8 @@ bool GaussianBackwardRenderer::readyForRecording(const char* operation) const {
 }
 
 BackwardPassContext GaussianBackwardRenderer::context() const {
-    return {*trainingBuffers_, commandBuffer_, pushConstants_, profilingQueryPool_, checkpointWarp_, tensorEarlyCull_, optimizerCapture_};
+    return {*trainingBuffers_, commandBuffer_,   pushConstants_,    profilingQueryPool_,
+            checkpointWarp_,   tensorEarlyCull_, optimizerCapture_, directIntrinsics_ && trainingBuffers_->hasExactIntrinsics()};
 }
 
 void GaussianBackwardRenderer::writeProfilingTimestamp(TrainingGpuProfileStage stage,

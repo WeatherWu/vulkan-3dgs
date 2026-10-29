@@ -1,6 +1,8 @@
 #include "training/app/training_settings.hpp"
+#include "training/core/training_method_policy.hpp"
 #include "training/core/training_morton_policy.hpp"
 #include "training/core/training_ssim_mode.hpp"
+#include "vulkan/radix_key_value.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -29,6 +31,8 @@ TrainingSettings populatedSettings() {
     settings.run.tensorEarlyCull = true;
     settings.run.fasterSort = true;
     settings.run.mortonOrdering = true;
+    settings.run.directIntrinsicsProjection = true;
+    settings.run.physicalTileKey16 = true;
     settings.run.ssimMode = 2;
     settings.run.pureTraining = true;
     settings.optimizer.positionLearningRate = 0.012345f;
@@ -52,6 +56,7 @@ bool testRoundTrip(const std::filesystem::path& path) {
            loaded.run.adaptiveTensorChildBatch == 32 && loaded.run.tensorSubgroupReduction &&
            loaded.run.tensorGlobalPixelGrad && loaded.run.tensorRgbLatencyHiding &&
            loaded.run.tensorEarlyCull && loaded.run.fasterSort && loaded.run.mortonOrdering &&
+           loaded.run.directIntrinsicsProjection && loaded.run.physicalTileKey16 &&
            loaded.run.ssimMode == 2 && loaded.run.pureTraining &&
            loaded.optimizer.positionLearningRate == source.optimizer.positionLearningRate &&
            loaded.densification.maxGaussians == 7654321 &&
@@ -63,7 +68,10 @@ bool testValidationAndImmutableRunConfig() {
     if (TrainingSettings{}.run.tensorGlobalPixelGrad) return false;
     if (TrainingSettings{}.run.tensorRgbLatencyHiding) return false;
     if (TrainingSettings{}.run.tensorEarlyCull) return false;
-    if (TrainingSettings{}.run.mortonOrdering) return false;
+    if (TrainingSettings{}.run.mortonOrdering ||
+        TrainingSettings{}.run.directIntrinsicsProjection ||
+        TrainingSettings{}.run.physicalTileKey16)
+        return false;
     if (TrainingSettings{}.run.ssimMode != 0) return false;
     TrainingSettings settings = populatedSettings();
     if (!TrainingSettingsStore::validate(settings)) return false;
@@ -78,6 +86,8 @@ bool testValidationAndImmutableRunConfig() {
     settings.run.tensorRgbLatencyHiding = false;
     settings.run.tensorEarlyCull = false;
     settings.run.mortonOrdering = false;
+    settings.run.directIntrinsicsProjection = false;
+    settings.run.physicalTileKey16 = false;
     settings.run.ssimMode = 0;
     settings.optimizer.positionLearningRate = 99.0f;
     if (config.datasetPath != "dataset with spaces" ||
@@ -86,7 +96,8 @@ bool testValidationAndImmutableRunConfig() {
         config.run.adaptiveTileSplitThreshold != 192 || config.run.adaptiveTensorChildBatch != 32 ||
         !config.run.tensorSubgroupReduction || !config.run.tensorGlobalPixelGrad ||
         !config.run.tensorRgbLatencyHiding || !config.run.tensorEarlyCull ||
-        !config.run.mortonOrdering || config.run.ssimMode != 2 ||
+        !config.run.mortonOrdering || !config.run.directIntrinsicsProjection ||
+        !config.run.physicalTileKey16 || config.run.ssimMode != 2 ||
         config.optimizer.positionLearningRate != 0.012345f ||
         config.densification.gradientMode != 1) {
         return false;
@@ -253,6 +264,39 @@ bool testMortonConfigAndSchedule(const std::filesystem::path& path) {
     return events == 4;
 }
 
+bool testMethodVariants(const std::filesystem::path& path) {
+    for (const auto* key : {"direct_intrinsics_projection", "physical_tile_key16"}) {
+        for (int value : {-1, 0, 1, 2}) {
+            {
+                std::ofstream file(path);
+                file << key << ' ' << value << '\n';
+            }
+            TrainingSettings loaded;
+            TrainingSettingsStore::load(path, loaded);
+            const bool actual = std::string(key) == "physical_tile_key16"
+                                    ? loaded.run.physicalTileKey16
+                                    : loaded.run.directIntrinsicsProjection;
+            if (actual != (value == 1)) return false;
+        }
+    }
+    if (!resolveTrainingKey16(true, true, 16, true, 65536).active ||
+        resolveTrainingKey16(true, true, 16, true, 65537).active ||
+        resolveTrainingKey16(true, true, 16, false, 2).active ||
+        resolveTrainingKey16(true, false, 16, true, 2).active ||
+        resolveTrainingKey16(true, true, 8, true, 2).active)
+        return false;
+    for (auto alignment : {4ull, 16ull, 256ull}) {
+        for (auto count : {1u, 129u, 821u, 822u, 823u, 4097u}) {
+            const auto layout = radixKey16Layout(count, alignment);
+            if (layout.keyBytes < uint64_t(count) * 2 || layout.valueBytes < uint64_t(count) * 4 ||
+                layout.keyBytes % alignment || layout.valueOffset % alignment ||
+                layout.storageBytes != layout.valueOffset + layout.valueBytes)
+                return false;
+        }
+    }
+    return true;
+}
+
 bool testClamp() {
     const auto path = std::filesystem::temp_directory_path() /
         "vulkan-3dgs-training-settings-clamp-test.cfg";
@@ -287,7 +331,7 @@ int main() {
     const bool validation = testValidationAndImmutableRunConfig();
     const bool legacyKeys = testLegacyKeys(path);
     const bool legacyGlobal = testLegacyGlobalConfigUsesBaselineRgb(path);
-    const bool clamp = testClamp();
+    const bool clamp = testClamp() && testMethodVariants(path);
     const bool ssimModes = testSsimModesAndMigration(path);
     const bool earlyCull = testEarlyCullConfig(path);
     const bool morton = testMortonConfigAndSchedule(path);

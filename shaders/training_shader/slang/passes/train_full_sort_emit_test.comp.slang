@@ -1,7 +1,12 @@
 // Depth-ordered emit. gaussianCount is the GPU-produced participating count.
 #include "../common/train_forward_tile_common.slang"
 [[vk::binding(3, 0)]] StructuredBuffer<ProjectedGaussian> projected;
-[[vk::binding(21, 0)]] RWStructuredBuffer<uint> tileKeys;
+[[vk::binding(21, 0)]]
+#if TRAIN_TILE_KEY16
+RWStructuredBuffer<uint16_t> tileKeys;
+#else
+RWStructuredBuffer<uint> tileKeys;
+#endif
 [[vk::binding(24, 0)]] RWStructuredBuffer<uint> gaussianIDs;
 [[vk::binding(32, 0)]] StructuredBuffer<uint2> orderedRanges;
 [[vk::binding(62, 0)]] StructuredBuffer<uint> visibleIDs;
@@ -24,7 +29,11 @@ void main(uint3 thread : SV_DispatchThreadID) {
         TileScanRange scan = trainTileRangeForStrip(culling, strip, rows);
         for (uint item = scan.minimum; item < scan.maximumExclusive; ++item) {
             if (output < end) {
+                #if TRAIN_TILE_KEY16
+                tileKeys[output] = uint16_t(trainTileIndex(trainTileFromScan(strip, item, rows)));
+#else
                 tileKeys[output] = trainTileIndex(trainTileFromScan(strip, item, rows));
+#endif
                 gaussianIDs[output] = id;
             }
             ++output;

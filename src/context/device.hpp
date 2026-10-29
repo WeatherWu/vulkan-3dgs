@@ -60,6 +60,9 @@ public:
     const std::vector<PhysicalDeviceInfo>& getAvailablePhysicalDeviceInfos() const {
         return availablePhysicalDeviceInfos_;
     }
+    bool trainingStorage16Enabled() const {
+        return storage16Enabled_;
+    }
     DeviceRole role() const { return role_; }
     
     vk::CommandPool createCommandPool(uint32_t queue_family_index, vk::CommandPoolCreateFlags flags = {});
@@ -69,6 +72,7 @@ private:
     vk::SurfaceKHR surface_ = nullptr;  // 保存surface供createDevice使用
     std::optional<std::string> gpuSelector_;
     DeviceRole role_ = DeviceRole::Presentation;
+    bool storage16Enabled_ = false;
     vk::PhysicalDevice phyDevice_ = nullptr;
     vk::Device device_ = nullptr;
 

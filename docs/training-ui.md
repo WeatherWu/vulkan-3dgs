@@ -39,6 +39,20 @@ Faster-GS Sorting and all other settings identical and toggle only Z-ordering.
 Use independent PLY/quality filenames such as `bonsai_zorder_A_30000` and
 `bonsai_zorder_B_30000`. Keep Z-ordering off when measuring sorting alone.
 
+## Projection and key storage selections
+
+**Direct Intrinsics Projection (Experimental)** and **Physical 16-bit Tile Keys
+(Experimental)** are independent, default-off, saved settings. Both are locked
+while training runs. The panel reports the last actual projection path and key
+width, with fallback reasons; selecting a method does not clear the model.
+
+Direct projection needs original camera intrinsics. Physical16 needs enabled
+device capabilities and a Fixed16 Faster-GS sorting path with at most 65536 tiles.
+The existing matrix and uint32 paths remain available. See the
+[method contracts and correctness commands](training-intrinsics-key16.md).
+For comparisons, use fresh baseline/direct-only/key16-only models with all other
+settings, including Faster-GS Sorting and Z-order, held constant.
+
 ## Validation preferences
 
 **Application Settings → Vulkan Validation Layers (next launch)** saves the
@@ -56,7 +70,7 @@ profiling and shader build flags are separate controls.
 
 Application, viewer and training settings share the existing settings file.
 The application owns `vulkan_validation`; training owns `faster_sort` and
-`morton_ordering`. Each
+`morton_ordering`, `direct_intrinsics_projection` and `physical_tile_key16`. Each
 settings writer preserves keys owned by the other domains. A failed application
 settings save is displayed and the checkbox returns to its previous value.
 

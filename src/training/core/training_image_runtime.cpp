@@ -109,7 +109,8 @@ TrainingImageUploadResult TrainingImageRuntime::uploadFrame(size_t frameIndex,
             pendingUploadValue_ = 0;
             buffers.uploadTargetColor(image.pixels.data(), image.width, image.height);
         }
-        buffers.uploadCamera(camera);
+        buffers.uploadCamera(
+            camera, TrainingCameraIntrinsics{glm::vec4(frame.fx, frame.fy, frame.cx, frame.cy)});
         result.targetUploadMilliseconds =
             std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - uploadStart)
                 .count();
@@ -128,7 +129,8 @@ TrainingImageUploadResult TrainingImageRuntime::uploadFrame(size_t frameIndex,
     buffers.clearTargetColorDescriptor();
     pendingUploadValue_ = 0;
     buffers.uploadTargetColor(image.pixels.data(), image.width, image.height);
-    buffers.uploadCamera(camera);
+    buffers.uploadCamera(
+        camera, TrainingCameraIntrinsics{glm::vec4(frame.fx, frame.fy, frame.cx, frame.cy)});
     result.targetUploadMilliseconds =
         std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - uploadStart)
             .count();

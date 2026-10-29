@@ -16,6 +16,7 @@ struct BackwardPassContext {
     bool checkpointWarp = false;
     bool tensorEarlyCull = false;
     TrainingOptimizerCaptureSession* optimizerCapture = nullptr; // One-shot caller owns through fence.
+    bool directIntrinsics = false;
 };
 
 } // namespace vulkan3DGS

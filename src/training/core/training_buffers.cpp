@@ -6,15 +6,16 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
-#include <chrono>
+#include <glm/glm.hpp>
 #include <limits>
 #include <stdexcept>
-#include <utility>
 #include <string_view>
+#include <utility>
 #include <vector>
-#include <glm/glm.hpp>
 
 namespace vulkan3DGS {
 
@@ -44,11 +45,10 @@ uint32_t gaussianPrefixScratchElementCount(uint32_t gaussianCapacity) {
 
 } // namespace
 
-void TrainingBuffers::initialize(vk::Device device,
-                                 vk::PhysicalDevice physicalDevice,
-                                 vk::Queue transferQueue,
-                                 uint32_t transferQueueFamilyIndex,
-                                 uint32_t computeQueueFamilyIndex) {
+void TrainingBuffers::initialize(vk::Device device, vk::PhysicalDevice physicalDevice,
+                                 vk::Queue transferQueue, uint32_t transferQueueFamilyIndex,
+                                 uint32_t computeQueueFamilyIndex, bool storage16Enabled) {
+    storage16Enabled_ = storage16Enabled;
     device_ = device;
     physicalDevice_ = physicalDevice;
     transferQueue_ = transferQueue;
@@ -195,6 +195,7 @@ TrainingCheckpointControl TrainingBuffers::checkpointDiagnostics() {
 }
 
 void TrainingBuffers::cleanup() {
+    storage16Enabled_ = false;
     releaseCheckpointWorkspace();
     clearTargetColorDescriptor();
     if (densificationStatsReadbackMapped_ && densificationStatsReadback_.getMemory() && device_) {
@@ -208,6 +209,8 @@ void TrainingBuffers::cleanup() {
     tileItemCountReadbackMapped_ = nullptr;
     tileItemCountReadback_.cleanup();
     camera_.cleanup();
+    cameraIntrinsics_.cleanup();
+    exactIntrinsics_ = false;
     previewInstances_.cleanup();
     counters_.cleanup();
     loss_.cleanup();
@@ -328,6 +331,8 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     counters_.cleanup();
     previewInstances_.cleanup();
     camera_.cleanup();
+    cameraIntrinsics_.cleanup();
+    exactIntrinsics_ = false;
 
     createStorageBuffer(gaussianParams_, sizeof(GaussianTrainParam) * safeGaussianCount);
     createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) * safeGaussianCount);
@@ -398,6 +403,11 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
                      {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * safeGaussianCount);
     createUniformBuffer(camera_, sizeof(TrainingForwardCamera));
+    cameraIntrinsics_.cleanup();
+    createUniformBuffer(cameraIntrinsics_, sizeof(TrainingCameraIntrinsics));
+    uploadedIntrinsics_ = {};
+    exactIntrinsics_ = false;
+    cameraIntrinsics_.upload(&uploadedIntrinsics_, sizeof(uploadedIntrinsics_));
 
     gaussianCapacity_ = safeGaussianCount;
     gaussianWorkspaceCapacity_ = safeGaussianCount;
@@ -805,9 +815,20 @@ void TrainingBuffers::uploadTargetColor(const uint8_t* pixels, uint32_t width, u
     targetColor_.upload(pixels, uploadSize);
 }
 
-void TrainingBuffers::uploadCamera(const TrainingForwardCamera& camera) {
+void TrainingBuffers::uploadCamera(const TrainingForwardCamera& camera,
+                                   std::optional<TrainingCameraIntrinsics> intrinsics) {
+    exactIntrinsics_ = false;
     camera_.upload(&camera, sizeof(TrainingForwardCamera));
     uploadedCamera_ = camera;
+    if (intrinsics) {
+        const auto& v = intrinsics->focalPrincipal;
+        if (std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && std::isfinite(v.w) &&
+            v.x > 0 && v.y > 0) {
+            cameraIntrinsics_.upload(&*intrinsics, sizeof(TrainingCameraIntrinsics));
+            uploadedIntrinsics_ = *intrinsics;
+            exactIntrinsics_ = true;
+        }
+    }
 }
 
 void TrainingBuffers::recordTileItemCountReadback(vk::CommandBuffer commandBuffer) {

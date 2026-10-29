@@ -1,5 +1,6 @@
 #pragma once
 
+#include "training/core/training_method_policy.hpp"
 #include "training/core/training_morton_policy.hpp"
 #include "training/core/training_ssim_mode.hpp"
 
@@ -351,6 +352,8 @@ struct TrainingStepObservation {
     bool densification = false, opacityReset = false, resized = false;
     bool mortonOrderingRequested = false, mortonReordered = false;
     TrainingMortonStats morton{};
+    TrainingProjectionState projection{};
+    TrainingKey16State key16{};
     TrainingValidationStats validation;
     TrainingProfilingStats profiling;
 };
@@ -476,6 +479,11 @@ struct alignas(16) TrainingForwardCamera {
     glm::vec4 focalTan{};
     glm::vec4 cameraPosition{};
 };
+
+struct alignas(16) TrainingCameraIntrinsics {
+    glm::vec4 focalPrincipal{}; // fx, fy, cx, cy, before projection-matrix rounding.
+};
+static_assert(sizeof(TrainingCameraIntrinsics) == 16);
 
 struct alignas(16) AdamState {
     GaussianGrad firstMoment{};

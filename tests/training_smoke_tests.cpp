@@ -157,6 +157,17 @@ int main(int argc, char** argv) {
             check(morton.read().find("\"morton_requested\":true") != std::string::npos,
                   "Smoke omitted actual Z-order metadata");
         }
+        for (bool projection : {false,true}) {
+            ReportFile fallback;
+            TrainingSmokeRun run({1,fallback.path},"{}");
+            auto sample=observation(1);
+            if (projection) sample.projection.requested=true;
+            else sample.key16.requested=true;
+            bool refused=false;
+            try { run.observe(sample); } catch(const std::runtime_error&) { refused=true; }
+            check(refused,"Smoke accepted an unexpected method fallback");
+            run.finish("expected_fallback_test","",0,0,std::nullopt);
+        }
         std::cout << "Smoke boundaries, report reservation, interruption and validation contracts "
                      "passed\n";
     } catch (const std::exception& error) {

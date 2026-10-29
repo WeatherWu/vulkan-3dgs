@@ -20,6 +20,9 @@ public:
     void recordOptimizer(const BackwardPassContext& context);
 
 private:
+    void recordDirect(const BackwardPassContext& context, bool fused);
+    std::array<ComputePipeline, 2> directPipelines_;
+    std::array<vk::DescriptorSet, 2> directSets_{};
     vk::Device device_ = nullptr;
     ComputePipeline projectionPipeline_;
     ComputePipeline fusedPipeline_;

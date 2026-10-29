@@ -26,6 +26,8 @@ struct TrainingUiSnapshot {
     bool hasTrainableModel = false;
     bool trainingComplete = false;
     TrainingSortState lastSort{};
+    TrainingProjectionState projection{};
+    TrainingKey16State key16{};
     bool mortonOrderingEnabled = false;
     TrainingMortonStats mortonStats{};
     bool subgroupSupported = false;

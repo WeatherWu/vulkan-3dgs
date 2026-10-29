@@ -26,6 +26,11 @@ struct ProjectionClampState {
 [[vk::binding(11, 0)]]
 ConstantBuffer<TrainingForwardCamera> trainingCamera;
 
+#if TRAIN_DIRECT_INTRINSICS
+[[vk::binding(64, 0)]]
+ConstantBuffer<float4> trainingIntrinsics;
+#endif
+
 float3x3 trainMat3FromMat4(float4x4 value) {
     return float3x3(
         value[0][0], value[0][1], value[0][2],
@@ -183,8 +188,10 @@ ProjectionResult trainProjectGaussian(GaussianTrainParam gaussian) {
         return result;
     }
 
+#if !TRAIN_DIRECT_INTRINSICS
     float4 clipPosition = mul(trainingCamera.projection, cameraPosition4);
     float3 ndc = clipPosition.xyz / clipPosition.w;
+#endif
 
     float3x3 modelMatrix = trainMat3FromMat4(trainingCamera.model);
     float3x3 covarianceWorld = mul(mul(modelMatrix, trainCovariance3D(gaussian)), transpose(modelMatrix));
@@ -196,7 +203,12 @@ ProjectionResult trainProjectGaussian(GaussianTrainParam gaussian) {
     }
 
     result.visible = true;
+#if TRAIN_DIRECT_INTRINSICS
+    result.center = trainingIntrinsics.xy * (cameraPosition4.xy / cameraPosition4.z)
+                    + trainingIntrinsics.zw - float2(0.5);
+#else
     result.center = trainNdcToPixel(ndc.xy);
+#endif
     result.depth = cameraPosition4.z;
     result.radius = radius;
     result.conicOpacity = trainConicOpacity(covariancePixel, opacity);

@@ -108,7 +108,8 @@ int main() {
             std::ofstream file(path);
             file << "version 1\n# shared configuration\nvulkan_validation 0\n\n"
                     "dataset \"a dataset\"\noutput_dir \"output\"\noutput_name \"model.ply\"\n"
-                    "faster_sort 1\nmorton_ordering 1\nrender_profile 1\ncustom_key keep\n";
+                    "faster_sort 1\nmorton_ordering 1\ndirect_intrinsics_projection "
+                    "1\nphysical_tile_key16 1\nrender_profile 1\ncustom_key keep\n";
         }
         ApplicationSettingsStore::load(path, application);
         check(!application.validationLayersEnabled, "Blank line changed saved off");
@@ -119,11 +120,17 @@ int main() {
         TrainingSettings training;
         TrainingSettingsStore::load(path, training);
         check(training.run.fasterSort, "Training sort preference missing");
+        check(training.run.directIntrinsicsProjection && training.run.physicalTileKey16,
+              "New method preferences missing");
         check(training.run.mortonOrdering, "Morton preference missing");
         const auto run = makeTrainingRunConfig(training);
         training.run.fasterSort = false;
         training.run.mortonOrdering = false;
+        training.run.directIntrinsicsProjection = false;
+        training.run.physicalTileKey16 = false;
         check(run.run.fasterSort, "Run configuration observed later UI edits");
+        check(run.run.directIntrinsicsProjection && run.run.physicalTileKey16,
+              "New method run settings were mutable");
         check(run.run.mortonOrdering, "Morton run configuration observed later UI edits");
         check(TrainingSettingsStore::describeRun(run).find("morton_ordering 1") !=
                   std::string::npos,
@@ -140,6 +147,9 @@ int main() {
         TrainingSettings reloadedTraining;
         TrainingSettingsStore::load(path, reloadedTraining);
         check(!reloadedTraining.run.fasterSort, "Stale sorting preference survived save");
+        check(!reloadedTraining.run.directIntrinsicsProjection &&
+                  !reloadedTraining.run.physicalTileKey16,
+              "New method save did not persist off");
         check(!reloadedTraining.run.mortonOrdering, "Stale Morton preference survived save");
         application.validationLayersEnabled = true;
         ApplicationSettingsStore::save(path, application);

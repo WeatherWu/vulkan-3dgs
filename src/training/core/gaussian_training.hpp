@@ -31,12 +31,10 @@ public:
     GaussianTraining();
     ~GaussianTraining();
 
-    void initialize(vk::Device device,
-                    vk::PhysicalDevice physicalDevice,
-                    vk::Queue transferQueue,
-                    uint32_t transferQueueFamilyIndex,
-                    uint32_t computeQueueFamilyIndex,
-                    std::optional<bool> vulkanValidationLayersEnabled = std::nullopt);
+    void initialize(vk::Device device, vk::PhysicalDevice physicalDevice, vk::Queue transferQueue,
+                    uint32_t transferQueueFamilyIndex, uint32_t computeQueueFamilyIndex,
+                    std::optional<bool> vulkanValidationLayersEnabled = std::nullopt,
+                    bool storage16Enabled = false);
     void cleanup();
     void resize(uint32_t gaussianCount, TrainingExtent extent);
     void initializeTrainingRenderers(vk::Device device,
@@ -73,6 +71,18 @@ public:
     void setTensorGlobalPixelGrad(bool enabled);
     void setTensorRgbLatencyHiding(bool enabled);
     void setFasterSortEnabled(bool enabled);
+    void setDirectIntrinsicsProjection(bool enabled) {
+        directIntrinsicsRequested_ = enabled;
+    }
+    void setPhysicalTileKey16(bool enabled) {
+        key16Requested_ = enabled;
+    }
+    const TrainingProjectionState& lastProjectionState() const {
+        return lastProjectionState_;
+    }
+    const TrainingKey16State& lastKey16State() const {
+        return lastKey16State_;
+    }
     void setMortonOrderingEnabled(bool enabled) {
         mortonOrderingEnabled_ = enabled;
     }
@@ -218,6 +228,9 @@ private:
     bool tensorRgbLatencyHiding_ = false;
     bool tensorEarlyCull_ = false;
     bool fasterSortEnabled_ = false;
+    bool directIntrinsicsRequested_ = false, key16Requested_ = false;
+    TrainingProjectionState lastProjectionState_{};
+    TrainingKey16State lastKey16State_{};
     bool mortonOrderingEnabled_ = false;
     TrainingMortonStats mortonStats_{};
     std::unique_ptr<TrainingMortonReorder> mortonReorder_;

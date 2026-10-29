@@ -15,11 +15,9 @@ namespace vulkan3DGS {
 
 class TrainingBuffers {
 public:
-    void initialize(vk::Device device,
-                    vk::PhysicalDevice physicalDevice,
-                    vk::Queue transferQueue,
-                    uint32_t transferQueueFamilyIndex,
-                    uint32_t computeQueueFamilyIndex);
+    void initialize(vk::Device device, vk::PhysicalDevice physicalDevice, vk::Queue transferQueue,
+                    uint32_t transferQueueFamilyIndex, uint32_t computeQueueFamilyIndex,
+                    bool storage16Enabled = false);
     void cleanup();
 
     void resize(uint32_t gaussianCount, TrainingExtent extent);
@@ -57,7 +55,20 @@ public:
     void clearTargetColorDescriptor() {
         targetColorDescriptorOverride_.reset();
     }
-    void uploadCamera(const TrainingForwardCamera& camera);
+    void uploadCamera(const TrainingForwardCamera& camera,
+                      std::optional<TrainingCameraIntrinsics> intrinsics = std::nullopt);
+    bool hasExactIntrinsics() const {
+        return exactIntrinsics_;
+    }
+    bool storage16Enabled() const {
+        return storage16Enabled_;
+    }
+    vk::DescriptorBufferInfo cameraIntrinsicsInfo() const {
+        return cameraIntrinsics_.getDescriptorInfo();
+    }
+    const TrainingCameraIntrinsics& uploadedIntrinsics() const {
+        return uploadedIntrinsics_;
+    }
     const TrainingForwardCamera& uploadedCamera() const { return uploadedCamera_; }
     void recordTileItemCountReadback(vk::CommandBuffer commandBuffer);
     void recordDensificationStatsReadback(vk::CommandBuffer commandBuffer);
@@ -216,6 +227,10 @@ private:
     void* densificationStatsReadbackMapped_ = nullptr;
     Buffer previewInstances_;
     Buffer camera_;
+    Buffer cameraIntrinsics_;
+    TrainingCameraIntrinsics uploadedIntrinsics_{};
+    bool exactIntrinsics_ = false;
+    bool storage16Enabled_ = false;
     TrainingForwardCamera uploadedCamera_{};
 };
 

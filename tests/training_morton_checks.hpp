@@ -80,20 +80,32 @@ void exact(const std::vector<T>& actual, const std::vector<T>& expected, const c
             message);
 }
 inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                          uint32_t family) {
+                          uint32_t family, bool direct = false, bool key16 = false) {
     GaussianTraining training;
+    training.setDirectIntrinsicsProjection(direct);
+    training.setPhysicalTileKey16(key16);
     training.setMortonOrderingEnabled(true);
     training.setFasterSortEnabled(true);
     training.setPixelTo2DGSMode(TrainingPixelTo2DGSMode::Direct);
     training.setStepObservationEnabled(true);
-    training.initialize(device, physical, queue, family, family);
+    training.initialize(device, physical, queue, family, family, std::nullopt, key16);
     training.resize(4, {16, 16});
     training.initializeTrainingRenderers(device, physical, queue, family, 4, {16, 16});
     TrainingForwardCamera camera{};
     camera.view = camera.model = camera.projection = glm::mat4(1);
     camera.viewport = {16, 16, 1.0f / 16, 1.0f / 16};
     camera.focalTan = {8, 8, 1, 1};
-    training.buffers().uploadCamera(camera);
+    if (direct) {
+        camera.viewport = {0, 0, 16, 16};
+        camera.projection = glm::mat4(0);
+        camera.projection[0][0] = 1;
+        camera.projection[1][1] = -1;
+        camera.projection[2][2] = 1;
+        camera.projection[2][3] = 1;
+    }
+    training.buffers().uploadCamera(
+        camera,
+        direct ? std::optional(TrainingCameraIntrinsics{glm::vec4(8, 8, 8, 8)}) : std::nullopt);
     std::array<uint32_t, 256> target{};
     training.buffers().uploadTargetColor(reinterpret_cast<const uint8_t*>(target.data()), 16, 16);
     std::array<GaussianTrainParam, 4> seed{};
@@ -119,17 +131,49 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
             "Renderer initialization reported Morton execution");
     uint32_t steps = 0, adcSteps = 0, resets = 0, clones = 0, splits = 0, prunes = 0;
     for (uint32_t i = 1; i <= 8; ++i) {
-        if (i == 2) training.setMortonOrderingEnabled(false);
-        if (i == 3) training.setMortonOrderingEnabled(true);
+        if (i == 2) {
+            training.setMortonOrderingEnabled(false);
+            training.setDirectIntrinsicsProjection(false);
+            training.setPhysicalTileKey16(false);
+        }
+        if (i == 3) {
+            training.setMortonOrderingEnabled(true);
+            training.setDirectIntrinsicsProjection(direct);
+            training.setPhysicalTileKey16(key16);
+        }
         if (i == 4) {
             training.initializeTrainingRenderers(device, physical, queue, family,
                                                  training.gaussianCount(), {16, 16});
             require(training.mortonOrderingEnabled() && training.mortonStats().reorderCount == 1,
                     "Renderer rebuild lost Morton preference/history");
         }
+        if (direct && i == 8) training.buffers().uploadCamera(camera);
         training.trainStep();
         ++steps;
         const auto& observation = training.lastStepObservation();
+        require(observation.projection.requested == (direct && i != 2) &&
+                    observation.projection.active == (direct && i != 2 && i < 8),
+                "Direct forward/backward selection or missing-intrinsics fallback failed");
+        require(observation.key16.requested == (key16 && i != 2) &&
+                    observation.key16.active == (key16 && i != 2),
+                "Physical16 owner lifecycle unexpectedly fell back");
+        if (direct && i == 1) {
+            bool rejected = false;
+            try {
+                training.exportScanlineDiagnosticInputs("unused-direct-capture.bin");
+            } catch (const std::runtime_error& error) {
+                rejected = std::string(error.what()).find("Legacy raw export") != std::string::npos;
+            }
+            require(rejected, "Direct projection wrote an unmarked legacy raw capture");
+            rejected = false;
+            try {
+                training.captureOptimizerStepAndPause("unused-direct-optimizer.bin");
+            } catch (const std::runtime_error& error) {
+                rejected =
+                    std::string(error.what()).find("Legacy optimizer capture") != std::string::npos;
+            }
+            require(rejected, "Direct projection wrote an unmarked optimizer capture");
+        }
         require(observation.mortonReordered == (i == 1) &&
                     observation.mortonOrderingRequested == (i != 2) &&
                     observation.morton.reorderCount == 1,
@@ -173,7 +217,7 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
     training.cleanup();
     require(training.mortonOrderingEnabled() && !training.mortonStats().reorderCount,
             "Model cleanup lost preference or retained old Morton history");
-    training.initialize(device, physical, queue, family, family);
+    training.initialize(device, physical, queue, family, family, std::nullopt, key16);
     training.resize(1, {16, 16});
     require(trainingMortonDue(training.mortonOrderingEnabled(), false, 0, training.mortonStats()),
             "New model did not reset initial Morton event");

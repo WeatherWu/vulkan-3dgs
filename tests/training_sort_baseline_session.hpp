@@ -16,9 +16,10 @@ struct Sample {
 };
 class BaselineSession {
 public:
-    BaselineSession(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue, uint32_t family)
+    BaselineSession(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
+                    uint32_t family, bool storage16 = false)
         : device_(device), physical_(physical), queue_(queue), family_(family),
-          transfer_(device, physical, queue, family) {}
+          transfer_(device, physical, queue, family), storage16_(storage16) {}
     ~BaselineSession() {
         try { device_.waitIdle(); } catch (...) {}
         renderer_.cleanup();
@@ -26,7 +27,7 @@ public:
     }
     void initialize(const TrainingScanlineCapture& source) {
         header_ = source.header;
-        buffers_.initialize(device_, physical_, queue_, family_, family_);
+        buffers_.initialize(device_, physical_, queue_, family_, family_, storage16_);
         buffers_.resize(header_.gaussianCount, {header_.width, header_.height});
         if (buffers_.tileItemCapacity() < header_.itemCount)
             buffers_.resizeTileItems(header_.itemCount);
@@ -65,6 +66,13 @@ public:
         result.tileKeys = download<uint32_t>(buffers_.tileKeyHighInfo(), header_.itemCount);
         result.indices = download<uint32_t>(buffers_.tileSortIndicesInfo(), header_.itemCount);
         return result;
+    }
+    bool storage16_ = false;
+    void setPhysicalTileKey16(bool enabled) {
+        renderer_.setPhysicalTileKey16(enabled);
+    }
+    bool physicalTileKey16Active() const {
+        return renderer_.key16State().active;
     }
     void setFasterSortEnabled(bool enabled) { renderer_.setFasterSortEnabled(enabled); }
     void setTileSize(uint32_t size) { push_.tileSize = size; }

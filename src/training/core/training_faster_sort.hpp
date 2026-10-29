@@ -2,6 +2,7 @@
 #include "training/core/backward/backward_command_utils.hpp"
 #include "training/core/training_buffers.hpp"
 #include "vulkan/compute_pipeline.hpp"
+#include "vulkan/radix_key16.hpp"
 #include <array>
 #include <vk_radix_sort.h>
 
@@ -15,7 +16,10 @@ public:
     void prepare(vk::CommandBuffer command, TrainingBuffers& buffers,
                  const TrainingPushConstants& push);
     void build(vk::CommandBuffer command, TrainingBuffers& buffers,
-               const TrainingPushConstants& push, VrdxSorter sorter);
+               const TrainingPushConstants& push, VrdxSorter sorter, bool physical16 = false);
+    uint64_t key16AllocatedBytes() const {
+        return key16_ ? key16_->allocatedBytes() : 0;
+    }
     uint32_t participatingCount() const {
         return visibleCount_;
     }
@@ -41,6 +45,10 @@ private:
     Buffer depth_, ids_, prefixScratch_, readback_, sortStorage_;
     void* mapped_ = nullptr;
     std::array<ComputePipeline, 4> pipelines_;
+    std::unique_ptr<RadixKey16> key16_;
+    std::array<ComputePipeline, 2> key16Pipelines_;
+    BackwardDescriptorPool key16Descriptors_;
+    std::array<vk::DescriptorSet, 2> key16Sets_{};
     std::array<ComputePipeline, 5> prefixPipelines_;
     BackwardDescriptorPool descriptors_;
     std::array<vk::DescriptorSet, 4> sets_{};

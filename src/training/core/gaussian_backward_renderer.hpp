@@ -82,6 +82,9 @@ public:
     void setCheckpointWarp(bool enabled) { checkpointWarp_ = enabled; }
     void setTensorEarlyCull(bool enabled) { tensorEarlyCull_ = enabled; }
     void setOptimizerCapture(TrainingOptimizerCaptureSession* capture) { optimizerCapture_ = capture; }
+    void setDirectIntrinsics(bool enabled) {
+        directIntrinsics_ = enabled;
+    }
     bool fusedOptimizerEnabled() const { return projectionOptimizer_.fusedEnabled(); }
     [[nodiscard]] bool tensorEarlyCullSupported() const {
         return pixelDispatcher_.tensorEarlyCullSupported();
@@ -115,6 +118,7 @@ private:
     vk::QueryPool profilingQueryPool_ = nullptr;
     TrainingPushConstants pushConstants_{};
     bool initialized_ = false;
+    bool directIntrinsics_ = false;
     bool checkpointWarp_ = false;
     bool tensorEarlyCull_ = false;
     TrainingOptimizerCaptureSession* optimizerCapture_ = nullptr;

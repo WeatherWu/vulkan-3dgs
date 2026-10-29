@@ -259,6 +259,16 @@ void Device::createDevice() {
     phyDevice_.getFeatures2(&supportedFeatures2);
 
     vk::PhysicalDeviceVulkan11Features vulkan11Features{};
+    storage16Enabled_ = role_ == DeviceRole::Training &&
+                        supportedVulkan11Features.storageBuffer16BitAccess &&
+                        supportedVulkan11Features.uniformAndStorageBuffer16BitAccess &&
+                        supportedFeatures2.features.shaderInt16;
+    if (storage16Enabled_) {
+        // Slang structured uint16 buffers declare this broader SPIR-V capability.
+        vulkan11Features.storageBuffer16BitAccess = true;
+        vulkan11Features.uniformAndStorageBuffer16BitAccess = true;
+        deviceFeatures.shaderInt16 = true;
+    }
     if (role_ == DeviceRole::Presentation) {
         vulkan11Features.setShaderDrawParameters(VK_TRUE);
     }
@@ -594,6 +604,7 @@ bool Device::isDeviceSuitable(vk::PhysicalDevice device, vk::SurfaceKHR surface,
 }
 
 void Device::cleanup() {
+    storage16Enabled_ = false;
     if (device_) {
         // 等待所有GPU操作完成
         device_.waitIdle();

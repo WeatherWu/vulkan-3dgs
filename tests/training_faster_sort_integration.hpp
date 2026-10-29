@@ -32,7 +32,8 @@ inline void checkTrainingSortingLifecycle(vk::Device device, vk::PhysicalDevice 
 
 inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevice physical,
                                             vk::Queue queue, uint32_t family,
-                                            const vulkan3DGS::TrainingScanlineCapture* capture) {
+                                            const vulkan3DGS::TrainingScanlineCapture* capture,
+                                            bool physical16 = false) {
     using namespace vulkan3DGS;
     using sort_replay::check;
     if (!capture) checkTrainingSortingLifecycle(device, physical, queue, family);
@@ -46,7 +47,7 @@ inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevic
     checkOptimizerCaptureBudget(physical, h.gaussianCount,
                                 uint64_t(h.gaussianCount) * 2048 +
                                     uint64_t(h.width) * h.height * 256 + (64ull << 20));
-    sort_replay::BaselineSession session(device, physical, queue, family);
+    sort_replay::BaselineSession session(device, physical, queue, family, physical16);
     session.initialize(fixtures.front());
     std::ostringstream out;
     out << std::boolalpha << '[';
@@ -63,11 +64,15 @@ inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevic
         std::vector<PixelBlendState> referenceBlend;
         uint32_t actualNv = 0;
         for (size_t i = 0; i < 3; ++i) {
-            session.setFasterSortEnabled(i == 1);
+            session.setFasterSortEnabled(physical16 || i == 1);
+            session.setPhysicalTileKey16(physical16 && i == 1);
             session.run(false, true);
             session.verifySorted(source);
-            check(session.fasterSortActive() == (i == 1),
+            check(session.fasterSortActive() == (physical16 || i == 1),
                   "Integrated requested/actual sorting mismatch");
+            if (physical16)
+                check(session.physicalTileKey16Active() == (i == 1),
+                      "Physical16 integrated path mismatch");
             if (i == 1) {
                 actualNv = session.participatingCount();
                 check(actualNv == expectedNv, "Integrated Nv mismatch");
@@ -94,6 +99,7 @@ inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevic
         bool fixed8Fallback = false, adaptiveFallback = false;
         if (!source.header.gaussianCount) {
             session.setFasterSortEnabled(true);
+            session.setPhysicalTileKey16(physical16);
             for (uint32_t tileSize : {8u, 32u}) {
                 session.setTileSize(tileSize);
                 session.run(false, true);
@@ -112,8 +118,10 @@ inline std::string runFasterSortIntegration(vk::Device device, vk::PhysicalDevic
         if (frame) out << ',';
         out << "{\"passed\":true,\"gaussians\":" << source.header.gaussianCount
             << ",\"items\":" << source.header.itemCount
-            << ",\"participating_gaussians\":" << actualNv
-            << ",\"actual_active_A_B_A\":[false,true,false]"
+            << ",\"participating_gaussians\":" << actualNv << ",\"actual_active_A_B_A\":"
+            << (physical16 ? "[true,true,true]" : "[false,true,false]")
+            << ",\"physical16_active_A_B_A\":"
+            << (physical16 ? "[false,true,false]" : "[false,false,false]")
             << ",\"capture_blend_checked\":" << (capture != nullptr)
             << ",\"projected_adoption_exercised\":" << (frame && source.header.gaussianCount != 0)
             << ",\"tile_capacity\":" << session.capacity()

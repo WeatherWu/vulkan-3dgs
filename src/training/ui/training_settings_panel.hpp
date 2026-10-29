@@ -14,6 +14,7 @@ struct TrainingSettingsPanelActions {
     bool tensorEarlyCullChanged = false;
     bool fasterSortChanged = false;
     bool mortonOrderingChanged = false;
+    bool methodVariantsChanged = false;
     bool tileModeChanged = false;
     bool ssimModeChanged = false;
     bool subgroupUtilizationChanged = false;

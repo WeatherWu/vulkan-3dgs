@@ -54,12 +54,11 @@ GaussianTraining::~GaussianTraining() {
     cleanup();
 }
 
-void GaussianTraining::initialize(vk::Device device,
-                                  vk::PhysicalDevice physicalDevice,
-                                  vk::Queue transferQueue,
-                                  uint32_t transferQueueFamilyIndex,
+void GaussianTraining::initialize(vk::Device device, vk::PhysicalDevice physicalDevice,
+                                  vk::Queue transferQueue, uint32_t transferQueueFamilyIndex,
                                   uint32_t computeQueueFamilyIndex,
-                                  std::optional<bool> vulkanValidationLayersEnabled) {
+                                  std::optional<bool> vulkanValidationLayersEnabled,
+                                  bool storage16Enabled) {
     if (initialized_) {
         return;
     }
@@ -70,11 +69,8 @@ void GaussianTraining::initialize(vk::Device device,
     transferQueueFamilyIndex_ = transferQueueFamilyIndex;
     computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     vulkanValidationLayersEnabled_ = vulkanValidationLayersEnabled;
-    buffers_.initialize(device,
-                        physicalDevice,
-                        transferQueue,
-                        transferQueueFamilyIndex,
-                        computeQueueFamilyIndex);
+    buffers_.initialize(device, physicalDevice, transferQueue, transferQueueFamilyIndex,
+                        computeQueueFamilyIndex, storage16Enabled);
     initialized_ = true;
 }
 
@@ -104,6 +100,8 @@ void GaussianTraining::cleanup() {
     buffers_.cleanup();
     trainableGaussianCount_ = 0;
     lastSortState_ = {};
+    lastProjectionState_ = {};
+    lastKey16State_ = {};
     usedRandomInitialization_ = false;
     frameScheduler_.clear();
     lastDensificationStats_ = {};
@@ -209,6 +207,10 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
 }
 
 void GaussianTraining::captureOptimizerStepAndPause(const std::filesystem::path& path) {
+    if (directIntrinsicsRequested_ && (hasDataset() || buffers_.hasExactIntrinsics()))
+        throw std::runtime_error(
+            "Legacy optimizer capture cannot identify direct intrinsics projection");
+
     if (trainingMortonDue(mortonOrderingEnabled_, fixedBenchmarkStats_.active, trainingIteration_,
                           mortonStats_))
         throw std::runtime_error("Optimizer capture cannot include a scheduled Z-order reorder; "
@@ -371,6 +373,10 @@ void GaussianTraining::trainStep() {
         throw std::runtime_error("GaussianTraining currently requires GaussianForwardRenderer and GaussianBackwardRenderer");
     }
 
+    const bool directActive = directIntrinsicsRequested_ && buffers_.hasExactIntrinsics();
+    gaussianForward->setDirectIntrinsics(directActive);
+    gaussianBackward->setDirectIntrinsics(directActive);
+    gaussianForward->setPhysicalTileKey16(key16Requested_);
     auto pushConstants = createPushConstants();
     const uint32_t currentIteration = trainingIteration_ + 1u;
     const bool beforeFinalIteration =
@@ -424,6 +430,11 @@ void GaussianTraining::trainStep() {
     });
     lastSortState_ = {true, gaussianForward->fasterSortRequested(),
                       gaussianForward->fasterSortActive(), pushConstants.tileSize};
+    lastProjectionState_ = {true, directIntrinsicsRequested_, directActive,
+                            directIntrinsicsRequested_ && !directActive
+                                ? TrainingProjectionFallback::MissingIntrinsics
+                                : TrainingProjectionFallback::None};
+    lastKey16State_ = gaussianForward->key16State();
     imageRuntime_.clearPendingUpload();
     if (!fixedBenchmarkThisStep) pixelCullRunStats_.record(pixelCullStatus);
     if (execution.gpuProfilingDisabled) {
@@ -527,6 +538,8 @@ void GaussianTraining::trainStep() {
             .mortonOrderingRequested = mortonOrderingEnabled_,
             .mortonReordered = mortonThisStep,
             .morton = mortonStats_,
+            .projection = lastProjectionState_,
+            .key16 = lastKey16State_,
             .validation = validationService_.stats(),
             .profiling = profilingService_.stats()};
 }
@@ -623,6 +636,8 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     trainableGaussianCount_ = static_cast<uint32_t>(params.size());
     trainingIteration_ = 0;
     lastSortState_ = {};
+    lastProjectionState_ = {};
+    lastKey16State_ = {};
     optimizerStep_ = 0;
     optimizerCaptureStateUncertain_ = false;
     frameScheduler_.restartSequence();
@@ -655,6 +670,10 @@ bool GaussianTraining::exportToPLY(const std::filesystem::path& path) {
 }
 
 void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path& path) {
+    if (lastProjectionState_.active)
+        throw std::runtime_error("Legacy raw export cannot identify direct intrinsics projection; "
+                                 "use matrix projection or PLY export");
+
     if (!fixedBenchmarkStats_.complete || fixedBenchmarkStats_.active) {
         throw std::runtime_error("Complete a Fixed Benchmark before exporting projected gradients");
     }
@@ -735,6 +754,10 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
 }
 
 void GaussianTraining::exportScanlineDiagnosticInputs(const std::filesystem::path& path) {
+    if (lastProjectionState_.active)
+        throw std::runtime_error("Legacy raw export cannot identify direct intrinsics projection; "
+                                 "use matrix projection or PLY export");
+
     const auto& b = fixedBenchmarkStats_;
     const auto& v = validationService_.stats();
     if (!b.complete || b.active || !v.valid || b.gaussianCount != trainableGaussianCount_ ||
@@ -764,6 +787,10 @@ void GaussianTraining::exportScanlineDiagnosticInputs(const std::filesystem::pat
 }
 
 void GaussianTraining::exportAdaptiveTileDiagnostics(const std::filesystem::path& path) {
+    if (lastProjectionState_.active)
+        throw std::runtime_error("Legacy raw export cannot identify direct intrinsics projection; "
+                                 "use matrix projection or PLY export");
+
     const auto& benchmark = fixedBenchmarkStats_;
     const auto& validation = validationService_.stats();
     if (!benchmark.complete || benchmark.active ||

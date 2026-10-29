@@ -121,6 +121,14 @@ Projection backward and dense Adam are fused on ordinary optimizer steps.
 `VULKAN_3DGS_SEPARATE_PROJECTION_OPTIMIZER=1` selects the separate path for
 diagnosis. The fallback Gaussian-gradient allocation remains present.
 
+Physical Morton ordering is a retained, default-off option (`morton_ordering`),
+independent of the forward sorting choice. It permutes parameters, both Adam
+moments and ADC statistics together before displayed steps 1/5001/10001/15001.
+Fixed Benchmark does not reorder. Physical indices, split draws and depth ties
+can change; do not assume identical training trajectories or held-out quality.
+Disabling the option stops future events without undoing the current permutation.
+Use fresh models for comparisons; see `docs/training-morton-ordering.md`.
+
 Training uses device-local packed RGBA8 targets, host/disk streaming and a
 budgeted device cache. Dataset extent must match buffers; intrinsics are scaled
 to actual decoded image dimensions. Keep the filename-sorted held-out split

@@ -1,5 +1,6 @@
 #include "context/device_selection.hpp"
 #include "training/core/backward/projection_optimizer_pass.hpp"
+#include "training_direct_intrinsics_checks.hpp"
 #include "training_morton_checks.hpp"
 #include "training_optimizer_gpu_session.hpp"
 #include "training_optimizer_r1_evaluation.hpp"
@@ -434,7 +435,7 @@ uint32_t synthetic(vk::Device device, vk::PhysicalDevice physical, vk::Queue que
 int main(int argc, char** argv) {
     std::filesystem::path input, report, syntheticOutput;
     std::string gpuSelector;
-    bool requireValidation = false, runSynthetic = false, mortonOnly = false;
+    bool requireValidation = false, runSynthetic = false, mortonOnly = false, directOnly = false;
     Method method = Method::None;
     bool profileVariantSpecified = false;
     uint32_t profileSeconds = 0;
@@ -451,6 +452,8 @@ int main(int argc, char** argv) {
             const std::string arg = argv[i];
             if (arg == "--synthetic")
                 runSynthetic = true;
+            else if (arg == "--direct-intrinsics-only")
+                directOnly = true;
             else if (arg == "--morton-only")
                 mortonOnly = true;
             else if (arg == "--gpu" && i + 1 < argc)
@@ -483,18 +486,23 @@ int main(int argc, char** argv) {
                     report = argv[++i];
             } else
                 throw std::runtime_error(
-                    "Usage: training_optimizer_gpu_tests (--synthetic | --morton-only | --replay "
+                    "Usage: training_optimizer_gpu_tests (--synthetic | --morton-only | "
+                    "--direct-intrinsics-only | --replay "
                     "INPUT.optimizer.bin) [--report NEW.json] [--require-validation] "
-                    "[--gpu SELECTOR (Morton only)] "
+                    "[--gpu SELECTOR (Morton/direct only)] "
                     "[--candidate-sh-color-reuse] "
                     "[--candidate-r1 "
                     "[--profile-r1-seconds 1..30 [--profile-variant baseline|stream-adam]]]");
         }
-        check(unsigned(runSynthetic) + unsigned(mortonOnly) + unsigned(!input.empty()) == 1u,
+        check(unsigned(runSynthetic) + unsigned(mortonOnly) + unsigned(directOnly) +
+                      unsigned(!input.empty()) ==
+                  1u,
               "Choose exactly one of --synthetic, --morton-only and --replay");
-        check(!mortonOnly || (method == Method::None && syntheticOutput.empty() && !profileSeconds),
+        check(!(mortonOnly || directOnly) ||
+                  (method == Method::None && syntheticOutput.empty() && !profileSeconds),
               "Morton checks cannot be combined with optimizer candidates/profiling/export");
-        check(gpuSelector.empty() || mortonOnly, "--gpu is available only with --morton-only");
+        check(gpuSelector.empty() || mortonOnly || directOnly,
+              "--gpu is available only with --morton-only or --direct-intrinsics-only");
         const auto candidate = optimizer_candidate::describe(method);
         const bool hasCandidate = method != Method::None;
         check(!profileSeconds || (method == Method::StreamAdam && !input.empty()),
@@ -517,8 +525,9 @@ int main(int argc, char** argv) {
         std::optional<OptimizerCaptureHeader> capture;
         if (!input.empty()) capture = readOptimizerCaptureHeader(input);
         const auto shader = std::filesystem::path(OPTIMIZER_RUNTIME_DIR) / "shaders" /
-                            (mortonOnly ? "train_morton_reorder.comp.spv"
-                                        : "train_backward_2dgs_to_3dgs_optimizer.comp.spv");
+                            (directOnly   ? "train_forward_project_direct_intrinsics.comp.spv"
+                             : mortonOnly ? "train_morton_reorder.comp.spv"
+                                          : "train_backward_2dgs_to_3dgs_optimizer.comp.spv");
         const auto candidateShader =
             hasCandidate ? shader.parent_path() / candidate.shader : std::filesystem::path{};
         candidateHash = hasCandidate ? optimizerShaderHash(candidateShader) : 0;
@@ -612,7 +621,7 @@ int main(int argc, char** argv) {
         vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicAdd;
         vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicMax;
         vk::PhysicalDeviceFeatures baseFeatures;
-        if (mortonOnly) {
+        if (mortonOnly || directOnly) {
             bool push = false, add = false, maximum = false;
             for (const auto& extension : physical.enumerateDeviceExtensionProperties()) {
                 push |= std::strcmp(extension.extensionName.data(),
@@ -649,7 +658,10 @@ int main(int argc, char** argv) {
         VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
         std::cerr << "S4: private compute device initialized\n";
         const auto queue = device->getQueue(family, 0);
-        if (mortonOnly) {
+        if (directOnly) {
+            details << ",\"direct_intrinsics\":"
+                    << direct_intrinsics_checks::run(*device, physical, queue, family);
+        } else if (mortonOnly) {
             details << ",\"morton_ordering\":"
                     << morton_checks::run(*device, physical, queue, family);
         } else if (runSynthetic) {
@@ -749,6 +761,9 @@ int main(int argc, char** argv) {
                                 "\",\"recommendation\":"
                                 "\"DO_NOT_INTEGRATE_WITHOUT_TARGET_TIMING_AND_NATIVE_REVIEW\","
                                 "\"speedup\":null,"
+             : directOnly ? ",\"status\":\"DIRECT_INTRINSICS_CHECKS_PASSED_TARGET_EVALUATION_"
+                            "REQUIRED\",\"recommendation\":\"TARGET_VALIDATION_THEN_MATCHED_"
+                            "TRAINING\",\"speedup\":null,"
              : mortonOnly
                  ? ",\"status\":\"MORTON_SYNTHETIC_CHECKS_PASSED_TARGET_EVALUATION_REQUIRED\","
                    "\"recommendation\":\"TARGET_VALIDATION_THEN_MATCHED_TRAINING\",\"speedup\":"

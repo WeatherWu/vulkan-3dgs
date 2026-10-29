@@ -9,7 +9,13 @@
 #include "logger.hpp"
 
 #ifdef _WIN32
-    #include <windows.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifdef MemoryBarrier
+#undef MemoryBarrier
+#endif
 #else
     #include <unistd.h>
     #include <limits.h>

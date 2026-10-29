@@ -65,6 +65,29 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         ImGui::TextDisabled("Selection applies to the next start/resume. Load Dataset resets the "
                             "model for a new comparison.");
 
+        if (ImGui::Checkbox("Direct Intrinsics Projection (Experimental)",
+                            &run.directIntrinsicsProjection))
+            actions.methodVariantsChanged = true;
+        if (ImGui::Checkbox("Physical 16-bit Tile Keys (Experimental)", &run.physicalTileKey16))
+            actions.methodVariantsChanged = true;
+        if (!snapshot.projection.executed) {
+            ImGui::TextDisabled("Projection/key storage: not executed");
+        } else {
+            ImGui::Text("Last projection: %s",
+                        snapshot.projection.active ? "Direct intrinsics" : "Matrix");
+            if (snapshot.projection.requested && !snapshot.projection.active)
+                ImGui::TextWrapped("Matrix fallback: original camera intrinsics unavailable.");
+            ImGui::Text("Last physical tile key: %u bits", snapshot.key16.active ? 16u : 32u);
+            if (snapshot.key16.requested && !snapshot.key16.active)
+                ImGui::TextWrapped("Key storage fallback: %s",
+                                   trainingKey16FallbackName(snapshot.key16.fallback));
+            if (snapshot.key16.active)
+                ImGui::Text("16-bit keys logical %llu B; keys/scratch allocated %llu B (fallback "
+                            "buffers retained)",
+                            static_cast<unsigned long long>(snapshot.key16.logicalKeyBytes),
+                            static_cast<unsigned long long>(snapshot.key16.allocatedBytes));
+        }
+
         if (ImGui::Checkbox("Faster-GS Z-ordering (Experimental)", &run.mortonOrdering))
             actions.mortonOrderingChanged = true;
         ImGui::TextDisabled("Physical reorder before steps 1 / 5001 / 10001 / 15001.");

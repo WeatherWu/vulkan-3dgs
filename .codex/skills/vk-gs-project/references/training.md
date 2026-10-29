@@ -104,6 +104,26 @@ Gaussians, splitChildren2, gradient threshold0.0002 and minOpacity0.005.
 Buffer float32 atomic add is required; float min/max is optional because uint
 radius variants are available. Output parameter/Adam buffers are ping-ponged.
 
+## Physical Morton ordering
+
+The default-off `morton_ordering` setting physically reorders the current model
+before displayed steps 1, 5001, 10001 and 15001. Parameters, both moments and ADC
+statistics share one permutation. GPU completion and position-status checks
+precede adoption. The full 63-bit Morton code uses 21 bits per axis and the
+longest bounding-box side for normalization. Dense Adam remains in use.
+
+`GaussianTraining` owns the event schedule and resource lifetime. Fixed Benchmark
+does not trigger events. Renderer rebuild preserves event history; a new model
+clears it. Disabling stops future events without restoring the previous order.
+Physical indices can change split random draws, depth ties and full-run results;
+exact state copying does not establish identical training trajectories or quality.
+The independent sorting choice remains subject to its own numerical contract.
+
+The Z-order profiling rows average events, not ordinary steps. Amortize using
+event count divided by completed steps. Workspace bytes are logical temporary
+storage, not native peak VRAM. See `docs/training-morton-ordering.md` for controls
+and the pinned upstream method.
+
 ## Validation and profiling
 
 Numerical validation runs for the first five steps and then the configured

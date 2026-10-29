@@ -5,6 +5,89 @@
 #include <stdexcept>
 #include <utility>
 
+VkPipelineLayout vulkan3DGS::radixKeyValuePipelineLayout(VrdxSorter sorter) {
+    return sorter->pipelineLayout;
+}
+vulkan3DGS::RadixKey16Layout vulkan3DGS::radixKey16Layout(uint32_t count, VkDeviceSize alignment) {
+    if (!alignment || (alignment & (alignment - 1)))
+        throw std::invalid_argument("Invalid radix16 alignment");
+    alignment = std::max<VkDeviceSize>(alignment, 4);
+    auto align = [alignment](uint64_t bytes) {
+        return (bytes + alignment - 1) / alignment * alignment;
+    };
+    RadixKey16Layout out{};
+    out.countBytes = align(4);
+    out.histogramBytes = align(
+        (4ull + 4ull * RADIX + ((uint64_t(count) + PARTITION_SIZE - 1) / PARTITION_SIZE) * RADIX) *
+        4);
+    out.keyBytes = align(uint64_t(count) * 2);
+    out.valueBytes = align(uint64_t(count) * 4);
+    out.valueOffset = out.countBytes + out.histogramBytes + out.keyBytes;
+    out.storageBytes = out.valueOffset + out.valueBytes;
+    return out;
+}
+
+void vulkan3DGS::recordRadixKeyValue16(VkCommandBuffer command, VrdxSorter sorter, uint32_t count,
+                                       VkBuffer keys, VkBuffer values, VkBuffer storage,
+                                       VkPipeline upsweep, VkPipeline downsweep) {
+    if (count <= 1) return;
+    const auto layout = radixKey16Layout(count, sorter->minStorageBufferOffsetAlignment);
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                         nullptr);
+    vkCmdUpdateBuffer(command, storage, 0, 4, &count);
+    vkCmdFillBuffer(command, storage, layout.countBytes, 4 * RADIX * 4, 0);
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                         nullptr);
+    for (uint32_t pass = 0; pass < 2; ++pass) {
+        VkDescriptorBufferInfo infos[7] = {
+            {storage, 0, 4},
+            {storage, layout.countBytes, 4 * RADIX * 4},
+            {storage, layout.countBytes + 4 * RADIX * 4, VK_WHOLE_SIZE},
+            {keys, 0, layout.keyBytes},
+            {storage, layout.countBytes + layout.histogramBytes, layout.keyBytes},
+            {values, 0, layout.valueBytes},
+            {storage, layout.valueOffset, layout.valueBytes}};
+        if (pass) {
+            std::swap(infos[3], infos[4]);
+            std::swap(infos[5], infos[6]);
+        }
+        VkWriteDescriptorSet writes[7]{};
+        for (uint32_t i = 0; i < 7; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &infos[i];
+        }
+        sorter->cmdPushDescriptorSet(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                     sorter->pipelineLayout, 0, 7, writes);
+        PushConstants push{};
+        push.pass = pass;
+        vkCmdPushConstants(command, sorter->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, upsweep);
+        vkCmdDispatch(command, RoundUp(count, PARTITION_SIZE), 1, 1);
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                             nullptr);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sorter->spinePipeline);
+        vkCmdDispatch(command, RADIX, 1, 1);
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                             nullptr);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, downsweep);
+        vkCmdDispatch(command, RoundUp(count, PARTITION_SIZE), 1, 1);
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                             nullptr);
+    }
+}
+
 void vulkan3DGS::recordRadixKeyValue(VkCommandBuffer command, VrdxSorter sorter, uint32_t count,
                                      VkBuffer keys, VkBuffer values, VkBuffer storage,
                                      uint32_t bits) {

@@ -45,6 +45,15 @@ public:
     void emitPreparedTileItems(uint32_t tileItemCount);
     void buildPreparedTileLists(uint32_t tileItemCount);
     // Change only while idle, before recording the next prepare submission.
+    void setDirectIntrinsics(bool enabled) {
+        directIntrinsics_ = enabled;
+    }
+    void setPhysicalTileKey16(bool requested) {
+        key16Requested_ = requested;
+    }
+    const TrainingKey16State& key16State() const {
+        return key16State_;
+    }
     void setFasterSortEnabled(bool enabled) { fasterSortRequested_ = enabled; }
     bool fasterSortActive() const { return fasterSortPrepared_; }
     bool fasterSortRequested() const { return fasterSortRequested_; }
@@ -140,6 +149,11 @@ private:
     uint32_t gaussianCount_ = 0;
     TrainingExtent extent_{};
 
+    bool directIntrinsics_ = false;
+    bool key16Requested_ = false;
+    TrainingKey16State key16State_{};
+    ComputePipeline directProjectPipeline_;
+    vk::DescriptorSet directProjectSet_ = nullptr;
     ComputePipeline projectPipeline_;
     ComputePipeline gaussianPrefixRangesPipeline_;
     ComputePipeline gaussianPrefixScratchPipeline_;

@@ -67,6 +67,10 @@ void TrainingSmokeRun::observe(const TrainingStepObservation& sample) {
         throw std::runtime_error("Smoke detected non-finite/invalid training validation data");
     if (sample.fasterSortRequested && !sample.fasterSortActive)
         throw std::runtime_error("Smoke requested Faster sorting but the actual path fell back");
+    if (sample.projection.requested && !sample.projection.active)
+        throw std::runtime_error("Smoke requested direct intrinsics but matrix fallback executed");
+    if (sample.key16.requested && !sample.key16.active)
+        throw std::runtime_error("Smoke requested physical16 tile keys but fallback executed");
     if (sample.mortonOrderingRequested &&
         (sample.morton.reorderCount != std::min(4u, (sample.iteration - 1u) / 5000u + 1u) ||
          sample.mortonReordered !=
@@ -148,6 +152,13 @@ void TrainingSmokeRun::finish(std::string_view reason, std::string_view error,
             out << "null";
         out << ",\"optimizer_updated\":" << s.optimizerUpdated << ",\"adc\":" << s.densification
             << ",\"opacity_reset\":" << s.opacityReset << ",\"tile_resized\":" << s.resized
+            << ",\"direct_intrinsics_requested\":" << s.projection.requested
+            << ",\"direct_intrinsics_active\":" << s.projection.active
+            << ",\"physical_tile_key16_requested\":" << s.key16.requested
+            << ",\"physical_tile_key16_active\":" << s.key16.active
+            << ",\"tile_key_storage_bits\":" << (s.key16.active ? 16 : 32)
+            << ",\"key16_logical_bytes\":" << s.key16.logicalKeyBytes
+            << ",\"key16_allocated_bytes\":" << s.key16.allocatedBytes
             << ",\"morton_requested\":" << s.mortonOrderingRequested
             << ",\"morton_reordered\":" << s.mortonReordered
             << ",\"morton_event_count\":" << s.morton.reorderCount

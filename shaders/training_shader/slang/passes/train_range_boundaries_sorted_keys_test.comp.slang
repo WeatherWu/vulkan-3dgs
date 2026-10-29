@@ -2,7 +2,12 @@
 #include "../common/train_forward_tile_common.slang"
 
 [[vk::binding(5, 0)]] RWStructuredBuffer<uint4> tileRanges;
-[[vk::binding(23, 0)]] StructuredBuffer<uint> sortedTileKeys;
+[[vk::binding(23, 0)]]
+#if TRAIN_TILE_KEY16
+StructuredBuffer<uint16_t> sortedTileKeys;
+#else
+StructuredBuffer<uint> sortedTileKeys;
+#endif
 
 [shader("compute")]
 [numthreads(256, 1, 1)]

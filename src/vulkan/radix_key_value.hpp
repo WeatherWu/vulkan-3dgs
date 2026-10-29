@@ -21,4 +21,12 @@ inline uint32_t radixKeyValueCapacity(uint32_t count, VkDeviceSize alignment) {
 // Uint32 storage, stable 16/32 effective-bit keys, in-place output after an even pass count.
 void recordRadixKeyValue(VkCommandBuffer command, VrdxSorter sorter, uint32_t count, VkBuffer keys,
                          VkBuffer values, VkBuffer storage, uint32_t effectiveBits);
+VkPipelineLayout radixKeyValuePipelineLayout(VrdxSorter sorter);
+struct RadixKey16Layout {
+    VkDeviceSize countBytes, histogramBytes, keyBytes, valueBytes, valueOffset, storageBytes;
+};
+RadixKey16Layout radixKey16Layout(uint32_t count, VkDeviceSize alignment);
+void recordRadixKeyValue16(VkCommandBuffer command, VrdxSorter sorter, uint32_t count,
+                           VkBuffer keys, VkBuffer values, VkBuffer storage, VkPipeline upsweep,
+                           VkPipeline downsweep);
 } // namespace vulkan3DGS

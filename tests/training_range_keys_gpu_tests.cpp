@@ -1,8 +1,10 @@
-#include "training_range_key_session.hpp"
-#include "training_full_sort_session.hpp"
-#include "training_sort_downstream_session.hpp"
 #include "training_faster_sort_integration.hpp"
+#include "training_full_sort_session.hpp"
+#include "training_key16_checks.hpp"
+#include "training_morton_checks.hpp"
 #include "training_optimizer_r1_metrics.hpp"
+#include "training_range_key_session.hpp"
+#include "training_sort_downstream_session.hpp"
 #include "utils/logger.hpp"
 
 #include <atomic>
@@ -39,10 +41,11 @@ public:
     vk::UniqueDevice device;
     vk::Queue queue;
     uint32_t family = 0;
-    bool validation = false, synchronization = false, atomicFloatEnabled = false;
+    bool validation = false, synchronization = false, atomicFloatEnabled = false,
+         storage16Enabled = false;
     std::string uuid;
-    Context(bool requireValidation, bool noValidation, uint32_t index,
-            bool downstream = false, bool portable = false) {
+    Context(bool requireValidation, bool noValidation, uint32_t index, bool downstream = false,
+            bool portable = false, bool enable16 = false) {
         VULKAN_HPP_DEFAULT_DISPATCHER.init();
         const char* layer = "VK_LAYER_KHRONOS_validation";
         if (!noValidation)
@@ -107,10 +110,44 @@ public:
                   "Downstream Tensor requires native subgroup32 and original capability gate; no automatic fallback");
             deviceExtensions.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME); atomicFloatEnabled = true;
         }
+
+        vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT enabledRadius;
+        bool radiusExtension = false;
+        for (const auto& extension : physical.enumerateDeviceExtensionProperties())
+            radiusExtension |= std::string_view(extension.extensionName.data()) ==
+                               VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME;
+        bool useRadius = false;
+        if (radiusExtension) {
+            vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT supportedRadius;
+            vk::PhysicalDeviceFeatures2 supported;
+            supported.pNext = &supportedRadius;
+            physical.getFeatures2(&supported);
+            useRadius = supportedRadius.shaderBufferFloat32AtomicMinMax;
+            if (useRadius) {
+                enabledRadius.shaderBufferFloat32AtomicMinMax = true;
+                deviceExtensions.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME);
+            }
+        }
         vk::PhysicalDeviceFeatures features; features.shaderInt64 = physical.getFeatures().shaderInt64;
+        vk::PhysicalDeviceVulkan11Features supported16, enabled16;
+        vk::PhysicalDeviceFeatures2 support;
+        support.pNext = &supported16;
+        physical.getFeatures2(&support);
+        storage16Enabled = enable16 && supported16.storageBuffer16BitAccess &&
+                           supported16.uniformAndStorageBuffer16BitAccess &&
+                           support.features.shaderInt16;
+        enabled16.storageBuffer16BitAccess = storage16Enabled;
+        enabled16.uniformAndStorageBuffer16BitAccess = storage16Enabled;
+        features.shaderInt16 = storage16Enabled;
+        if (downstream) {
+            enabled16.pNext = &atomic;
+            if (useRadius) atomic.pNext = &enabledRadius;
+        } else if (useRadius)
+            enabled16.pNext = &enabledRadius;
+
         vk::DeviceCreateInfo deviceInfo;
         deviceInfo.setQueueCreateInfos(q).setPEnabledExtensionNames(deviceExtensions).setPEnabledFeatures(&features);
-        if (downstream) deviceInfo.pNext = &atomic;
+        deviceInfo.pNext = &enabled16;
         device = physical.createDeviceUnique(deviceInfo);
         VULKAN_HPP_DEFAULT_DISPATCHER.init(*device); queue = device->getQueue(family, 0);
     }
@@ -285,16 +322,19 @@ std::pair<std::string, bool> testDownstreamCase(Context& context, const Inputs& 
     full_sort::downstreamComparisonJson(out, ba); out << '}';
     return {out.str(), passed};
 }
-constexpr const char* usage = "training_range_keys_gpu_tests (--synthetic | --capture INPUT.scanline.bin --inputs INPUT.sort-input.bin) "
-                             "--report NEW.json [--full-sort-chain] [--require-validation | --no-validation] [--timing] [--device-index N] "
-                             "[--downstream [--portable-reference (synthetic only)]] [--integrated-sort]";
+constexpr const char* usage = "training_range_keys_gpu_tests (--synthetic | --capture "
+                              "INPUT.scanline.bin --inputs INPUT.sort-input.bin) "
+                              "--report NEW.json [--full-sort-chain] [--require-validation | "
+                              "--no-validation] [--timing] [--device-index N] "
+                              "[--downstream [--portable-reference (synthetic only)]] "
+                              "[--integrated-sort [--physical-tile-key16]]";
 } // namespace
 
 int main(int argc, char** argv) {
     std::unique_ptr<TrainingDiagnosticReport> report;
     bool fullChain = false;
     bool downstream = false, portableReference = false;
-    bool integrated = false;
+    bool integrated = false, physical16 = false;
     std::string failureContext;
     try {
         std::filesystem::path capturePath, inputPath, output;
@@ -307,6 +347,8 @@ int main(int argc, char** argv) {
             else if (arg == "--full-sort-chain") fullChain = true;
             else if (arg == "--downstream") downstream = true;
             else if (arg == "--portable-reference") portableReference = true;
+            else if (arg == "--physical-tile-key16")
+                physical16 = true;
             else if (arg == "--integrated-sort") integrated = true;
             else if (arg == "--timing") timing = true;
             else if (arg == "--require-validation") requireValidation = true;
@@ -318,6 +360,8 @@ int main(int argc, char** argv) {
             else throw std::runtime_error(usage);
         }
         check(!output.empty() && !(requireValidation && noValidation), usage);
+        check(!physical16 || integrated,
+              "Physical16 checks require --full-sort-chain --integrated-sort");
         check(!downstream || (fullChain && requireValidation && !timing && !noValidation),
               "Downstream requires --full-sort-chain --require-validation without timing");
         check(!portableReference || (downstream && syntheticMode), "Portable reference is restricted to explicit downstream synthetic fixtures");
@@ -338,7 +382,8 @@ int main(int argc, char** argv) {
             if (downstream || integrated) downstreamSource.emplace(std::move(source));
         }
         Context context(requireValidation, noValidation, deviceIndex,
-                        downstream || (integrated && syntheticMode), portableReference || integrated);
+                        downstream || (integrated && syntheticMode) || physical16,
+                        portableReference || integrated, physical16);
         failureContext = ",\"device\":" + schedulingJsonQuote(context.properties.deviceName.data()) +
             ",\"device_uuid\":" + schedulingJsonQuote(context.uuid) +
             ",\"driver_version\":" + std::to_string(context.properties.driverVersion) +
@@ -347,9 +392,18 @@ int main(int argc, char** argv) {
         Logger::get_instance().set_level(LogLevel::ERROR_VULKAN_3DGS);
         std::ostringstream cases;
         bool downstreamPassed = true;
+        uint32_t physicalCases = 0, ownerSteps = 0;
+        if (physical16) {
+            check(context.storage16Enabled, "Required 16-bit storage/int16 features unavailable");
+            physicalCases =
+                key16_checks::run(*context.device, context.physical, context.queue, context.family);
+            ownerSteps = morton_checks::lifecycle(*context.device, context.physical, context.queue,
+                                                  context.family, false, true);
+        }
         if (integrated) {
-            const auto result = runFasterSortIntegration(*context.device,context.physical,context.queue,context.family,
-                syntheticMode ? nullptr : &*downstreamSource);
+            const auto result = runFasterSortIntegration(
+                *context.device, context.physical, context.queue, context.family,
+                syntheticMode ? nullptr : &*downstreamSource, physical16);
             check(!validationErrors,"Integrated sort core/synchronization validation failed");
             cases << result.substr(1,result.size()-2);
         } else if (downstream) {
@@ -391,50 +445,113 @@ int main(int argc, char** argv) {
         context.device->waitIdle();
         check(!validationErrors, "Range validation errors");
         std::ostringstream json;
-        json << "{\"training_owner_lifecycle_checked\":" << std::boolalpha << (integrated && syntheticMode)
-             << ",\"schema\":" << schedulingJsonQuote(integrated ? "faster_sort_integration_gpu_v1" : downstream ? "faster_sort_downstream_gpu_v1" : fullChain ? "faster_sort_chain_gpu_v1" : "range_sorted_keys_gpu_v1")
-             << ",\"status\":" << schedulingJsonQuote(integrated ? "PRIVATE_RENDERER_INTEGRATION_PASSED_NOT_LIVE_TRAINING_ADMISSION" : downstream ? (downstreamPassed ? (portableReference ?
-                 "PRIVATE_PORTABLE_FIXTURE_PASSED_NOT_TENSOR_ADMISSION" : "PRIVATE_DOWNSTREAM_PASSED_NOT_TRAINING_ADMISSION") :
-                 "STOP_DOWNSTREAM_NUMERICAL_MISMATCH") : "PRIVATE_CORRECTNESS_PASSED_NOT_TRAINING_ADMISSION")
+        json << "{\"physical_tile_key16\":" << std::boolalpha << physical16
+             << ",\"storage16_enabled\":" << context.storage16Enabled
+             << ",\"physical16_sort_cases\":" << physicalCases
+             << ",\"physical16_owner_steps\":" << ownerSteps
+             << ",\"physical16_active_owner_steps\":" << (physical16 ? 7 : 0)
+             << ",\"training_owner_lifecycle_checked\":" << std::boolalpha
+             << (integrated && syntheticMode) << ",\"schema\":"
+             << schedulingJsonQuote(integrated   ? "faster_sort_integration_gpu_v1"
+                                    : downstream ? "faster_sort_downstream_gpu_v1"
+                                    : fullChain  ? "faster_sort_chain_gpu_v1"
+                                                 : "range_sorted_keys_gpu_v1")
+             << ",\"status\":"
+             << schedulingJsonQuote(
+                    integrated ? "PRIVATE_RENDERER_INTEGRATION_PASSED_NOT_LIVE_TRAINING_ADMISSION"
+                    : downstream
+                        ? (downstreamPassed
+                               ? (portableReference
+                                      ? "PRIVATE_PORTABLE_FIXTURE_PASSED_NOT_TENSOR_ADMISSION"
+                                      : "PRIVATE_DOWNSTREAM_PASSED_NOT_TRAINING_ADMISSION")
+                               : "STOP_DOWNSTREAM_NUMERICAL_MISMATCH")
+                        : "PRIVATE_CORRECTNESS_PASSED_NOT_TRAINING_ADMISSION")
              << ",\"device\":" << schedulingJsonQuote(context.properties.deviceName.data())
              << ",\"device_uuid\":" << schedulingJsonQuote(context.uuid)
-             << ",\"vendor_id\":" << context.properties.vendorID << ",\"device_id\":" << context.properties.deviceID
+             << ",\"vendor_id\":" << context.properties.vendorID
+             << ",\"device_id\":" << context.properties.deviceID
              << ",\"driver_version\":" << context.properties.driverVersion
-             << ",\"timestamp_valid_bits\":" << context.physical.getQueueFamilyProperties()[context.family].timestampValidBits
+             << ",\"timestamp_valid_bits\":"
+             << context.physical.getQueueFamilyProperties()[context.family].timestampValidBits
              << ",\"timestamp_period_ns\":" << context.properties.limits.timestampPeriod
-             << ",\"min_storage_buffer_offset_alignment\":" << context.properties.limits.minStorageBufferOffsetAlignment
-             << ",\"device_index\":" << deviceIndex << ",\"validation_enabled\":" << std::boolalpha << context.validation
+             << ",\"min_storage_buffer_offset_alignment\":"
+             << context.properties.limits.minStorageBufferOffsetAlignment
+             << ",\"device_index\":" << deviceIndex << ",\"validation_enabled\":" << std::boolalpha
+             << context.validation
              << ",\"synchronization_validation_enabled\":" << context.synchronization
              << ",\"validation_errors\":" << validationErrors.load()
              << ",\"synthetic_inputs\":" << syntheticMode << ",\"timing_requested\":" << timing
-             << ",\"cpp_build\":\"" RANGE_KEY_BUILD_CONFIG "\",\"compiler\":" << schedulingJsonQuote(RANGE_KEY_COMPILER)
+             << ",\"cpp_build\":\"" RANGE_KEY_BUILD_CONFIG "\",\"compiler\":"
+             << schedulingJsonQuote(RANGE_KEY_COMPILER)
              << ",\"shader_compiler\":" << schedulingJsonQuote(RANGE_KEY_SHADER_COMPILER)
-             << ",\"sorter_header_sha256\":\"" RANGE_KEY_SORTER_HASH "\""
-             << ",\"source_capture\":" << (syntheticMode ? "null" : schedulingJsonQuote(capturePath.string()))
-             << ",\"source_capture_fnv1a64\":" << (syntheticMode ? "null" : schedulingJsonQuote(std::to_string(optimizerShaderHash(capturePath))))
-             << ",\"raw_inputs\":" << (syntheticMode ? "null" : schedulingJsonQuote(inputPath.string()))
-             << ",\"raw_inputs_fnv1a64\":" << (syntheticMode ? "null" : schedulingJsonQuote(std::to_string(optimizerShaderHash(inputPath))))
+             << ",\"sorter_header_sha256\":\"" RANGE_KEY_SORTER_HASH "\"" << ",\"source_capture\":"
+             << (syntheticMode ? "null" : schedulingJsonQuote(capturePath.string()))
+             << ",\"source_capture_fnv1a64\":"
+             << (syntheticMode
+                     ? "null"
+                     : schedulingJsonQuote(std::to_string(optimizerShaderHash(capturePath))))
+             << ",\"raw_inputs\":"
+             << (syntheticMode ? "null" : schedulingJsonQuote(inputPath.string()))
+             << ",\"raw_inputs_fnv1a64\":"
+             << (syntheticMode
+                     ? "null"
+                     : schedulingJsonQuote(std::to_string(optimizerShaderHash(inputPath))))
              << ",\"iteration\":" << (syntheticMode ? 0 : input.header.source.iteration)
              << ",\"frame\":" << (syntheticMode ? 0 : input.header.source.frame)
-             << ",\"production_candidate_enabled\":false,\"training_advanced\":false,\"full_training_speedup\":null"
-             << (integrated ? ",\"full_list_sequence_measured\":false,\"scope\":\"Actual GaussianForwardRenderer original/candidate/original list and composite. Private TrainingBuffers; optional buffer adoption exercise. No worker, loss, backward or Adam.\""
-                              ",\"renderer_candidate_exercised\":true,\"live_training_exercised\":false"
-                          : downstream ? ",\"full_list_sequence_measured\":false,\"scope\":\"Correctness-only GPU list production -> original composite -> original backward with fixed captured pixelGrad. No loss/projection backward/Adam/ADC.\""
-                              ",\"candidate_bundle\":\"Stable compact + Nv depth sort + reordered prefix/emit + effective-bit tile KV sort + direct Gaussian IDs + direct-key ranges\""
-                              ",\"key_storage_bits\":32,\"physical_uint16_storage\":false,\"stable_compaction\":true"
-                              ",\"downstream_timing_measured\":false,\"fixed_pixel_gradient\":true,\"loss_recomputed\":false,\"optimizer_updated\":false"
-                          : fullChain ? ",\"full_list_sequence_measured\":true,\"scope\":\"GPU count + prefixes + stable compaction + depth sort + emit + tile sort + ranges, including original prepare count readback and candidate Nv readback. No projection/composite/loss/backward/Adam/ADC.\""
-                             ",\"candidate_bundle\":\"Stable compact + Nv depth sort + reordered prefix/emit + effective-bit tile KV sort + direct Gaussian IDs + direct-key ranges\""
-                             ",\"key_storage_bits\":32,\"physical_uint16_storage\":false,\"stable_compaction\":true"
-                             ",\"cpu_sequence_includes\":\"Prepare/main recording, submissions, original fences, count readback/checks. Excludes restore, downloads/verification and timestamp query retrieval.\""
-                             ",\"gpu_active_includes\":\"Prepare and main GPU intervals including count copies; CPU scheduling gap excluded and separately reported in gpu_span_ms and cpu_sequence_ms.\""
-                          : ",\"full_list_sequence_measured\":false,\"scope\":\"GPU depth sort + high-key gather + tile sort + item gather + "
-                "boundary construction + range finalize. No projection/count/prefix/emit/composite/backward/Adam.\""
-                )
-             << (integrated ? ",\"restore_policy\":\"Private TrainingBuffers restored per A/B/A; renderer workspaces retained across growth/adoption fixtures. No timing collected.\""
-                            : downstream ? ",\"restore_policy\":\"Private producer/consumer workspace reset per A/B/A; pixelGrad readonly. GPU list producers feed consumers directly; no combined timing collected.\""
-                            : ",\"restore_policy\":\"Private seeds/work/ranges/radix scratch restored outside every measured submission; "
-                "producer sorts are executed inside the measured sequence for A/B/A, not supplied by CPU. Cache-perturbed.\"");
+             << ",\"production_candidate_enabled\":false,\"training_advanced\":false,\"full_"
+                "training_speedup\":null"
+             << (physical16
+                     ? ",\"full_list_sequence_measured\":false,\"key_storage_bits\":16,\"physical_"
+                       "uint16_storage\":true,\"physical_key_stride_bytes\":2,\"real_training_"
+                       "executed\":false,\"scope\":\"Stable uint16 key/value sort and integrated "
+                       "Faster-GS list production, plus private synthetic owner steps. No real "
+                       "dataset training or timing admission.\""
+                 : integrated
+                     ? ",\"full_list_sequence_measured\":false,\"scope\":\"Actual "
+                       "GaussianForwardRenderer original/candidate/original list and composite. "
+                       "Private TrainingBuffers; optional buffer adoption exercise. No worker, "
+                       "loss, backward or Adam.\""
+                       ",\"renderer_candidate_exercised\":true,\"live_training_exercised\":false"
+                 : downstream
+                     ? ",\"full_list_sequence_measured\":false,\"scope\":\"Correctness-only GPU "
+                       "list production -> original composite -> original backward with fixed "
+                       "captured pixelGrad. No loss/projection backward/Adam/ADC.\""
+                       ",\"candidate_bundle\":\"Stable compact + Nv depth sort + reordered "
+                       "prefix/emit + effective-bit tile KV sort + direct Gaussian IDs + "
+                       "direct-key ranges\""
+                       ",\"key_storage_bits\":32,\"physical_uint16_storage\":false,\"stable_"
+                       "compaction\":true"
+                       ",\"downstream_timing_measured\":false,\"fixed_pixel_gradient\":true,\"loss_"
+                       "recomputed\":false,\"optimizer_updated\":false"
+                 : fullChain ? ",\"full_list_sequence_measured\":true,\"scope\":\"GPU count + "
+                               "prefixes + stable compaction + depth sort + emit + tile sort + "
+                               "ranges, including original prepare count readback and candidate Nv "
+                               "readback. No projection/composite/loss/backward/Adam/ADC.\""
+                               ",\"candidate_bundle\":\"Stable compact + Nv depth sort + reordered "
+                               "prefix/emit + effective-bit tile KV sort + direct Gaussian IDs + "
+                               "direct-key ranges\""
+                               ",\"key_storage_bits\":32,\"physical_uint16_storage\":false,"
+                               "\"stable_compaction\":true"
+                               ",\"cpu_sequence_includes\":\"Prepare/main recording, submissions, "
+                               "original fences, count readback/checks. Excludes restore, "
+                               "downloads/verification and timestamp query retrieval.\""
+                               ",\"gpu_active_includes\":\"Prepare and main GPU intervals "
+                               "including count copies; CPU scheduling gap excluded and separately "
+                               "reported in gpu_span_ms and cpu_sequence_ms.\""
+                             : ",\"full_list_sequence_measured\":false,\"scope\":\"GPU depth sort "
+                               "+ high-key gather + tile sort + item gather + "
+                               "boundary construction + range finalize. No "
+                               "projection/count/prefix/emit/composite/backward/Adam.\"")
+             << (integrated
+                     ? ",\"restore_policy\":\"Private TrainingBuffers restored per A/B/A; renderer "
+                       "workspaces retained across growth/adoption fixtures. No timing collected.\""
+                 : downstream ? ",\"restore_policy\":\"Private producer/consumer workspace reset "
+                                "per A/B/A; pixelGrad readonly. GPU list producers feed consumers "
+                                "directly; no combined timing collected.\""
+                              : ",\"restore_policy\":\"Private seeds/work/ranges/radix scratch "
+                                "restored outside every measured submission; "
+                                "producer sorts are executed inside the measured sequence for "
+                                "A/B/A, not supplied by CPU. Cache-perturbed.\"");
         if (downstream) {
             vk::PhysicalDeviceSubgroupProperties subgroup;
             vk::PhysicalDeviceProperties2 properties; properties.pNext = &subgroup;
@@ -456,6 +573,11 @@ int main(int argc, char** argv) {
                 "train_forward_gaussian_prefix_scratch", "train_forward_gaussian_prefix_top",
                 "train_forward_gaussian_prefix_add_scratch", "train_forward_gaussian_prefix_add_ranges"}) shaderNames.push_back(name);
         if (integrated) shaderNames.push_back("train_forward_workgroup");
+        if (physical16) {
+            for (const auto* name : {"train_full_sort_emit_test_u16", "train_range_boundaries_sorted_keys_test_u16",
+                                     "train_tile_key16_upsweep", "train_tile_key16_downsweep"})
+                shaderNames.push_back(name);
+        }
         if (downstream) {
             shaderNames.push_back("train_forward_workgroup");
             shaderNames.push_back(portableReference ? "train_backward_pixel_to_2dgs" : "train_backward_vksplat_tensor_subgroup_global_grad");

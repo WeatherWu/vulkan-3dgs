@@ -232,7 +232,7 @@ void TrainingController::loadDataset() {
         const uint32_t transfer = device.getQueueFamilyIndices().transferIndex.value_or(compute);
         training_.initialize(device.getDevice(), device.getPhysicalDevice(),
                              device.getTransferQueue(), transfer, compute,
-                             vulkanValidationLayersEnabled_);
+                             vulkanValidationLayersEnabled_, device.trainingStorage16Enabled());
         training_.loadMipNeRF360Dataset(textBufferString(settings_.paths.dataset),
                                         static_cast<uint32_t>(settings_.initialization.downscale));
         state_.datasetLoaded = true;
@@ -260,6 +260,8 @@ void TrainingController::applyLiveSettings() {
     training_.setTensorEarlyCull(settings_.run.tensorEarlyCull);
     training_.setFasterSortEnabled(settings_.run.fasterSort);
     training_.setMortonOrderingEnabled(settings_.run.mortonOrdering);
+    training_.setDirectIntrinsicsProjection(settings_.run.directIntrinsicsProjection);
+    training_.setPhysicalTileKey16(settings_.run.physicalTileKey16);
     try {
         training_.setSsimMode(static_cast<TrainingSsimMode>(settings_.run.ssimMode));
     } catch (const std::exception& error) {
@@ -299,6 +301,8 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     training_.setTensorEarlyCull(config.run.tensorEarlyCull);
     training_.setFasterSortEnabled(config.run.fasterSort);
     training_.setMortonOrderingEnabled(config.run.mortonOrdering);
+    training_.setDirectIntrinsicsProjection(config.run.directIntrinsicsProjection);
+    training_.setPhysicalTileKey16(config.run.physicalTileKey16);
     training_.setSsimMode(static_cast<TrainingSsimMode>(config.run.ssimMode));
     training_.setValidationInterval(config.schedule.validationInterval);
 
@@ -372,7 +376,8 @@ void TrainingController::initializeTrainingIfNeeded() {
     const uint32_t compute = *computeIndex;
     const uint32_t transfer = device.getQueueFamilyIndices().transferIndex.value_or(compute);
     training_.initialize(device.getDevice(), device.getPhysicalDevice(), device.getTransferQueue(),
-                         transfer, compute, vulkanValidationLayersEnabled_);
+                         transfer, compute, vulkanValidationLayersEnabled_,
+                         device.trainingStorage16Enabled());
     training_.initializeTrainingRenderers(
         device.getDevice(), device.getPhysicalDevice(), device.getComputeQueue(), compute,
         std::max(training_.gaussianCount(), 1u),
@@ -655,14 +660,28 @@ void TrainingController::startWorker() {
                  << (training_.tensorGlobalPixelGradActive() ? "true" : "false")
                  << ",\"shader_fnv1a64\":{";
         bool first = true;
-        for (const char* name :
-             {"train_forward_project", "train_forward_tile_count", "train_forward_tile_emit",
-              "train_forward_workgroup", "train_full_sort_prepare_test",
-              "train_full_sort_emit_test", "train_range_boundaries_sorted_keys_test",
-              "train_forward_tile_sort", "train_loss", "train_backward_loss_to_pixel",
-              "train_ssim_coefficients_horizontal", "train_backward_loss_to_pixel_separable",
-              "train_backward_vksplat_tensor_subgroup_global_grad",
-              "train_backward_2dgs_to_3dgs_optimizer", "train_optimizer"}) {
+        for (const char* name : {"train_forward_project",
+                                 "train_forward_tile_count",
+                                 "train_forward_tile_emit",
+                                 "train_forward_workgroup",
+                                 "train_full_sort_prepare_test",
+                                 "train_full_sort_emit_test",
+                                 "train_range_boundaries_sorted_keys_test",
+                                 "train_forward_tile_sort",
+                                 "train_loss",
+                                 "train_backward_loss_to_pixel",
+                                 "train_ssim_coefficients_horizontal",
+                                 "train_backward_loss_to_pixel_separable",
+                                 "train_backward_vksplat_tensor_subgroup_global_grad",
+                                 "train_backward_2dgs_to_3dgs_optimizer",
+                                 "train_optimizer",
+                                 "train_forward_project_direct_intrinsics",
+                                 "train_backward_2dgs_to_3dgs_direct_intrinsics",
+                                 "train_backward_2dgs_to_3dgs_optimizer_direct_intrinsics",
+                                 "train_full_sort_emit_test_u16",
+                                 "train_range_boundaries_sorted_keys_test_u16",
+                                 "train_tile_key16_upsweep",
+                                 "train_tile_key16_downsweep"}) {
             if (!first) identity << ',';
             first = false;
             identity << schedulingJsonQuote(name) << ":\""
@@ -906,6 +925,8 @@ TrainingUiSnapshot TrainingController::captureSnapshot() const {
     snapshot.hasTrainableModel = training_.hasTrainableModel();
     snapshot.trainingComplete = training_.isTrainingComplete();
     snapshot.lastSort = training_.lastSortState();
+    snapshot.projection = training_.lastProjectionState();
+    snapshot.key16 = training_.lastKey16State();
     snapshot.mortonOrderingEnabled = training_.mortonOrderingEnabled();
     snapshot.mortonStats = training_.mortonStats();
     snapshot.subgroupSupported = training_.subgroupPixelTo2DGSSupported();
