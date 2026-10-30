@@ -15,6 +15,7 @@ void GaussianBackwardRenderer::initialize(vk::Device device, vk::PhysicalDevice 
     gaussianCount_ = gaussianCount;
     extent_ = extent;
     lossPass_.initialize(device_);
+    lossPass_.configureVkSplat(physicalDevice, computeQueue, computeQueueFamilyIndex);
     pixelDispatcher_.initialize(device_, physicalDevice);
     projectionOptimizer_.initialize(device_);
     validationPass_.initialize(device_);
@@ -35,6 +36,7 @@ void GaussianBackwardRenderer::cleanup() {
     commandBuffer_ = nullptr;
     profilingQueryPool_ = nullptr;
     pushConstants_ = {};
+    vkSplat_ = nullptr;
     initialized_ = false;
     checkpointWarp_ = false;
     tensorEarlyCull_ = false;
@@ -63,7 +65,12 @@ void GaussianBackwardRenderer::backward() {
     writeProfilingTimestamp(TrainingGpuProfileStage::Loss, true);
 
     writeProfilingTimestamp(TrainingGpuProfileStage::BackwardClear, false);
-    lossPass_.recordClear(passContext, projectionOptimizer_.fusedEnabled());
+    if (vkSplat_) {
+        auto clearContext = passContext;
+        clearContext.pushConstants.optimizerEnabled = 1u;
+        lossPass_.recordClear(clearContext, true);
+    } else
+        lossPass_.recordClear(passContext, projectionOptimizer_.fusedEnabled());
     writeProfilingTimestamp(TrainingGpuProfileStage::BackwardClear, true);
 
     writeProfilingTimestamp(TrainingGpuProfileStage::LossToPixel, false);
@@ -71,10 +78,21 @@ void GaussianBackwardRenderer::backward() {
     writeProfilingTimestamp(TrainingGpuProfileStage::LossToPixel, true);
 
     writeProfilingTimestamp(TrainingGpuProfileStage::PixelTo2DGS, false);
-    pixelDispatcher_.record(passContext);
+    if (vkSplat_)
+        vkSplat_->recordPixel(
+            passContext, pixelDispatcher_.tensorGlobalPixelGradActive(pushConstants_.tileSize));
+    else
+        pixelDispatcher_.record(passContext);
     writeProfilingTimestamp(TrainingGpuProfileStage::PixelTo2DGS, true);
 
-    if (pushConstants_.optimizerEnabled != 0u && projectionOptimizer_.fusedEnabled()) {
+    if (vkSplat_) {
+        const auto stage = pushConstants_.optimizerEnabled
+                               ? TrainingGpuProfileStage::FusedProjectionOptimizer
+                               : TrainingGpuProfileStage::TwoDGSTo3DGS;
+        writeProfilingTimestamp(stage, false);
+        vkSplat_->recordOptimizer(passContext);
+        writeProfilingTimestamp(stage, true);
+    } else if (pushConstants_.optimizerEnabled != 0u && projectionOptimizer_.fusedEnabled()) {
         writeProfilingTimestamp(TrainingGpuProfileStage::FusedProjectionOptimizer, false);
         projectionOptimizer_.recordProjectionAndOptimize(passContext);
         writeProfilingTimestamp(TrainingGpuProfileStage::FusedProjectionOptimizer, true);
@@ -90,14 +108,19 @@ void GaussianBackwardRenderer::gradientDescent() {
         return;
     }
     const BackwardPassContext passContext = context();
-    if (pushConstants_.optimizerEnabled != 0u && !projectionOptimizer_.fusedEnabled()) {
+    if (!vkSplat_ && pushConstants_.optimizerEnabled != 0u &&
+        !projectionOptimizer_.fusedEnabled()) {
         writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, false);
         projectionOptimizer_.recordOptimizer(passContext);
         writeProfilingTimestamp(TrainingGpuProfileStage::Optimizer, true);
     }
     if (pushConstants_.validationEnabled != 0u) {
         writeProfilingTimestamp(TrainingGpuProfileStage::Validation, false);
-        validationPass_.record(passContext);
+        if (vkSplat_ && !pushConstants_.validationUsesDensifiedGaussians) {
+            vkSplat_->recordValidation(passContext);
+            validationPass_.recordFinalizeOnly(passContext);
+        } else
+            validationPass_.record(passContext);
         writeProfilingTimestamp(TrainingGpuProfileStage::Validation, true);
     }
 }

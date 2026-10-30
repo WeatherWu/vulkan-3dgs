@@ -42,6 +42,7 @@ void TrainingPanel::draw(TrainingController& controller) {
     const TrainingUiSnapshot snapshot = controller.snapshotForUi();
     const std::string elapsed = controller.elapsedText();
     const TrainingCommandPanelState state{
+        .resourceSettingsPending = controller.requiresDatasetReload(),
         .datasetValid = lifecycle.datasetValid,
         .storage16Requested = controller.storage16Requested(),
         .storage16Enabled = controller.storage16Enabled(),
@@ -57,6 +58,7 @@ void TrainingPanel::draw(TrainingController& controller) {
         .imageWidth = lifecycle.imageWidth,
         .imageHeight = lifecycle.imageHeight,
         .completedSteps = lifecycle.stepsDone,
+        .elapsedSeconds = controller.elapsedSeconds(),
         .elapsedTime = elapsed,
         .status = lifecycle.status,
         .error = lifecycle.error,

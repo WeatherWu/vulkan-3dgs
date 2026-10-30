@@ -9,6 +9,7 @@
 #include "training/core/training_faster_sort.hpp"
 #include "training/core/training_tile_layout.hpp"
 #include "training/core/training_types.hpp"
+#include "training/core/training_vksplat_backend.hpp"
 #include "vulkan/compute_pipeline.hpp"
 #include <array>
 #include <vk_radix_sort.h>
@@ -37,6 +38,11 @@ public:
                             TrainingPushConstants pushConstants);
     void setProfilingQueryPool(vk::QueryPool queryPool);
     void setCompositeMode(TrainingForwardCompositeMode mode) { compositeMode_ = mode; }
+    void setVkSplatBackend(TrainingVkSplatBackend* backend, bool subtile) {
+        if (bool(vkSplat_) != bool(backend)) fasterSort_.reset();
+        vkSplat_ = backend;
+        vkSplatSubtile_ = subtile;
+    }
     void forward() override;
     void prepareTileItems();
     void renderPreparedTiles(uint32_t tileItemCount);
@@ -192,6 +198,8 @@ private:
     uint32_t adaptiveSplitThreshold_ = 256u;
     TrainingForwardCompositeMode compositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
     bool initialized_ = false;
+    TrainingVkSplatBackend* vkSplat_ = nullptr;
+    bool vkSplatSubtile_ = false;
     std::unique_ptr<TrainingFasterSort> fasterSort_;
     bool fasterSortRequested_ = false, fasterSortPrepared_ = false;
     int fasterSortLoggedState_ = -1;

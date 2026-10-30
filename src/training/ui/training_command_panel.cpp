@@ -51,10 +51,13 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
                                                                            state.trainingRunning);
 
     const bool hasDatasetPath = !textBufferString(settings.paths.dataset).empty();
-    const bool deviceSettingsPending = settings.run.physicalTileKey16 != state.storage16Requested;
+    const bool deviceSettingsPending =
+        state.resourceSettingsPending ||
+        (settings.run.physicalTileKey16 && settings.run.computeBackend == 0) !=
+            state.storage16Requested;
     if (deviceSettingsPending)
         ImGui::TextWrapped(
-            "Physical tile key setting pending: click Load Dataset to apply it to a new model.");
+            "Training resource settings pending: click Load Dataset to apply it to a new model.");
     ImGui::TextDisabled("Device 16-bit request: %s; enabled: %s",
                         state.storage16Requested ? "on" : "off",
                         state.storage16Enabled ? "on" : "off");
@@ -131,6 +134,13 @@ TrainingCommandPanelActions TrainingCommandPanel::draw(TrainingSettings& setting
     }
     ImGui::Text("Total training time %.*s%s", static_cast<int>(state.elapsedTime.size()),
                 state.elapsedTime.data(), state.timerRunning ? " (running)" : "");
+    ImGui::Text("Model setup %.3f s", snapshot.modelPreparationSeconds);
+    if (snapshot.gpuResidentImages) {
+        ImGui::Text("Image preload %.3f s", snapshot.imagePreparationSeconds);
+        ImGui::Text("Preload + model setup + training %.3f s",
+                    snapshot.imagePreparationSeconds + snapshot.modelPreparationSeconds +
+                        state.elapsedSeconds);
+    }
     if (!pureWorkerRunning) {
         ImGui::Text("Gaussians %u", snapshot.gaussianCount);
     } else {

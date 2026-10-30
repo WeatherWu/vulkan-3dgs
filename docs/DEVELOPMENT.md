@@ -554,6 +554,11 @@ sorting separately; see [UI training and full-run comparisons](training-ui.md).
 - The full Gaussian gradient buffer remains allocated for fallback and
   optimizer-disabled/densification paths.
 - Densification can still trigger large allocations and bandwidth spikes.
-- Training accepts undistorted PINHOLE/SIMPLE_PINHOLE cameras and ignores target
-  alpha masks.
+- Dataset loading accepts undistorted PINHOLE/SIMPLE_PINHOLE cameras. Existing Loss
+  ignores target alpha; VkSplat Loss uses the upstream RGBA alpha convention.
+  There is no external mask-directory setting.
 - GPU support is capability-gated; performance and final training quality require device-specific assessment.
+
+## VkSplat candidate backends
+
+[VkSplat training candidates](training-vksplat.md) describes the default-off GPU-resident image mode, official Loss, native compute state/projection/update chain and subtile frontend, their numerical contracts, device requirements and explicit diagnostic command. Existing training remains the default; target correctness, quality and speed require separate validation.

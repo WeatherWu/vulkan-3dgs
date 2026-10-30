@@ -102,6 +102,8 @@ void BackwardLossPass::initialize(vk::Device device) {
 }
 
 void BackwardLossPass::cleanup() {
+    vkSplat_.reset();
+    vkSplatActive_ = false;
     descriptorPool_.reset();
     clearDescriptorSet_ = nullptr;
     lossDescriptorSet_ = nullptr;
@@ -123,6 +125,14 @@ void BackwardLossPass::cleanup() {
 }
 
 void BackwardLossPass::recordLoss(const BackwardPassContext& context) {
+    vkSplatActive_ = vkSplatRequested_ && context.pushConstants.width > 10u &&
+                     context.pushConstants.height > 10u;
+    if (vkSplatActive_) {
+        if (!vkSplat_)
+            vkSplat_ = std::make_unique<VkSplatLossPass>(device_, physical_, queue_, family_);
+        vkSplat_->recordForward(context);
+        return;
+    }
     const bool separable = ssimUsesSeparableLoss(ssimMode_);
     if (context.pushConstants.pixelCount == 0u) return;
     if (!lossDescriptorSet_) {
@@ -273,6 +283,10 @@ void BackwardLossPass::recordClear(const BackwardPassContext& context,
 }
 
 void BackwardLossPass::recordLossToPixel(const BackwardPassContext& context) {
+    if (vkSplatActive_) {
+        vkSplat_->recordBackward(context);
+        return;
+    }
     const bool separable = ssimUsesSeparableBackward(ssimMode_);
     if (context.pushConstants.pixelCount == 0u) return;
     const auto renderedColorInfo = context.buffers.renderedColorInfo();

@@ -104,6 +104,7 @@ void GaussianForwardRenderer::cleanup() {
     profilingQueryPool_ = nullptr;
     sortDiagnosticQueries_ = nullptr;
     pushConstants_ = {};
+    vkSplat_ = nullptr;
     initialized_ = false;
     fasterSortRequested_ = fasterSortPrepared_ = false;
     fasterSortLoggedState_ = -1;
@@ -146,7 +147,11 @@ void GaussianForwardRenderer::prepareTileItems() {
         adaptiveSplitThreshold_ = std::max(pushConstants_.tileItemCount, 1u);
     }
     writeProfilingTimestamp(TrainingGpuProfileStage::GaussianProjection, false);
-    projectGaussians();
+    if (vkSplat_)
+        vkSplat_->recordProject(
+            BackwardPassContext{*trainingBuffers_, commandBuffer_, pushConstants_});
+    else
+        projectGaussians();
     writeProfilingTimestamp(TrainingGpuProfileStage::GaussianProjection, true);
 
     prepareProjectedTileItems();
@@ -156,7 +161,7 @@ void GaussianForwardRenderer::prepareProjectedTileItems() {
     writeSortTimestamp(TrainingSortTimestamp::CountBegin);
     writeProfilingTimestamp(TrainingGpuProfileStage::TileCoverageCount, false);
     clearTileRanges();
-    countTileCoverage();
+    if (!vkSplat_) countTileCoverage();
     writeProfilingTimestamp(TrainingGpuProfileStage::TileCoverageCount, true);
     writeSortTimestamp(TrainingSortTimestamp::CountEnd);
 
@@ -178,7 +183,10 @@ void GaussianForwardRenderer::prepareProjectedTileItems() {
     if (key16State_.active && fasterSort_)
         key16State_.allocatedBytes = fasterSort_->key16AllocatedBytes();
     if (fasterSortPrepared_) {
-        if (!fasterSort_) fasterSort_ = std::make_unique<TrainingFasterSort>(device_, physicalDevice_, computeQueue_, computeQueueFamilyIndex_);
+        if (!fasterSort_)
+            fasterSort_ = std::make_unique<TrainingFasterSort>(
+                device_, physicalDevice_, computeQueue_, computeQueueFamilyIndex_, bool(vkSplat_));
+        if (vkSplat_) fasterSort_->setNativeRectangles(vkSplat_->rectangles());
         fasterSort_->prepare(commandBuffer_, *trainingBuffers_, pushConstants_);
     }
     writeProfilingTimestamp(TrainingGpuProfileStage::TilePrefix, true);
@@ -188,7 +196,12 @@ void GaussianForwardRenderer::prepareProjectedTileItems() {
 void GaussianForwardRenderer::renderPreparedTiles(uint32_t tileItemCount) {
     buildPreparedTileLists(tileItemCount);
     writeProfilingTimestamp(TrainingGpuProfileStage::Composite, false);
-    compositePixels();
+    if (vkSplat_)
+        vkSplat_->recordComposite(
+            BackwardPassContext{*trainingBuffers_, commandBuffer_, pushConstants_},
+            vkSplatSubtile_);
+    else
+        compositePixels();
     writeProfilingTimestamp(TrainingGpuProfileStage::Composite, true);
 }
 

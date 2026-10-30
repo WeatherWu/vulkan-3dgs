@@ -61,6 +61,8 @@ add_library(vulkan_3dgs_core STATIC
     training/core/training_frame_scheduler.cpp
     training/core/training_model_io.cpp
     training/core/training_image_runtime.cpp
+    training/core/training_resident_images.cpp
+    training/core/training_vksplat_backend.cpp
     training/core/training_step_executor.cpp
     training/core/training_buffers.cpp
     training/core/training_scanline_capture.cpp
@@ -72,6 +74,7 @@ add_library(vulkan_3dgs_core STATIC
     training/core/gaussian_backward_renderer.cpp
     training/core/backward/backward_command_utils.cpp
     training/core/backward/backward_loss_pass.cpp
+    training/core/backward/vksplat_loss_pass.cpp
     training/core/backward/pixel_to_2dgs_dispatcher.cpp
     training/core/backward/checkpoint_state_pass.cpp
     training/core/backward/checkpoint_backward_pass.cpp

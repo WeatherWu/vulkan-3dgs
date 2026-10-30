@@ -94,13 +94,15 @@ void TrainingController::shutdown() {
 std::unique_ptr<Device>
 TrainingController::makeTrainingDevice(std::optional<std::string> selector) {
     if (deviceFactory_) {
-        auto device = deviceFactory_(std::move(selector), settings_.run.physicalTileKey16);
+        auto device = deviceFactory_(std::move(selector), (settings_.run.physicalTileKey16 &&
+                                                           settings_.run.computeBackend == 0));
         if (!device) throw std::runtime_error("Training device factory returned no device");
         return device;
     }
     auto device =
         std::make_unique<Device>(vk::SurfaceKHR{}, std::move(selector), DeviceRole::Training,
-                                 TrainingDeviceOptions{settings_.run.physicalTileKey16});
+                                 TrainingDeviceOptions{(settings_.run.physicalTileKey16 &&
+                                                        settings_.run.computeBackend == 0)});
     device->createDevice();
     return device;
 }
@@ -153,6 +155,7 @@ void TrainingController::selectGpu(const std::string& selector) {
         state_.initialized = false;
         state_.datasetLoaded = false;
         state_.stepsDone = 0;
+        state_.modelPreparationSeconds = 0.0;
         const auto& gpu = trainingDevice_->getSelectedPhysicalDeviceInfo();
         settings_.gpuSelector = gpu.uuid.empty() ? std::to_string(gpu.vulkanIndex) : gpu.uuid;
         saveSettings();
@@ -224,7 +227,12 @@ bool TrainingController::storage16Enabled() const {
     return trainingDevice_ && trainingDevice_->trainingStorage16Enabled();
 }
 bool TrainingController::requiresDatasetReload() const {
-    return trainingDevice_ && storage16Requested() != settings_.run.physicalTileKey16;
+    return trainingDevice_ &&
+           (storage16Requested() !=
+                (settings_.run.physicalTileKey16 && settings_.run.computeBackend == 0) ||
+            (state_.datasetLoaded &&
+             (training_.gpuResidentImages() != (settings_.run.trainingImageStorage == 1) ||
+              training_.vkSplatCompute() != (settings_.run.computeBackend == 1))));
 }
 
 void TrainingController::loadDataset() {
@@ -239,13 +247,35 @@ void TrainingController::loadDataset() {
     try {
         stopAndJoin();
         std::unique_ptr<Device> replacement;
-        if (requiresDatasetReload()) {
+        if (storage16Requested() !=
+            (settings_.run.physicalTileKey16 && settings_.run.computeBackend == 0)) {
             const auto& info = trainingDevice_->getSelectedPhysicalDeviceInfo();
             replacement = makeTrainingDevice(info.uuid.empty() ? std::to_string(info.vulkanIndex)
                                                                : info.uuid);
         }
-        validateDataset();
-        if (!state_.datasetValid) return;
+        auto dataset = TrainingDatasetLoader::loadMipNeRF360Scene(
+            textBufferString(settings_.paths.dataset),
+            static_cast<uint32_t>(settings_.initialization.downscale));
+        auto& preparedDevice = replacement ? *replacement : *trainingDevice_;
+        if (settings_.run.computeBackend == 1 &&
+            !TrainingVkSplatBackend::supportsLifecycle(preparedDevice.getPhysicalDevice()))
+            throw std::runtime_error(
+                "VkSplat compute requires native subgroup32 and at least 45 KiB shared memory");
+        const auto preparedFamilies = preparedDevice.getQueueFamilyIndices();
+        if (!preparedFamilies.computeIndex)
+            throw std::runtime_error("Training compute queue family is unavailable");
+        const auto preparedCompute = *preparedFamilies.computeIndex;
+        const auto preparedTransfer = preparedFamilies.transferIndex.value_or(preparedCompute);
+        std::unique_ptr<TrainingResidentImages> resident;
+        if (settings_.run.trainingImageStorage == 1)
+            resident = TrainingResidentImages::prepare(
+                preparedDevice.getDevice(), preparedDevice.getPhysicalDevice(),
+                preparedDevice.getTransferQueue(), preparedTransfer, preparedCompute, dataset,
+                preparedDevice.getComputeQueue());
+        state_.frameCount = static_cast<uint32_t>(dataset.size());
+        state_.imageWidth = dataset.frames.front().width;
+        state_.imageHeight = dataset.frames.front().height;
+        state_.datasetValid = true;
         if (replacement) {
             training_.cleanup();
             trainingDevice_ = std::move(replacement);
@@ -254,6 +284,7 @@ void TrainingController::loadDataset() {
         state_.datasetLoaded = false;
         state_.initialized = false;
         state_.stepsDone = 0;
+        state_.modelPreparationSeconds = 0.0;
         training_.cleanup();
         auto& device = *trainingDevice_;
         const auto computeIndex = device.getQueueFamilyIndices().computeIndex;
@@ -263,8 +294,8 @@ void TrainingController::loadDataset() {
         training_.initialize(device.getDevice(), device.getPhysicalDevice(),
                              device.getTransferQueue(), transfer, compute,
                              vulkanValidationLayersEnabled_, device.trainingStorage16Enabled());
-        training_.loadMipNeRF360Dataset(textBufferString(settings_.paths.dataset),
-                                        static_cast<uint32_t>(settings_.initialization.downscale));
+        training_.setVkSplatCompute(settings_.run.computeBackend == 1);
+        training_.loadDataset(std::move(dataset), std::move(resident));
         state_.datasetLoaded = true;
         setStatus("Dataset loaded: " + std::to_string(state_.frameCount) + " frames, " +
                   std::to_string(state_.imageWidth) + "x" + std::to_string(state_.imageHeight) +
@@ -289,9 +320,13 @@ void TrainingController::applyLiveSettings() {
     training_.setTensorRgbLatencyHiding(settings_.run.tensorRgbLatencyHiding);
     training_.setTensorEarlyCull(settings_.run.tensorEarlyCull);
     training_.setFasterSortEnabled(settings_.run.fasterSort);
+    training_.setVkSplatSubtile(settings_.run.vkSplatSubtile);
+    training_.setVkSplatLoss(settings_.run.lossBackend == 1);
     training_.setMortonOrderingEnabled(settings_.run.mortonOrdering);
     training_.setDirectIntrinsicsProjection(settings_.run.directIntrinsicsProjection);
-    if (!requiresDatasetReload()) training_.setPhysicalTileKey16(settings_.run.physicalTileKey16);
+    if (!requiresDatasetReload())
+        training_.setPhysicalTileKey16(
+            (settings_.run.physicalTileKey16 && settings_.run.computeBackend == 0));
     try {
         training_.setSsimMode(static_cast<TrainingSsimMode>(settings_.run.ssimMode));
     } catch (const std::exception& error) {
@@ -330,12 +365,17 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     training_.setTensorRgbLatencyHiding(config.run.tensorRgbLatencyHiding);
     training_.setTensorEarlyCull(config.run.tensorEarlyCull);
     training_.setFasterSortEnabled(config.run.fasterSort);
+    training_.setVkSplatCompute(config.run.computeBackend == 1);
+    training_.setVkSplatSubtile(config.run.vkSplatSubtile);
+    training_.setVkSplatLoss(config.run.lossBackend == 1);
     training_.setMortonOrderingEnabled(config.run.mortonOrdering);
-    training_.setDirectIntrinsicsProjection(config.run.directIntrinsicsProjection);
-    training_.setPhysicalTileKey16(config.run.physicalTileKey16);
+    training_.setDirectIntrinsicsProjection(config.run.directIntrinsicsProjection &&
+                                            config.run.computeBackend == 0);
+    training_.setPhysicalTileKey16(config.run.physicalTileKey16 && config.run.computeBackend == 0);
     training_.setSsimMode(static_cast<TrainingSsimMode>(config.run.ssimMode));
     training_.setValidationInterval(config.schedule.validationInterval);
 
+    const auto modelSetupStarted = std::chrono::steady_clock::now();
     bool initializedModel = false;
     bool usedRandomInitialization = false;
     if (!training_.hasTrainableModel()) {
@@ -345,6 +385,9 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
         init.initialOpacity = initSettings.opacity;
         init.sceneRadiusScale = initSettings.sceneRadiusScale;
         training_.initializeModelFromDataset(init);
+        state_.modelPreparationSeconds +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - modelSetupStarted)
+                .count();
         initializedModel = true;
         usedRandomInitialization = training_.usedRandomInitialization();
     }
@@ -408,10 +451,14 @@ void TrainingController::initializeTrainingIfNeeded() {
     training_.initialize(device.getDevice(), device.getPhysicalDevice(), device.getTransferQueue(),
                          transfer, compute, vulkanValidationLayersEnabled_,
                          device.trainingStorage16Enabled());
+    const auto rendererSetupStarted = std::chrono::steady_clock::now();
     training_.initializeTrainingRenderers(
         device.getDevice(), device.getPhysicalDevice(), device.getComputeQueue(), compute,
         std::max(training_.gaussianCount(), 1u),
         TrainingExtent{std::max(state_.imageWidth, 1u), std::max(state_.imageHeight, 1u)});
+    state_.modelPreparationSeconds +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - rendererSetupStarted)
+            .count();
     state_.initialized = true;
 }
 
@@ -438,7 +485,7 @@ void TrainingController::toggleTraining() {
 
     if (requiresDatasetReload()) {
         setError(
-            "Physical tile key setting changed. Click Load Dataset to apply it to a new model.");
+            "Training resource settings changed. Click Load Dataset to apply them to a new model.");
         return;
     }
     try {
@@ -999,6 +1046,14 @@ TrainingUiSnapshot TrainingController::captureSnapshot() const {
     snapshot.candidateProfile = training_.candidateProfileStats();
     snapshot.densification = training_.densificationStats();
     snapshot.profiling = training_.profilingStats();
+    snapshot.vkSplatCompute = training_.vkSplatCompute();
+    snapshot.vkSplatSubtile = training_.lastVkSplatSubtile();
+    snapshot.vkSplatAllocatedBytes = training_.vkSplatAllocatedBytes();
+    snapshot.vkSplatBoundarySeconds = training_.vkSplatBoundarySeconds();
+    snapshot.vkSplatLossActive = training_.vkSplatLossActive();
+    snapshot.gpuResidentImages = training_.gpuResidentImages();
+    snapshot.imagePreparationSeconds = training_.imagePreparationSeconds();
+    snapshot.modelPreparationSeconds = state_.modelPreparationSeconds;
     snapshot.imageCache = training_.imageCacheStats();
     snapshot.deviceImageCache = training_.deviceImageCacheStats();
     return snapshot;

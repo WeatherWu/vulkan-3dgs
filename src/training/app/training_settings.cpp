@@ -61,6 +61,10 @@ const std::unordered_set<std::string>& trainingKeys() {
                                                       "physical_tile_key16",
                                                       "separable_ssim",
                                                       "ssim_mode",
+                                                      "training_image_storage",
+                                                      "loss_backend",
+                                                      "training_compute_backend",
+                                                      "vksplat_subtile_culling",
                                                       "total_iterations",
                                                       "steps_per_frame",
                                                       "validation_interval",
@@ -212,6 +216,16 @@ void TrainingSettingsStore::load(const std::filesystem::path& path, TrainingSett
         } else if (key == "separable_ssim") {
             int value = 0;
             if ((row >> value) && !explicitSsimMode) settings.run.ssimMode = value != 0 ? 1 : 0;
+        } else if (key == "training_compute_backend") {
+            row >> settings.run.computeBackend;
+        } else if (key == "vksplat_subtile_culling") {
+            int value = 0;
+            row >> value;
+            settings.run.vkSplatSubtile = value == 1;
+        } else if (key == "loss_backend") {
+            row >> settings.run.lossBackend;
+        } else if (key == "training_image_storage") {
+            row >> settings.run.trainingImageStorage;
         } else if (key == "ssim_mode") {
             int value = 0;
             explicitSsimMode = true;
@@ -341,6 +355,10 @@ void TrainingSettingsStore::write(std::ostream& output, const TrainingSettings& 
     output << "direct_intrinsics_projection " << (run.directIntrinsicsProjection ? 1 : 0) << '\n';
     output << "physical_tile_key16 " << (run.physicalTileKey16 ? 1 : 0) << '\n';
     output << "tensor_early_cull " << (run.tensorEarlyCull ? 1 : 0) << '\n';
+    output << "training_compute_backend " << run.computeBackend << '\n';
+    output << "vksplat_subtile_culling " << (run.vkSplatSubtile ? 1 : 0) << '\n';
+    output << "loss_backend " << run.lossBackend << '\n';
+    output << "training_image_storage " << run.trainingImageStorage << '\n';
     output << "ssim_mode " << run.ssimMode << '\n';
     output << "steps_per_frame " << run.benchmarkStepsPerFrame << '\n';
     output << "benchmark_frame " << run.benchmarkFrame << '\n';
@@ -413,6 +431,22 @@ TrainingSettingsValidation TrainingSettingsStore::validate(const TrainingSetting
     }
 
     const auto& run = settings.run;
+    if (run.computeBackend < 0 || run.computeBackend > 1)
+        return invalid("Compute backend is invalid");
+    if (run.computeBackend == 1) {
+        const auto& o = settings.optimizer;
+        if (o.adamBeta1 != 0.9f || o.adamBeta2 != 0.999f || o.adamEpsilon != 1e-15f ||
+            o.gradientClip != 0.0f)
+            return invalid("VkSplat requires Adam beta1=0.9 beta2=0.999 epsilon=1e-15 and no "
+                           "gradient clipping");
+        if (run.tileMode != 1 || !run.fasterSort || run.pixelTo2DGSMode != 6 ||
+            run.forwardCompositeMode != 1 || run.tensorEarlyCull || run.tensorRgbLatencyHiding)
+            return invalid("VkSplat backend supports Fixed16, Faster-GS Sorting, Workgroup "
+                           "composite and Tensor Baseline without EarlyCull");
+    }
+    if (run.lossBackend < 0 || run.lossBackend > 1) return invalid("Loss backend is invalid");
+    if (run.trainingImageStorage < 0 || run.trainingImageStorage > 1)
+        return invalid("Training image storage is invalid");
     if (!validTrainingSsimMode(static_cast<TrainingSsimMode>(run.ssimMode))) {
         return invalid("SSIM mode is invalid");
     }
@@ -521,6 +555,9 @@ std::string TrainingSettingsStore::describeRun(const TrainingRunConfig& config) 
 }
 
 void TrainingSettingsStore::clamp(TrainingSettings& settings) {
+    if (settings.run.computeBackend != 1) settings.run.computeBackend = 0;
+    if (settings.run.lossBackend != 1) settings.run.lossBackend = 0;
+    if (settings.run.trainingImageStorage != 1) settings.run.trainingImageStorage = 0;
     if (!validTrainingSsimMode(static_cast<TrainingSsimMode>(settings.run.ssimMode))) {
         settings.run.ssimMode = 0;
     }

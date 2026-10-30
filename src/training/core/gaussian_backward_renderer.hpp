@@ -7,6 +7,7 @@
 #include "training/core/backward/projection_optimizer_pass.hpp"
 #include "training/core/training_buffers.hpp"
 #include "training/core/training_types.hpp"
+#include "training/core/training_vksplat_backend.hpp"
 
 #include <vulkan/vulkan.hpp>
 
@@ -22,6 +23,12 @@ public:
     void setTrainingBuffers(const TrainingBuffers& trainingBuffers, vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void setProfilingQueryPool(vk::QueryPool queryPool);
+    void setVkSplatLoss(bool enabled) {
+        lossPass_.setVkSplat(enabled);
+    }
+    bool vkSplatLossActive() const {
+        return lossPass_.vkSplatActive();
+    }
     void setSsimMode(TrainingSsimMode mode) { lossPass_.setSsimMode(mode); }
     [[nodiscard]] TrainingSsimMode activeSsimMode() const { return lossPass_.activeSsimMode(); }
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
@@ -71,6 +78,9 @@ public:
     }
     [[nodiscard]] bool adaptiveSpatialModeSupported() const {
         return pixelDispatcher_.adaptiveSpatialModeSupported();
+    }
+    void setVkSplatBackend(TrainingVkSplatBackend* backend) {
+        vkSplat_ = backend;
     }
     void backward() override;
     void prepareCheckpointDiagnostics(TrainingBuffers& buffers, uint32_t itemCount, bool warp = false) {
@@ -123,6 +133,7 @@ private:
     TrainingPushConstants pushConstants_{};
     bool initialized_ = false;
     bool directIntrinsics_ = false;
+    TrainingVkSplatBackend* vkSplat_ = nullptr;
     bool checkpointWarp_ = false;
     bool tensorEarlyCull_ = false;
     TrainingOptimizerCaptureSession* optimizerCapture_ = nullptr;

@@ -12,7 +12,7 @@ class TrainingFasterSortKey16;
 class TrainingFasterSort {
 public:
     TrainingFasterSort(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                       uint32_t family);
+                       uint32_t family, bool native = false);
     ~TrainingFasterSort();
     void prepare(vk::CommandBuffer command, TrainingBuffers& buffers,
                  const TrainingPushConstants& push);
@@ -20,6 +20,9 @@ public:
                const TrainingPushConstants& push, VrdxSorter sorter);
     void buildPhysical16(vk::CommandBuffer command, TrainingBuffers& buffers,
                          const TrainingPushConstants& push, VrdxSorter sorter);
+    void setNativeRectangles(vk::DescriptorBufferInfo info) {
+        nativeRectangles_ = info;
+    }
     void releaseKey16();
     uint64_t key16AllocatedBytes() const;
     uint32_t participatingCount() const {
@@ -37,6 +40,8 @@ private:
     void dispatch(vk::CommandBuffer command, size_t pipeline, uint32_t count,
                   const TrainingPushConstants& push);
     static void barrier(vk::CommandBuffer command);
+    bool native_ = false;
+    vk::DescriptorBufferInfo nativeRectangles_{};
     vk::Device device_;
     vk::PhysicalDevice physical_;
     vk::Queue queue_;

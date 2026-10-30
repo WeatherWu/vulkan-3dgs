@@ -25,6 +25,12 @@ set(VULKAN_3DGS_QUALITY_RELATIVE_FILES
     training/ui/training_settings_panel.cpp
     training/ui/training_settings_panel.hpp
 
+    training/core/training_resident_images.cpp
+    training/core/training_resident_images.hpp
+    training/core/training_vksplat_backend.cpp
+    training/core/training_vksplat_backend.hpp
+    training/core/backward/vksplat_loss_pass.cpp
+    training/core/backward/vksplat_loss_pass.hpp
     training/core/training_frame_scheduler.cpp
     training/core/training_frame_scheduler.hpp
     training/core/training_image_runtime.cpp

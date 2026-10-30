@@ -34,16 +34,53 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
     if (ImGui::CollapsingHeader("Training", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (!canEdit) ImGui::BeginDisabled();
 
+        static constexpr const char* computeBackends[] = {"Existing", "VkSplat (Experimental)"};
+        if (ImGui::Combo("Training Compute Backend", &run.computeBackend, computeBackends, 2))
+            actions.methodVariantsChanged = true;
+        ImGui::TextDisabled("Compute backend changes require Load Dataset.");
+        ImGui::BeginDisabled(run.computeBackend != 1);
+        if (ImGui::Checkbox("VkSplat Subtile Culling", &run.vkSplatSubtile))
+            actions.methodVariantsChanged = true;
+        ImGui::EndDisabled();
+        if (snapshot.trainingIteration)
+            ImGui::Text("Last compute: %s; subtile %s",
+                        snapshot.vkSplatCompute ? "VkSplat" : "Existing",
+                        snapshot.vkSplatSubtile ? "on" : "off");
+        else
+            ImGui::TextDisabled("Last compute: not executed");
+        if (snapshot.vkSplatCompute)
+            ImGui::Text("Native model %llu B; state boundaries %.3f s",
+                        static_cast<unsigned long long>(snapshot.vkSplatAllocatedBytes),
+                        snapshot.vkSplatBoundarySeconds);
+        static constexpr const char* imageStorage[] = {"Budgeted Cache",
+                                                       "GPU Resident (Experimental)"};
+        if (ImGui::Combo("Training Image Storage", &run.trainingImageStorage, imageStorage, 2))
+            actions.methodVariantsChanged = true;
+        ImGui::TextDisabled("Image storage changes require Load Dataset.");
+        if (snapshot.hasDataset)
+            ImGui::Text("Loaded image storage: %s",
+                        snapshot.gpuResidentImages ? "GPU Resident" : "Budgeted Cache");
         static constexpr const char* trainingModes[] = {"Sequential", "3DGS Random"};
+        static constexpr const char* lossBackends[] = {"Existing", "VkSplat (Experimental)"};
+        if (ImGui::Combo("Loss Backend", &run.lossBackend, lossBackends, 2))
+            actions.methodVariantsChanged = true;
+        if (snapshot.trainingIteration)
+            ImGui::Text("Last Loss: %s", snapshot.vkSplatLossActive ? "VkSplat" : "Existing");
+        else
+            ImGui::TextDisabled("Last Loss: not executed");
+        if (run.lossBackend == 1) ImGui::BeginDisabled();
         static constexpr const char* ssimModes[] = {
             "2D (Baseline)", "Separable (Full, Experimental)",
             "2D Loss + Separable Backward (Experimental)"};
         if (ImGui::Combo("SSIM Mode", &run.ssimMode, ssimModes, IM_ARRAYSIZE(ssimModes))) {
             actions.ssimModeChanged = true;
         }
-        if (snapshot.rendererInitialized) {
+        if (run.lossBackend == 1) ImGui::EndDisabled();
+        if (snapshot.rendererInitialized && !snapshot.vkSplatLossActive) {
             ImGui::Text("Active SSIM: %s", trainingSsimModeName(snapshot.activeSsimMode));
         }
+        if (run.lossBackend == 1 && snapshot.trainingIteration && !snapshot.vkSplatLossActive)
+            ImGui::TextWrapped("VkSplat Loss fallback: no valid 11x11 SSIM region.");
         ImGui::Combo("Mode", &schedule.imageSelectionMode, trainingModes,
                      IM_ARRAYSIZE(trainingModes));
         schedule.imageSelectionMode = std::clamp(schedule.imageSelectionMode, 0, 1);
@@ -65,14 +102,20 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         ImGui::TextDisabled("Selection applies to the next start/resume. Load Dataset resets the "
                             "model for a new comparison.");
 
+        ImGui::BeginDisabled(run.computeBackend == 1);
         if (ImGui::Checkbox("Direct Intrinsics Projection (Experimental)",
                             &run.directIntrinsicsProjection))
             actions.methodVariantsChanged = true;
         if (ImGui::Checkbox("Physical 16-bit Tile Keys (Experimental)", &run.physicalTileKey16))
             actions.methodVariantsChanged = true;
+        ImGui::EndDisabled();
+        if (run.computeBackend == 1)
+            ImGui::TextDisabled("Legacy direct projection / Physical16 are not used by VkSplat.");
         ImGui::TextDisabled(
             "Physical16 changes require Load Dataset; the current model is kept until then.");
-        if (!snapshot.projection.executed) {
+        if (snapshot.vkSplatCompute) {
+            ImGui::TextDisabled("VkSplat: official intrinsics projection and 32-bit tile keys.");
+        } else if (!snapshot.projection.executed) {
             ImGui::TextDisabled("Projection/key storage: not executed");
         } else {
             ImGui::Text("Last projection: %s",

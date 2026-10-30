@@ -269,6 +269,34 @@ function(compile_training_adaptive_tile_shader SHADER_SRC OUTPUT_BASENAME TILE_S
     set(ALL_SHADER_FILES ${ALL_SHADER_FILES} ${BUILD_SPV} PARENT_SCOPE)
 endfunction()
 
+function(compile_vksplat_shader NAME)
+    set(SOURCE "${TRAINING_SHADER_PASSES_DIR}/${NAME}.comp.slang")
+    set(SPV "${TRAINING_SHADER_SPV_DIR}/${NAME}.comp.spv")
+    set(DEST "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders/${NAME}.comp.spv")
+    file(GLOB_RECURSE VKSPLAT_DEPS CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/training_shader/slang/vksplat/*.slang")
+    add_custom_command(OUTPUT "${SPV}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${TRAINING_SHADER_SPV_DIR}"
+        COMMAND ${SLANGC_EXECUTABLE} "${SOURCE}" -target spirv -profile sm_6_5
+                -entry main -stage compute -O -fp-mode fast -line-directive-mode none
+                ${TRAINING_SHADER_DEBUG_FLAGS} -matrix-layout-column-major -fvk-use-gl-layout
+                -o "${SPV}"
+        DEPENDS "${SOURCE}" ${VKSPLAT_DEPS} ${TRAINING_SHADER_COMMON_DEPS}
+                "${TRAINING_SHADER_DEBUG_INFO_STAMP}" VERBATIM)
+    add_custom_command(OUTPUT "${DEST}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SPV}" "${DEST}"
+        DEPENDS "${SPV}" VERBATIM)
+    set(ALL_SHADER_FILES ${ALL_SHADER_FILES} "${SPV}" "${DEST}" PARENT_SCOPE)
+endfunction()
+foreach(NAME IN ITEMS train_vksplat_ssim_forward train_vksplat_ssim_backward train_vksplat_loss_statistics
+        train_vksplat_project train_vksplat_optimizer train_vksplat_state_import train_vksplat_state_export
+        train_vksplat_composite train_vksplat_composite_subtile train_vksplat_tensor_shared
+        train_vksplat_tensor_global train_vksplat_validation train_vksplat_emit
+        train_vksplat_composite_64 train_vksplat_composite_subtile_64)
+    compile_vksplat_shader(${NAME})
+endforeach()
+
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_project.comp.slang" "train_project.comp")
 compile_training_shader("${TRAINING_SHADER_PASSES_DIR}/train_forward_project.comp.slang" "train_forward_project.comp")
 foreach(direct_pass IN ITEMS train_forward_project train_backward_2dgs_to_3dgs train_backward_2dgs_to_3dgs_optimizer)

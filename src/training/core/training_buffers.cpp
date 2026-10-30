@@ -545,6 +545,22 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
     densificationCapacity_ = safeCapacity;
 }
 
+void TrainingBuffers::ensureCanonicalModelStorage() {
+    if (!gaussianParams_.getBuffer())
+        createStorageBuffer(gaussianParams_,
+                            uint64_t(gaussianCapacity_) * sizeof(GaussianTrainParam));
+    if (!adamStates_.getBuffer())
+        createStorageBuffer(adamStates_, uint64_t(gaussianCapacity_) * sizeof(AdamState));
+}
+
+void TrainingBuffers::releaseCanonicalModelStorage() {
+    gaussianParams_.cleanup();
+    adamStates_.cleanup();
+    densifiedParams_.cleanup();
+    densifiedAdamStates_.cleanup();
+    densificationCapacity_ = 0;
+}
+
 void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     if (gaussianCount == 0 || gaussianCount > densificationCapacity_) {
         throw std::runtime_error("Invalid densified gaussian count");

@@ -12,6 +12,11 @@ methods, then click **Start Training**. The CLI is optional for ordinary trainin
 
 ## Sorting selection
 
+See [VkSplat training candidates](training-vksplat.md) for GPU-resident images,
+the independent official Loss and compute backends, and subtile culling. Image
+storage and compute-backend changes require **Load Dataset**; the selected and
+last-executed paths are reported separately.
+
 **Training → Faster-GS Sorting (Experimental)** selects the experimental sorting
 chain. It defaults off and is saved with the other training settings. Running
 workers lock this selection; after pausing, it applies to the next start or

@@ -76,6 +76,8 @@ void GaussianTraining::initialize(vk::Device device, vk::PhysicalDevice physical
 
 void GaussianTraining::cleanup() {
     imageRuntime_.cleanup(buffers_);
+    residentImages_.reset();
+    vkSplat_.reset();
     if (backward_) {
         backward_->cleanup();
         backward_.reset();
@@ -180,6 +182,7 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
         gaussianBackward->setTensorGlobalPixelGrad(tensorGlobalPixelGrad_);
         gaussianBackward->setTensorRgbLatencyHiding(tensorRgbLatencyHiding_);
         gaussianBackward->setSsimMode(ssimMode_);
+        gaussianBackward->setVkSplatLoss(vkSplatLossRequested_);
         gaussianBackward->setAdaptiveSpatialTiles(
             tileMode_ == TrainingTileMode::AdaptiveSpatial);
         if (tileMode_ == TrainingTileMode::AdaptiveSpatial &&
@@ -203,10 +206,26 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
     createTrainingProfilingResources(device, physicalDevice, computeQueueFamilyIndex);
     if (auto* renderer = dynamic_cast<GaussianForwardRenderer*>(forward_.get()))
         renderer->setFasterSortEnabled(fasterSortEnabled_);
+    if (vkSplatComputeRequested_) {
+        if (!TrainingVkSplatBackend::supportsLifecycle(physicalDevice))
+            throw std::runtime_error("VkSplat compute backend requires native subgroup32 and at "
+                                     "least 45 KiB shared memory");
+        if (!vkSplat_) {
+            vkSplat_ = std::make_unique<TrainingVkSplatBackend>(
+                device, physicalDevice, computeQueue, computeQueueFamilyIndex);
+            vkSplat_->importCanonical(buffers_, trainableGaussianCount_);
+        }
+        dynamic_cast<GaussianForwardRenderer*>(forward_.get())
+            ->setVkSplatBackend(vkSplat_.get(), vkSplatSubtile_);
+        dynamic_cast<GaussianBackwardRenderer*>(backward_.get())->setVkSplatBackend(vkSplat_.get());
+    }
     rendererInitialized_ = true;
 }
 
 void GaussianTraining::captureOptimizerStepAndPause(const std::filesystem::path& path) {
+    if (vkSplatLossRequested_ || vkSplatComputeRequested_)
+        throw std::runtime_error("Legacy capture does not identify VkSplat compute/Loss; use "
+                                 "explicit VkSplat diagnostics");
     if (directIntrinsicsRequested_ && (hasDataset() || buffers_.hasExactIntrinsics()))
         throw std::runtime_error(
             "Legacy optimizer capture cannot identify direct intrinsics projection");
@@ -329,7 +348,9 @@ void GaussianTraining::trainStep() {
         if (!mortonReorder_)
             mortonReorder_ = std::make_unique<TrainingMortonReorder>(
                 device_, physicalDevice_, stepExecutor_.computeQueue(), computeQueueFamilyIndex_);
+        if (vkSplat_) vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
         const auto result = mortonReorder_->execute(buffers_, trainableGaussianCount_);
+        if (vkSplat_) vkSplat_->importCanonical(buffers_, trainableGaussianCount_);
         ++mortonStats_.reorderCount;
         mortonStats_.lastCompletedSteps = trainingIteration_;
         mortonStats_.lastGaussianCount = trainableGaussianCount_;
@@ -350,6 +371,13 @@ void GaussianTraining::trainStep() {
     }
 
     const bool runDensificationThisStep = !fixedBenchmarkThisStep && shouldRunDensification();
+    if (vkSplat_ && runDensificationThisStep) {
+        const auto start = Clock::now();
+        vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
+        recordCpuProfilingSample(
+            TrainingCpuProfileStage::VkSplatStateBoundary,
+            std::chrono::duration<float, std::milli>(Clock::now() - start).count());
+    }
     if (runDensificationThisStep) {
         imageRuntime_.reserveForDensification(trainingIteration_, buffers_);
     } else if (!fixedBenchmarkThisStep && (trainingIteration_ % 16u) == 0u) {
@@ -373,10 +401,15 @@ void GaussianTraining::trainStep() {
         throw std::runtime_error("GaussianTraining currently requires GaussianForwardRenderer and GaussianBackwardRenderer");
     }
 
-    const bool directActive = directIntrinsicsRequested_ && buffers_.hasExactIntrinsics();
+    if (vkSplat_) {
+        gaussianForward->setVkSplatBackend(vkSplat_.get(), vkSplatSubtile_);
+        gaussianBackward->setVkSplatBackend(vkSplat_.get());
+    }
+    const bool directActive =
+        !vkSplat_ && directIntrinsicsRequested_ && buffers_.hasExactIntrinsics();
     gaussianForward->setDirectIntrinsics(directActive);
     gaussianBackward->setDirectIntrinsics(directActive);
-    gaussianForward->setPhysicalTileKey16(key16Requested_);
+    gaussianForward->setPhysicalTileKey16(!vkSplat_ && key16Requested_);
     auto pushConstants = createPushConstants();
     const uint32_t currentIteration = trainingIteration_ + 1u;
     const bool beforeFinalIteration =
@@ -428,6 +461,15 @@ void GaussianTraining::trainStep() {
         .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
         .compositeMode = static_cast<uint32_t>(forwardCompositeMode_),
     });
+    if (vkSplat_ && execution.densificationRan) {
+        const auto start = Clock::now();
+        vkSplat_->importCanonical(buffers_, execution.gaussianCount);
+        recordCpuProfilingSample(
+            TrainingCpuProfileStage::VkSplatStateBoundary,
+            std::chrono::duration<float, std::milli>(Clock::now() - start).count());
+    }
+    lastVkSplatLossActive_ = gaussianBackward->vkSplatLossActive();
+    lastVkSplatSubtile_ = vkSplat_ && vkSplatSubtile_;
     lastSortState_ = {true, gaussianForward->fasterSortRequested(),
                       gaussianForward->fasterSortActive(), pushConstants.tileSize};
     lastProjectionState_ = {true, directIntrinsicsRequested_, directActive,
@@ -548,6 +590,7 @@ TrainingStateFiniteCheck GaussianTraining::inspectTrainingStateFinite() {
     if (!trainingIteration_ || !hasTrainableModel()) throw std::runtime_error("Finite inspection requires a completed training step");
     stepExecutor_.synchronizeDiagnosticDownloads(transferQueue_);
     validationService_.collect(buffers_.extent(), buffers_.gaussianCapacity());
+    if (vkSplat_) vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
     OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_);
     TrainingStateFiniteCheck result;
     result.maxLoss = -std::numeric_limits<double>::infinity();
@@ -577,12 +620,14 @@ TrainingStateFiniteCheck GaussianTraining::inspectTrainingStateFinite() {
         }
         offset+=count;
     }
+    if (vkSplat_) buffers_.releaseCanonicalModelStorage();
     return result;
 }
 
 uint64_t GaussianTraining::diagnosticTrainingStateHash() {
     if (!hasTrainableModel()) throw std::runtime_error("State fingerprint requires an initialized model");
     stepExecutor_.synchronizeDiagnosticDownloads(transferQueue_);
+    if (vkSplat_) vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
     OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_);
     std::vector<std::byte> chunk(optimizerCaptureChunkBytes);
     uint64_t hash = optimizerHash(std::as_bytes(std::span{&trainableGaussianCount_,1}));
@@ -596,12 +641,20 @@ uint64_t GaussianTraining::diagnosticTrainingStateHash() {
             hash=optimizerHash(std::span<const std::byte>(chunk).first(count),hash);offset+=count;
         }
     }
+    if (vkSplat_) buffers_.releaseCanonicalModelStorage();
     return hash;
 }
 
 void GaussianTraining::loadMipNeRF360Dataset(const std::filesystem::path& sceneRoot,
                                              uint32_t preferredDownscale) {
-    dataset_ = TrainingDatasetLoader::loadMipNeRF360Scene(sceneRoot, preferredDownscale);
+    loadDataset(TrainingDatasetLoader::loadMipNeRF360Scene(sceneRoot, preferredDownscale), {});
+}
+
+void GaussianTraining::loadDataset(TrainingDataset dataset,
+                                   std::unique_ptr<TrainingResidentImages> resident) {
+    if (dataset.empty()) throw std::invalid_argument("Training dataset is empty");
+    dataset_ = std::move(dataset);
+    residentImages_ = std::move(resident);
     frameScheduler_.setFrameCount(dataset_.size());
 
     const auto& firstFrame = dataset_.frames.front();
@@ -641,9 +694,10 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     optimizerStep_ = 0;
     optimizerCaptureStateUncertain_ = false;
     frameScheduler_.restartSequence();
-    imageRuntime_.initialize(device_, physicalDevice_, transferQueue_,
-                             transferQueueFamilyIndex_,
-                             computeQueueFamilyIndex_, dataset_, buffers_);
+    if (!residentImages_)
+        imageRuntime_.initialize(device_, physicalDevice_, transferQueue_,
+                                 transferQueueFamilyIndex_, computeQueueFamilyIndex_, dataset_,
+                                 buffers_);
     lastDensificationStats_ = {};
     lastDensificationStatsIteration_ = 0;
     validationService_.resetStats();
@@ -664,12 +718,17 @@ bool GaussianTraining::exportToPLY(const std::filesystem::path& path) {
         throw std::runtime_error("No trained Gaussian model is available to export");
     }
 
+    if (vkSplat_) vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
     const std::vector<GaussianTrainParam> parameters =
         buffers_.downloadGaussianParams(trainableGaussianCount_);
+    if (vkSplat_) buffers_.releaseCanonicalModelStorage();
     return TrainingModelIO::writePly(path, parameters);
 }
 
 void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path& path) {
+    if (vkSplatLossRequested_ || vkSplatComputeRequested_)
+        throw std::runtime_error("Legacy capture does not identify VkSplat compute/Loss; use "
+                                 "explicit VkSplat diagnostics");
     if (lastProjectionState_.active)
         throw std::runtime_error("Legacy raw export cannot identify direct intrinsics projection; "
                                  "use matrix projection or PLY export");
@@ -754,6 +813,9 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
 }
 
 void GaussianTraining::exportScanlineDiagnosticInputs(const std::filesystem::path& path) {
+    if (vkSplatLossRequested_ || vkSplatComputeRequested_)
+        throw std::runtime_error("Legacy capture does not identify VkSplat compute/Loss; use "
+                                 "explicit VkSplat diagnostics");
     if (lastProjectionState_.active)
         throw std::runtime_error("Legacy raw export cannot identify direct intrinsics projection; "
                                  "use matrix projection or PLY export");
@@ -1032,6 +1094,22 @@ void GaussianTraining::setSsimMode(TrainingSsimMode mode) {
     }
 }
 
+void GaussianTraining::setVkSplatCompute(bool enabled) {
+    if (enabled != vkSplatComputeRequested_ && hasTrainableModel())
+        throw std::runtime_error("Compute backend changes require Load Dataset");
+    vkSplatComputeRequested_ = enabled;
+}
+
+void GaussianTraining::setVkSplatLoss(bool enabled) {
+    vkSplatLossRequested_ = enabled;
+    if (auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get()))
+        renderer->setVkSplatLoss(enabled);
+}
+
+bool GaussianTraining::vkSplatLossActive() const {
+    return lastVkSplatLossActive_;
+}
+
 TrainingSsimMode GaussianTraining::activeSsimMode() const {
     const auto* renderer = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
     return renderer ? renderer->activeSsimMode() : TrainingSsimMode::TwoDimensional;
@@ -1210,9 +1288,22 @@ void GaussianTraining::uploadCurrentTrainingFrame() {
     if (dataset_.empty()) return;
 
     const size_t frameIndex = frameScheduler_.currentFrame();
+    if (residentImages_) {
+        const auto& frame = dataset_.frames[frameIndex];
+        if (frame.width != buffers_.extent().width || frame.height != buffers_.extent().height)
+            throw std::runtime_error("Dataset frame size does not match GaussianTraining extent");
+        buffers_.setTargetColorDescriptor(residentImages_->trainingImage(frameIndex));
+        const auto camera = createTrainingCamera(frame);
+        if (directIntrinsicsRequested_ || vkSplatComputeRequested_)
+            buffers_.uploadCameraWithIntrinsics(
+                camera, {glm::vec4(frame.fx, frame.fy, frame.cx, frame.cy)});
+        else
+            buffers_.uploadCamera(camera);
+        return;
+    }
     const TrainingImageUploadResult result = imageRuntime_.uploadFrame(
         frameIndex, dataset_.frames[frameIndex], createTrainingCamera(dataset_.frames[frameIndex]),
-        buffers_, directIntrinsicsRequested_);
+        buffers_, directIntrinsicsRequested_ || vkSplatComputeRequested_);
     recordCpuProfilingSample(TrainingCpuProfileStage::ImageRequest,
                              result.imageRequestMilliseconds);
     recordCpuProfilingSample(TrainingCpuProfileStage::TargetUpload,

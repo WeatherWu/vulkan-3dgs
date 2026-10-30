@@ -20,6 +20,7 @@
 #include "training/core/training_morton_reorder.hpp"
 #include "training/core/training_pixel_culling_policy.hpp"
 #include "training/core/training_profiling_service.hpp"
+#include "training/core/training_resident_images.hpp"
 #include "training/core/training_step_executor.hpp"
 #include "training/core/training_tile_layout.hpp"
 #include "training/core/training_validation_service.hpp"
@@ -52,6 +53,13 @@ public:
     uint64_t diagnosticTrainingStateHash();
     void loadMipNeRF360Dataset(const std::filesystem::path& sceneRoot,
                                uint32_t preferredDownscale = 4);
+    void loadDataset(TrainingDataset dataset, std::unique_ptr<TrainingResidentImages> resident);
+    bool gpuResidentImages() const {
+        return bool(residentImages_);
+    }
+    double imagePreparationSeconds() const {
+        return residentImages_ ? residentImages_->preparationSeconds() : 0.0;
+    }
     void initializeModelFromDataset(const TrainingInitializationConfig& config = {});
     bool exportToPLY(const std::filesystem::path& path);
     void exportFixedBenchmarkGradients(const std::filesystem::path& path);
@@ -111,6 +119,24 @@ public:
     void resetTensorEarlyCullRunStats();
     const TrainingPixelCullRunStats& tensorEarlyCullRunStats() const { return pixelCullRunStats_; }
     void setSsimMode(TrainingSsimMode mode);
+    void setVkSplatLoss(bool enabled);
+    void setVkSplatCompute(bool enabled);
+    bool vkSplatCompute() const {
+        return vkSplatComputeRequested_;
+    }
+    bool lastVkSplatSubtile() const {
+        return lastVkSplatSubtile_;
+    }
+    void setVkSplatSubtile(bool enabled) {
+        vkSplatSubtile_ = enabled;
+    }
+    uint64_t vkSplatAllocatedBytes() const {
+        return vkSplat_ ? vkSplat_->allocatedBytes() : 0;
+    }
+    double vkSplatBoundarySeconds() const {
+        return vkSplat_ ? vkSplat_->boundarySeconds() : 0;
+    }
+    bool vkSplatLossActive() const;
     TrainingSsimMode activeSsimMode() const;
     bool tensorRgbLatencyHidingActive() const;
     bool tensorGlobalPixelGradActive() const;
@@ -164,7 +190,7 @@ public:
         return imageRuntime_.imageCacheStats();
     }
     DeviceImageCacheStats deviceImageCacheStats() const {
-        return imageRuntime_.deviceImageCacheStats();
+        return residentImages_ ? residentImages_->stats() : imageRuntime_.deviceImageCacheStats();
     }
     size_t datasetFrameCount() const { return dataset_.size(); }
     size_t currentFrameIndex() const { return frameScheduler_.currentFrame(); }
@@ -203,7 +229,14 @@ private:
     TrainingValidationService validationService_;
     TrainingProfilingService profilingService_;
     TrainingFrameScheduler frameScheduler_;
+    bool vkSplatComputeRequested_ = false;
+    bool vkSplatSubtile_ = false;
+    bool lastVkSplatSubtile_ = false;
+    std::unique_ptr<TrainingVkSplatBackend> vkSplat_;
+    bool vkSplatLossRequested_ = false;
+    bool lastVkSplatLossActive_ = false;
     TrainingImageRuntime imageRuntime_;
+    std::unique_ptr<TrainingResidentImages> residentImages_;
     TrainingStepExecutor stepExecutor_;
 
     TrainingBuffers buffers_;

@@ -65,6 +65,10 @@ struct TrainingDensificationSettings {
 };
 
 struct TrainingRunSettings {
+    int computeBackend = 0;
+    bool vkSplatSubtile = false;
+    int lossBackend = 0;
+    int trainingImageStorage = 0; // Budgeted Cache / GPU Resident.
     int pixelTo2DGSMode = 0;
     float pixelTo2DGSMinSubgroupUtilization = 0.5f;
     int forwardCompositeMode = 1;

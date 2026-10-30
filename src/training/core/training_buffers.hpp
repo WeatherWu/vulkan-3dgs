@@ -33,6 +33,8 @@ public:
     void ensureTileSortStorage(uint32_t tileItemCapacity, vk::DeviceSize sortStorageSize, vk::BufferUsageFlags sortStorageUsage);
     void ensureDensificationCapacity(uint32_t gaussianCapacity);
     void adoptDensifiedGaussians(uint32_t gaussianCount);
+    void ensureCanonicalModelStorage();
+    void releaseCanonicalModelStorage();
     std::array<Buffer, 3> createGaussianReorderTargets();
     // Completed compute work only; all three arrays change ownership together.
     void adoptGaussianReorder(std::array<Buffer, 3>& targets);

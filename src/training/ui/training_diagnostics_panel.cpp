@@ -90,6 +90,7 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
             "Total step",
             "Checkpoint capacity",
             "Z-order reorder (complete)",
+            "VkSplat state boundary (complete)",
         };
         static constexpr const char* gpuStageNames[] = {
             "Gaussian projection",

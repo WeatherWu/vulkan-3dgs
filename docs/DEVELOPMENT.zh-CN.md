@@ -399,5 +399,9 @@ cmake --build build --config Debug --target quality-new
 - Pixel backward kernel 由用户选择，Auto 不选择 VkSplat。
 - 完整 Gaussian gradient buffer 仍为 fallback、optimizer-disabled 和 densification 路径保留。
 - Densification 仍可能产生较大的分配和带宽峰值。
-- 训练只接受未畸变 PINHOLE/SIMPLE_PINHOLE 相机，不处理 target alpha mask。
+- 数据集加载只接受未畸变 PINHOLE/SIMPLE_PINHOLE 相机。Existing Loss忽略target alpha，VkSplat Loss遵循上游RGBA alpha口径；没有外部mask目录设置。
 - GPU能力按设备检查；跨设备性能和最终训练质量需要分别评估。
+
+## VkSplat 候选后端
+
+[VkSplat训练候选](training-vksplat.md)说明默认关闭的GPU图像全驻留、官方Loss、原生状态／投影／更新链与subtile前向路径，以及数值合同、设备要求和显式诊断命令。默认仍使用Existing；目标设备正确性、质量和速度需要分别验证。

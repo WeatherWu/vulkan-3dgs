@@ -12,6 +12,9 @@ public:
     void cleanup();
 
     void record(const BackwardPassContext& context);
+    void recordFinalizeOnly(const BackwardPassContext& context) {
+        recordFinalize(context);
+    }
 
 private:
     void recordGaussianValidation(const BackwardPassContext& context);

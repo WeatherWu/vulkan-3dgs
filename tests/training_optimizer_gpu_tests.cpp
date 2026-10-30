@@ -5,6 +5,8 @@
 #include "training_optimizer_gpu_session.hpp"
 #include "training_optimizer_r1_evaluation.hpp"
 #include "training_optimizer_reference.hpp"
+#include "training_vksplat_backend_checks.hpp"
+#include "training_vksplat_checks.hpp"
 #include "utils/logger.hpp"
 
 #include <atomic>
@@ -435,7 +437,8 @@ uint32_t synthetic(vk::Device device, vk::PhysicalDevice physical, vk::Queue que
 int main(int argc, char** argv) {
     std::filesystem::path input, report, syntheticOutput;
     std::string gpuSelector;
-    bool requireValidation = false, runSynthetic = false, mortonOnly = false, directOnly = false;
+    bool requireValidation = false, runSynthetic = false, mortonOnly = false, directOnly = false,
+         vkSplatOnly = false, requireNativeLifecycle = false;
     Method method = Method::None;
     bool profileVariantSpecified = false;
     uint32_t profileSeconds = 0;
@@ -454,6 +457,10 @@ int main(int argc, char** argv) {
                 runSynthetic = true;
             else if (arg == "--direct-intrinsics-only")
                 directOnly = true;
+            else if (arg == "--require-native-lifecycle")
+                requireNativeLifecycle = true;
+            else if (arg == "--vksplat-only")
+                vkSplatOnly = true;
             else if (arg == "--morton-only")
                 mortonOnly = true;
             else if (arg == "--gpu" && i + 1 < argc)
@@ -487,22 +494,26 @@ int main(int argc, char** argv) {
             } else
                 throw std::runtime_error(
                     "Usage: training_optimizer_gpu_tests (--synthetic | --morton-only | "
-                    "--direct-intrinsics-only | --replay "
+                    "--direct-intrinsics-only | --vksplat-only | --replay "
                     "INPUT.optimizer.bin) [--report NEW.json] [--require-validation] "
-                    "[--gpu SELECTOR (Morton/direct only)] "
+                    "[--gpu SELECTOR (independent modes)] [--require-native-lifecycle (VkSplat "
+                    "only)] "
                     "[--candidate-sh-color-reuse] "
                     "[--candidate-r1 "
                     "[--profile-r1-seconds 1..30 [--profile-variant baseline|stream-adam]]]");
         }
+        if (requireNativeLifecycle) requireValidation = true;
         check(unsigned(runSynthetic) + unsigned(mortonOnly) + unsigned(directOnly) +
-                      unsigned(!input.empty()) ==
+                      unsigned(vkSplatOnly) + unsigned(!input.empty()) ==
                   1u,
-              "Choose exactly one of --synthetic, --morton-only and --replay");
-        check(!(mortonOnly || directOnly) ||
+              "Choose exactly one diagnostic mode: synthetic, Morton, direct, VkSplat or replay");
+        check(!(mortonOnly || directOnly || vkSplatOnly) ||
                   (method == Method::None && syntheticOutput.empty() && !profileSeconds),
-              "Morton checks cannot be combined with optimizer candidates/profiling/export");
-        check(gpuSelector.empty() || mortonOnly || directOnly,
-              "--gpu is available only with --morton-only or --direct-intrinsics-only");
+              "Independent method checks cannot be combined with optimizer profiling/export");
+        check(gpuSelector.empty() || mortonOnly || directOnly || vkSplatOnly,
+              "--gpu requires Morton, direct-intrinsics or VkSplat checks");
+        check(!requireNativeLifecycle || vkSplatOnly,
+              "--require-native-lifecycle requires --vksplat-only");
         const auto candidate = optimizer_candidate::describe(method);
         const bool hasCandidate = method != Method::None;
         check(!profileSeconds || (method == Method::StreamAdam && !input.empty()),
@@ -621,7 +632,7 @@ int main(int argc, char** argv) {
         vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT atomicAdd;
         vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicMax;
         vk::PhysicalDeviceFeatures baseFeatures;
-        if (mortonOnly || directOnly) {
+        if (mortonOnly || directOnly || vkSplatOnly) {
             bool push = false, add = false, maximum = false;
             for (const auto& extension : physical.enumerateDeviceExtensionProperties()) {
                 push |= std::strcmp(extension.extensionName.data(),
@@ -658,7 +669,41 @@ int main(int argc, char** argv) {
         VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
         std::cerr << "S4: private compute device initialized\n";
         const auto queue = device->getQueue(family, 0);
-        if (directOnly) {
+        if (vkSplatOnly) {
+            details << ",\"vksplat\":" << vksplat_checks::run(*device, physical, queue, family);
+            details << ",\"vksplat_backend_state_cases\":"
+                    << vksplat_backend_checks::states(*device, physical, queue, family);
+            details << ",\"vksplat_subtile_cases\":"
+                    << vksplat_backend_checks::composite(*device, physical, queue, family);
+            details << ",\"vksplat_state_event_cases\":"
+                    << vksplat_backend_checks::stateEvents(*device, physical, queue, family);
+            details << R"(,"vksplat_shader_fnv1a64":{)";
+            bool firstNativeShader = true;
+            for (const char* name :
+                 {"train_vksplat_project", "train_vksplat_optimizer", "train_vksplat_ssim_forward",
+                  "train_vksplat_ssim_backward", "train_vksplat_composite",
+                  "train_vksplat_composite_subtile", "train_vksplat_composite_64",
+                  "train_vksplat_composite_subtile_64", "train_vksplat_tensor_shared",
+                  "train_vksplat_tensor_global", "train_vksplat_state_import",
+                  "train_vksplat_state_export", "train_vksplat_emit", "train_vksplat_validation",
+                  "train_vksplat_loss_statistics"}) {
+                if (!firstNativeShader) details << ',';
+                firstNativeShader = false;
+                details << std::quoted(name) << ':'
+                        << std::quoted(std::to_string(optimizerShaderHash(
+                               shader.parent_path() / (std::string(name) + ".comp.spv"))));
+            }
+            details << '}';
+            const bool nativeLife = TrainingVkSplatBackend::supportsLifecycle(physical);
+            check(!requireNativeLifecycle || nativeLife,
+                  "Target native Tensor lifecycle unavailable on selected device");
+            details << ",\"vksplat_backend_lifecycle_supported\":"
+                    << (nativeLife ? "true" : "false");
+            details << ",\"vksplat_backend_lifecycle_steps\":"
+                    << (nativeLife
+                            ? vksplat_backend_checks::lifecycle(*device, physical, queue, family)
+                            : 0);
+        } else if (directOnly) {
             details << ",\"direct_intrinsics\":"
                     << direct_intrinsics_checks::run(*device, physical, queue, family);
         } else if (mortonOnly) {
@@ -751,6 +796,7 @@ int main(int argc, char** argv) {
             if (!hasCandidate) details << ",\"warmup\":2,\"measured\":8";
         }
         device->waitIdle();
+        if (vkSplatOnly) device.reset();
         check(!validationErrors, "Training GPU core/synchronization validation errors");
         const std::string result =
             "{" + details.str() +
@@ -761,6 +807,8 @@ int main(int argc, char** argv) {
                                 "\",\"recommendation\":"
                                 "\"DO_NOT_INTEGRATE_WITHOUT_TARGET_TIMING_AND_NATIVE_REVIEW\","
                                 "\"speedup\":null,"
+             : vkSplatOnly
+                 ? ",\"status\":\"VKSPLAT_CHECKS_COMPLETED_SEE_DEVICE_COVERAGE\",\"speedup\":null,"
              : directOnly ? ",\"status\":\"DIRECT_INTRINSICS_CHECKS_PASSED_TARGET_EVALUATION_"
                             "REQUIRED\",\"recommendation\":\"TARGET_VALIDATION_THEN_MATCHED_"
                             "TRAINING\",\"speedup\":null,"

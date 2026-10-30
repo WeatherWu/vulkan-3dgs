@@ -281,6 +281,7 @@ enum class TrainingCpuProfileStage : uint32_t {
     Total,
     CheckpointCapacity,
     MortonReorder,
+    VkSplatStateBoundary,
     Count,
 };
 

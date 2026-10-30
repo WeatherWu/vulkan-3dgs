@@ -10,6 +10,7 @@
 namespace vulkan3DGS {
 
 struct TrainingCommandPanelState {
+    bool resourceSettingsPending = false;
     bool datasetValid = false;
     bool storage16Requested = false;
     bool storage16Enabled = false;
@@ -25,6 +26,7 @@ struct TrainingCommandPanelState {
     uint32_t imageWidth = 0;
     uint32_t imageHeight = 0;
     uint64_t completedSteps = 0;
+    double elapsedSeconds = 0.0;
     std::string_view elapsedTime;
     std::string_view status;
     std::string_view error;

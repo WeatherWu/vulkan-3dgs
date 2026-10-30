@@ -22,6 +22,14 @@ namespace vulkan3DGS {
 class Device;
 
 struct TrainingUiSnapshot {
+    bool vkSplatCompute = false;
+    bool vkSplatSubtile = false;
+    uint64_t vkSplatAllocatedBytes = 0;
+    double vkSplatBoundarySeconds = 0;
+    bool vkSplatLossActive = false;
+    bool gpuResidentImages = false;
+    double imagePreparationSeconds = 0.0;
+    double modelPreparationSeconds = 0.0;
     bool rendererInitialized = false;
     bool hasDataset = false;
     bool hasTrainableModel = false;
@@ -71,6 +79,7 @@ struct TrainingWorkerResult {
 };
 
 struct TrainingLifecycleState {
+    double modelPreparationSeconds = 0.0;
     bool initialized = false;
     bool datasetValid = false;
     bool datasetLoaded = false;
