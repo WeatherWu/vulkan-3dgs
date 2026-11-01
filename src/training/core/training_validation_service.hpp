@@ -39,6 +39,7 @@ public:
 
     [[nodiscard]] std::optional<ReadbackTicket>
     acquire(TrainingValidationReadbackMetadata metadata);
+    void setGaussianCount(ReadbackTicket ticket, uint32_t count);
     void setAdaptiveStats(ReadbackTicket ticket, TrainingAdaptiveTileReadbackStats stats);
     void recordCopy(vk::CommandBuffer commandBuffer, vk::Buffer sourceBuffer,
                     ReadbackTicket ticket) const;

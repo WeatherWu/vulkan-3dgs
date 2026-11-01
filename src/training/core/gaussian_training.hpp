@@ -50,6 +50,7 @@ public:
     void setStepObservationEnabled(bool enabled) { stepObservationEnabled_ = enabled; }
     // Worker/stopped-owner only, after a completed step; inspection does not advance training.
     TrainingStateFiniteCheck inspectTrainingStateFinite();
+    bool inspectNativeOpacityReset();
     uint64_t diagnosticTrainingStateHash();
     void loadMipNeRF360Dataset(const std::filesystem::path& sceneRoot,
                                uint32_t preferredDownscale = 4);

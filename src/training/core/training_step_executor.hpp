@@ -12,6 +12,7 @@
 
 namespace vulkan3DGS {
 
+class TrainingVkSplatBackend;
 struct TrainingStepExecutionRequest {
     TrainingBuffers& buffers;
     GaussianForwardRenderer& forward;
@@ -36,6 +37,9 @@ struct TrainingStepExecutionRequest {
     bool fixedBenchmark = false;
     uint32_t frameIndex = 0;
     uint32_t ssimMode = 0, pixelMode = 0, compositeMode = 0;
+    TrainingVkSplatBackend* native = nullptr;
+    TrainingDensificationConfig nativeAdcConfig{};
+    float sceneExtent = 1;
 };
 
 struct TrainingStepExecutionResult {

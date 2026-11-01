@@ -1,6 +1,9 @@
 #include "../vksplat/native.slang"
 [[vk::binding(0,0)]] StructuredBuffer<GaussianTrainParam> canonicalParams;
 [[vk::binding(2,0)]] StructuredBuffer<AdamState> canonicalMoments;
+[[vk::binding(16,0)]] RWStructuredBuffer<GaussianDensificationState> canonicalStatistics;
+[[vk::binding(78,0)]] RWStructuredBuffer<float2> nativeRunningGrad;
+[[vk::binding(79,0)]] RWStructuredBuffer<float> nativeRunningRadius;
 [shader("compute")]
 [numthreads(256,1,1)]
 void main(uint3 tid : SV_DispatchThreadID) {
@@ -23,4 +26,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
     }
     nativeStoreMoment(g,canonicalMoments[g].firstMoment,false);
     nativeStoreMoment(g,canonicalMoments[g].secondMoment,true);
+    nativeRunningGrad[g] = float2(canonicalStatistics[g].screenGradSum, float(canonicalStatistics[g].screenGradCount));
+    nativeRunningRadius[g] = canonicalStatistics[g].maxScreenRadius;
 }

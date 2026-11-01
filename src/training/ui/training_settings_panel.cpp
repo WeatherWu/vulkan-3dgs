@@ -363,7 +363,14 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         densify.minOpacity = std::clamp(densify.minOpacity, 0.0f, 0.99f);
         ImGui::InputFloat("Percent Dense", &densify.percentDense, 0.001f, 0.01f, "%.6g");
         densify.percentDense = std::clamp(densify.percentDense, 0.0f, 1.0f);
+        if (run.computeBackend == 1)
+            ImGui::TextWrapped(
+                "VkSplat ADC: official positive-radius statistics; split children=2; 2D radius "
+                "growth/pruning disabled (refine_scale2d_stop_iter=0). Screen Prune Size is "
+                "inactive. ADC RNG seed=42.");
+        ImGui::BeginDisabled(run.computeBackend == 1);
         ImGui::InputFloat("Screen Prune Size", &densify.screenPruneSize, 1.0f, 10.0f, "%.3f");
+        ImGui::EndDisabled();
         densify.screenPruneSize = std::max(densify.screenPruneSize, 0.0f);
         ImGui::InputFloat("World Prune Size", &densify.worldPruneSize, 0.001f, 0.01f, "%.6g");
         densify.worldPruneSize = std::max(densify.worldPruneSize, 0.0f);

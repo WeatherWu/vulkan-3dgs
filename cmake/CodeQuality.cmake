@@ -27,6 +27,8 @@ set(VULKAN_3DGS_QUALITY_RELATIVE_FILES
 
     training/core/training_resident_images.cpp
     training/core/training_resident_images.hpp
+    training/core/training_vksplat_adc.cpp
+    training/core/training_vksplat_adc.hpp
     training/core/training_vksplat_backend.cpp
     training/core/training_vksplat_backend.hpp
     training/core/backward/vksplat_loss_pass.cpp

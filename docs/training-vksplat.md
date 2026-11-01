@@ -62,13 +62,46 @@ an explicit combination of upstream kernels and the project schedule, rather tha
 the complete upstream training system. Training trajectories can change. The old
 Direct Intrinsics and Physical16 options are inactive under this backend.
 
-ADC, Morton, export and diagnostic boundaries materialize canonical storage
-explicitly. It is released after the boundary; ordinary steps do not maintain a
+Morton, export and diagnostic boundaries materialize canonical storage
+explicitly. ADC operates directly on native parameters and both moments. It is released after the boundary; ordinary steps do not maintain a
 complete canonical model mirror. Boundary CPU cost is included in total step time
 and reported separately; Morton complete timing includes its boundary work.
 Native validation aggregates include Adam-moment finiteness; the existing field
 breakdown describes parameters. Native model bytes are a component of memory use, not total training VRAM or
 transient peak usage.
+
+## Native default ADC
+
+The native backend uses the pinned `default.slang`, `strategy_utils.slang`,
+`cumsum.slang`, `where.slang` and upstream post-backward sequence. A separate owner
+accumulates normalized center gradients only for positive official projection
+radii. It classifies with a strict gradient threshold, obtains stable indices,
+allocates the full grown native state before writes, duplicates/splits, then
+computes the official keep mask and, when pruning is nonempty, stably compacts every field and moment.
+It does not use the existing densifier or canonical import/export during ADC.
+The next step and current model validation use the adopted output count.
+
+Only two split children and Visible Support statistics are supported. The native
+backend uses `refine_scale2d_stop_iter=0`; screen-radius growth/pruning is inactive.
+The stored Screen Prune Size remains a setting of the Existing backend and is not
+converted to a native normalized threshold. Gradient, min-opacity, dense scale
+and world-size thresholds use the selected values and upstream units.
+
+The independent ADC generator is the upstream `std::default_random_engine`, starts at seed 42, draws once per real step, and
+survives pauses, renderer rebuilds and Morton boundaries. Fixed Benchmark neither
+accumulates statistics nor advances this generator. A fresh model resets it.
+Duplicate copies preserve original moments and clear all child moments. Split
+uses upstream `randn3(seed, source)` and `randn3(seed, destination)`, normalizes the
+quaternion, divides both scales by 1.6, and clears both moment sets. Opacity reset
+clamps activated opacity to twice min-opacity and clears only opacity moments.
+
+Logs report input, duplicate, split, prune, output, capacity, RNG seed and actual
+reset, with complete CPU cost and GPU batch cost. Native ADC rejects a growth
+budget overflow before growth writes, without truncation. An empty keep mask reports zero output, sets the training logical count to zero,
+and requires explicit dataset reload. An uncertain submitted state blocks
+resume and export until reload. Allocation/queue errors do not imply a successful
+rollback. CPU event timing includes allocation, compaction and synchronization;
+GPU event timing covers the submitted batches, not CPU waits.
 
 The independent subtile variant uses the upstream 4x8 mapping and overlap masks.
 It shares the compute backend's numerical and backward-state conventions. The
@@ -96,7 +129,13 @@ can check supported loss, state and forward/subtile components. Such a report
 explicitly records zero native lifecycle steps and is not full backend admission.
 The required flag rejects this partial coverage. Full native lifecycle checks
 exercise synthetic optimizer steps, ADC/reset, SH changes, Morton, pause/rebuild
-and subtile reconfiguration. Legacy raw captures that cannot identify the new
+and subtile reconfiguration. They require real growth, count conservation,
+post-adoption next-step counts, actual reset opacity/moments and zero-count
+propagation on an empty keep mask. The ADC component suite also covers strict
+threshold ties, stable SH/moment movement, prefix boundaries, budget refusal,
+independent RNG progression and positive-radius statistics. An expected empty-mask
+error in a negative test is labelled as such; final validation status remains decisive.
+Legacy raw captures that cannot identify the new
 loss/backend are rejected; PLY export remains supported.
 
 ## Full training comparisons

@@ -303,6 +303,212 @@ inline uint32_t composite(vk::Device device, vk::PhysicalDevice physical, vk::Qu
     return cases;
 }
 
+inline glm::dvec3 officialNormal(uint32_t seed, uint32_t index) {
+    auto hash = [](uint32_t x) {
+        x ^= x >> 16;
+        x *= 0x7feb352d;
+        x ^= x >> 15;
+        x *= 0x846ca68b;
+        x ^= x >> 16;
+        return x;
+    };
+    const double r0 = double(hash(seed ^ ((index + 1u) * 0x9e3779b9u))) / 4294967296.0;
+    const double r1 = double(hash(index ^ ((seed + 1u) * 0x9e3779b9u))) / 4294967296.0;
+    const double r2 = double(hash(seed ^ ((index + 2u) * 0x9e3779b9u))) / 4294967296.0;
+    const double r3 = double(hash(index ^ ((seed + 2u) * 0x9e3779b9u))) / 4294967296.0;
+    constexpr double pi = 3.14159265358979323846;
+    return {std::sqrt(-2 * std::log(1 - r0)) * std::cos(2 * pi * r1),
+            std::sqrt(-2 * std::log(1 - r0)) * std::sin(2 * pi * r1),
+            std::sqrt(-2 * std::log(1 - r2)) * std::cos(2 * pi * r3)};
+}
+
+inline uint32_t adcBoundaries(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
+                              uint32_t family) {
+    OptimizerCaptureTransfer transfer(device, physical, queue, family);
+    uint32_t cases = 0;
+    for (uint32_t n : {0u, 1u, 31u, 32u, 33u, 255u, 256u, 257u, 1023u, 1024u, 1025u, 4097u}) {
+        TrainingBuffers b;
+        b.initialize(device, physical, queue, family, family);
+        b.resize(n, {17, 19});
+        std::vector<GaussianTrainParam> model(std::max(n, 1u));
+        std::vector<AdamState> moments(std::max(n, 1u));
+        std::vector<GaussianDensificationState> stats(std::max(n, 1u));
+        for (uint32_t i = 0; i < n; ++i) {
+            model[i].positionOpacity = {float(i), 0, 2, 0};
+            model[i].scale = glm::vec4(-8);
+            model[i].rotation = {0, 0, 0, 1};
+            for (uint32_t j = 0; j < 12; ++j)
+                model[i].sh[j] = glm::vec4(float(i * 12 + j) * 0.00001f);
+            moments[i].firstMoment.sh[11] = glm::vec4(float(i + 1));
+            moments[i].secondMoment.sh[11] = glm::vec4(float(i + 2));
+            stats[i].screenGradCount = 1;
+            stats[i].screenGradSum =
+                (i % 3 == 0) ? 0.0004f : 0.0002f; // strict >, including threshold ties
+        }
+        if (n) b.uploadGaussianParams(model.data(), n);
+        morton_checks::upload(transfer, b.adamStatesInfo(), moments);
+        morton_checks::upload(transfer, b.densificationStatesInfo(), stats);
+        TrainingVkSplatBackend core(device, physical, queue, family);
+        core.importCanonical(b, n);
+        TrainingDensificationConfig c;
+        c.maxGaussianCount = 10000;
+        core.adc().prepare(c, 1, 100, false);
+        const auto event = core.adc().execute(n, true, false);
+        uint32_t expected = (n + 2) / 3;
+        require(event.stats.outputCount == n + expected && event.stats.cloneSources == expected &&
+                    event.stats.splitSources == 0,
+                "Native ADC stable prefix/boundary counts failed");
+        std::default_random_engine referenceRng(42);
+        const auto firstSeed = std::uniform_int_distribution<uint32_t>()(referenceRng);
+        const auto secondSeed = std::uniform_int_distribution<uint32_t>()(referenceRng);
+        require(event.seed == firstSeed, "ADC RNG must start at the official seed42 sequence");
+        if (n) {
+            b.adoptNativeGaussianCount(event.stats.outputCount);
+            core.exportCanonical(b, event.stats.outputCount);
+            auto actual = morton_checks::read<GaussianTrainParam>(transfer, b.gaussianParamsInfo());
+            auto m = morton_checks::read<AdamState>(transfer, b.adamStatesInfo());
+            for (uint32_t i = 0; i < n + expected; ++i) {
+                uint32_t source = i < n ? i : (i - n) * 3;
+                require(std::memcmp(actual[i].sh, model[source].sh, sizeof(model[source].sh)) == 0,
+                        "Stable clone SH indexing/physical column compaction failed");
+                if (i < n)
+                    require(std::memcmp(&m[i], &moments[i], sizeof(AdamState)) == 0,
+                            "Parent moments changed");
+                else
+                    for (float value : std::bit_cast<std::array<float, 120>>(m[i]))
+                        require(value == 0, "Child moments not zero");
+            }
+            core.importCanonical(b, event.stats.outputCount);
+            core.adc().prepare(c, 1, 101, true); // benchmarks must not advance the independent RNG
+            core.adc().prepare(c, 1, 101, false);
+            const auto second = core.adc().execute(event.stats.outputCount, true, false);
+            require(second.seed == secondSeed &&
+                        second.stats.outputCount == event.stats.outputCount,
+                    "Statistics clear/benchmark RNG/second ADC count failed");
+        }
+        ++cases;
+    }
+    for (bool empty : {false, true}) {
+        TrainingBuffers b;
+        b.initialize(device, physical, queue, family, family);
+        b.resize(1, {17, 19});
+        GaussianTrainParam g{};
+        g.positionOpacity = {0, 0, 2, empty ? -30.0f : 0.0f};
+        g.scale = glm::vec4(-8);
+        g.rotation = {0, 0, 0, 1};
+        b.uploadGaussianParams(&g, 1);
+        std::vector<GaussianDensificationState> stats(1);
+        stats[0].screenGradCount = 1;
+        stats[0].screenGradSum = 1;
+        morton_checks::upload(transfer, b.densificationStatesInfo(), stats);
+        TrainingVkSplatBackend core(device, physical, queue, family);
+        core.importCanonical(b, 1);
+        TrainingDensificationConfig c;
+        c.maxGaussianCount = empty ? 10 : 1;
+        core.adc().prepare(c, 1, 100, false);
+        std::cerr << "VkSplat ADC expected rejection: "
+                  << (empty ? "empty keep mask" : "growth budget overflow") << "\n";
+        bool rejected = false;
+        try {
+            (void)core.adc().execute(1, true, false);
+        } catch (const std::runtime_error& e) {
+            rejected =
+                std::string(e.what()).find(empty ? "keep mask is empty"
+                                                 : "exceeds Max Gaussians") != std::string::npos;
+        }
+        require(rejected, "Native ADC must explicitly reject cap overflow/empty keep mask");
+        if (!empty) {
+            core.exportCanonical(b, 1);
+            auto actual = morton_checks::read<GaussianTrainParam>(transfer, b.gaussianParamsInfo());
+            require(actual[0].positionOpacity == g.positionOpacity, "Cap rejection mutated model");
+        } else
+            require(core.adc().failed(), "Empty native model must block resume");
+        ++cases;
+    }
+    {
+        TrainingBuffers b;
+        b.initialize(device, physical, queue, family, family);
+        b.resize(4, {17, 19});
+        std::vector<GaussianTrainParam> model(4);
+        for (auto& g : model) {
+            g.positionOpacity = {0, 0, 2, 0};
+            g.scale = glm::vec4(-8);
+            g.rotation = {0, 0, 0, 1};
+        }
+        model[1].positionOpacity.w = -30;
+        model[2].scale = glm::vec4(std::log(0.2f));
+        model[3].scale.x = std::numeric_limits<float>::quiet_NaN();
+        b.uploadGaussianParams(model.data(), 4);
+        TrainingVkSplatBackend core(device, physical, queue, family);
+        core.importCanonical(b, 4);
+        TrainingDensificationConfig c;
+        c.maxGaussianCount = 8;
+        core.adc().prepare(c, 1, 4000, false);
+        auto event = core.adc().execute(4, true, false);
+        require(event.stats.outputCount == 1 && event.stats.prunedSources == 3 &&
+                    event.stats.pruneOpacityHits == 1 && event.stats.pruneWorldHits == 1,
+                "Official opacity/world/nonfinite keep-mask predicates differ");
+        ++cases;
+    }
+    {
+        TrainingBuffers b;
+        b.initialize(device, physical, queue, family, family);
+        b.resize(2, {17, 19});
+        std::array<GaussianTrainParam, 2> model{};
+        for (auto& g : model) {
+            g.positionOpacity = {0, 0, 2, 0};
+            g.scale = glm::vec4(-4);
+            g.rotation = {0, 0, 0, 1};
+        }
+        model[1].positionOpacity.x = 10000;
+        b.uploadGaussianParams(model.data(), 2);
+        TrainingForwardCamera camera{};
+        camera.view = camera.model = glm::mat4(1);
+        camera.viewport = {0, 0, 17, 19};
+        camera.focalTan = {8, 9, 17.0f / 16, 19.0f / 18};
+        b.uploadCameraWithIntrinsics(camera, {{8, 9, 8.3f, 9.1f}});
+        std::vector<ProjectedGaussianGrad> g(2);
+        for (auto& value : g)
+            value.centerRadius = {0.02f, -0.01f, 0, 0};
+        morton_checks::upload(transfer, b.projectedGradsInfo(), g);
+        TrainingVkSplatBackend core(device, physical, queue, family);
+        core.importCanonical(b, 2);
+        TrainingDensificationConfig c;
+        core.adc().prepare(c, 1, 1, false);
+        CommandPool pool;
+        pool.create(device, family, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+        auto command = pool.allocateCommandBuffer();
+        auto fence = device.createFenceUnique({});
+        auto run = [&](bool benchmark) {
+            core.adc().prepare(c, 1, 2, benchmark);
+            command.reset();
+            command.begin(
+                vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+            TrainingPushConstants push{};
+            push.gaussianCount = 2;
+            push.width = 17;
+            push.height = 19;
+            core.recordProject({b, command, push});
+            core.adc().recordStatistics({b, command, push});
+            command.end();
+            queue.submit(vk::SubmitInfo{}.setCommandBuffers(command), *fence);
+            (void)device.waitForFences(*fence, true, UINT64_MAX);
+            device.resetFences(*fence);
+        };
+        run(false);
+        auto stats = morton_checks::read<glm::vec2>(transfer, core.adc().gradients());
+        close(stats[0].x, 0.5 * std::hypot(0.02 * 17, 0.01 * 19),
+              "Official normalized positive-radius gradient mismatch");
+        require(stats[0].y == 1 && stats[1] == glm::vec2(0),
+                "Official radius visibility/count predicate mismatch");
+        run(true);
+        auto benchmark = morton_checks::read<glm::vec2>(transfer, core.adc().gradients());
+        require(benchmark == stats, "Benchmark must not accumulate native ADC statistics");
+        ++cases;
+    }
+    return cases;
+}
+
 inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
                             uint32_t family) {
     OptimizerCaptureTransfer transfer(device, physical, queue, family);
@@ -314,7 +520,7 @@ inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::
     for (uint32_t i = 0; i < 4; ++i) {
         seed[i].positionOpacity = {float(i) * 0.1f, 0, 2, i == 2 ? -30.0f : 0.0f};
         seed[i].scale = glm::vec4(i == 1 ? -2.8f : -8.0f);
-        seed[i].rotation = {0, 0, 0, 1};
+        seed[i].rotation = i == 1 ? glm::vec4(0.15f, -0.3f, 0.1f, 2.0f) : glm::vec4(0, 0, 0, 1);
         statistics[i].screenGradSum = 0.01f;
         statistics[i].screenGradCount = 1;
     }
@@ -330,37 +536,55 @@ inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::
     morton_checks::upload(transfer, buffers.densificationStatesInfo(), statistics);
     TrainingVkSplatBackend core(device, physical, queue, family);
     core.importCanonical(buffers, 4);
-    core.exportCanonical(buffers, 4);
-    buffers.ensureDensificationCapacity(32);
-    GaussianDensificationRenderer adc;
-    adc.initialize(device, physical, queue, family);
-    CommandPool pool;
-    pool.create(device, family);
-    auto command = pool.allocateCommandBuffer();
-    auto fence = device.createFenceUnique({});
-    command.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    TrainingDensificationPushConstants push{};
-    push.gaussianCount = 4;
-    push.maxGaussianCount = 32;
-    push.resetOpacity = 1;
-    push.randomSeed = 17;
-    adc.setTrainingBuffers(buffers, command, push);
-    adc.densifyAndPrune();
-    buffers.recordDensificationStatsReadback(command);
-    command.end();
-    queue.submit(vk::SubmitInfo{}.setCommandBuffers(command), *fence);
-    (void)device.waitForFences(*fence, true, UINT64_MAX);
-    const auto result = buffers.densificationStats();
-    require(result.outputCount > 0 && result.cloneSources > 0 && result.splitSources > 0 &&
-                result.prunedSources > 0,
-            "Native ADC boundary did not cover clone/split/prune");
-    adc.cleanup();
-    buffers.adoptDensifiedGaussians(result.outputCount);
-    core.importCanonical(buffers, result.outputCount);
+    TrainingDensificationConfig config;
+    config.densifyGradThreshold = 0.0002f;
+    config.maxGaussianCount = 32;
+    core.adc().prepare(config, 1, 100, false);
+    const auto event = core.adc().execute(4, true, true);
+    const auto result = event.stats;
+    require(result.cloneSources == 3 && result.splitSources == 1 && result.outputCount == 6 &&
+                result.prunedSources == 2 && event.reset,
+            "Native official ADC counts mismatch");
+    require(!buffers.gaussianParamsInfo().buffer && buffers.densificationCapacity() == 0,
+            "Native ADC must not materialize canonical or legacy densification storage");
+    buffers.adoptNativeGaussianCount(result.outputCount);
     core.exportCanonical(buffers, result.outputCount);
     const auto before =
         morton_checks::read<GaussianTrainParam>(transfer, buffers.gaussianParamsInfo());
     const auto moments = morton_checks::read<AdamState>(transfer, buffers.adamStatesInfo());
+    for (auto [dst, randomId] : {std::pair{1u, 1u}, std::pair{5u, 7u}}) {
+        auto q = glm::normalize(glm::dquat(seed[1].rotation.w, seed[1].rotation.x,
+                                           seed[1].rotation.y, seed[1].rotation.z));
+        auto displacement =
+            glm::mat3_cast(q) * (officialNormal(event.seed, randomId) * std::exp(-2.8));
+        for (int axis = 0; axis < 4; ++axis)
+            close(before[dst].rotation[axis], glm::dvec4(q.x, q.y, q.z, q.w)[axis],
+                  "Official split quaternion normalization mismatch");
+        for (int axis = 0; axis < 3; ++axis)
+            close(before[dst].positionOpacity[axis],
+                  double(seed[1].positionOpacity[axis]) + displacement[axis],
+                  "Official randn3 split displacement mismatch");
+    }
+    const std::array<uint32_t, 6> source{0, 1, 3, 0, 3, 1};
+    for (uint32_t i = 0; i < 6; ++i) {
+        const float opacity = 1.0f / (1.0f + std::exp(-before[i].positionOpacity.w));
+        close(opacity, 0.01, "Native reset opacity mismatch");
+        require(moments[i].firstMoment.positionOpacity.w == 0 &&
+                    moments[i].secondMoment.positionOpacity.w == 0,
+                "Native reset did not clear opacity moments");
+        if (i == 0 || i == 2) {
+            auto expected = initialMoments[source[i]];
+            expected.firstMoment.positionOpacity.w = expected.secondMoment.positionOpacity.w = 0;
+            require(std::memcmp(&expected, &moments[i], sizeof(AdamState)) == 0,
+                    "Duplicate parent moments must survive reset except opacity");
+        } else
+            for (float value : std::bit_cast<std::array<float, 120>>(moments[i]))
+                require(value == 0, "Split/child moments must all be zero");
+        if (i == 1 || i == 5)
+            close(std::exp(before[i].scale.x), std::exp(-2.8f) / 1.6,
+                  "Official split scale mismatch");
+    }
+
     glm::vec3 minimum(std::numeric_limits<float>::infinity()),
         maximum(-std::numeric_limits<float>::infinity());
     for (uint32_t i = 0; i < result.outputCount; ++i) {
@@ -377,6 +601,15 @@ inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::
         return morton_checks::encode(glm::vec3(before[a].positionOpacity), minimum, side) <
                morton_checks::encode(glm::vec3(before[b].positionOpacity), minimum, side);
     });
+    std::vector<glm::vec2> running(event.capacity);
+    std::vector<float> radii(event.capacity);
+    for (uint32_t i = 0; i < result.outputCount; ++i) {
+        running[i] = {float(i + 1), float(i + 2)};
+        radii[i] = float(i) * 0.1f;
+    }
+    morton_checks::upload(transfer, core.adc().gradients(), running);
+    morton_checks::upload(transfer, core.adc().radii(), radii);
+    core.exportCanonical(buffers, result.outputCount);
     TrainingMortonReorder reorder(device, physical, queue, family);
     (void)reorder.execute(buffers, result.outputCount);
     core.importCanonical(buffers, result.outputCount);
@@ -385,7 +618,25 @@ inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::
     for (uint32_t i = 0; i < result.outputCount; ++i)
         require(std::memcmp(&after[i], &moments[order[i]], sizeof(AdamState)) == 0,
                 "Native Morton boundary changed moment values/permutation");
-    return 1;
+    auto moved = morton_checks::read<glm::vec2>(transfer, core.adc().gradients());
+    auto movedRadius = morton_checks::read<float>(transfer, core.adc().radii());
+    for (uint32_t i = 0; i < result.outputCount; ++i) {
+        require(moved[i] == running[order[i]] && movedRadius[i] == radii[order[i]],
+                "Native running statistics must follow Morton permutation exactly");
+    }
+    // A subsequent empty interval cannot inherit the injected diagnostic gradients.
+    std::fill(running.begin(), running.end(), glm::vec2(0));
+    morton_checks::upload(transfer, core.adc().gradients(), running);
+    core.importCanonical(buffers, result.outputCount);
+    std::fill(running.begin(), running.end(), glm::vec2(0));
+    morton_checks::upload(transfer, core.adc().gradients(), running);
+    core.adc().prepare(config, 1, 101, false);
+    const auto second = core.adc().execute(result.outputCount, true, false);
+    require(second.stats.outputCount == result.outputCount && second.stats.cloneSources == 0 &&
+                second.stats.splitSources == 0,
+            "ADC statistics must be cleared and survive Morton boundary");
+    require(second.seed != event.seed, "ADC RNG must advance per real step");
+    return 2;
 }
 
 inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
@@ -427,6 +678,8 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
     training.setDensificationConfig(adc);
     training.setValidationInterval(1);
     uint32_t adoptions = 0, resets = 0;
+    uint32_t previousCount = training.gaussianCount();
+    bool grew = false;
     for (uint32_t i = 1; i <= 8; ++i) {
         if (i == 3) training.setVkSplatSubtile(true);
         if (i == 4)
@@ -441,15 +694,45 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
         require(training.validationStats().invalidLossCount == 0 &&
                     training.validationStats().nonFiniteGaussianCount == 0,
                 "Native lifecycle produced non-finite loss/model");
+        require(observation.gaussiansBefore == previousCount,
+                "Native next-step count differs from adopted count");
+        if (observation.densification) {
+            const auto& stats = training.densificationStats();
+            require(stats.outputCount > 0 && training.gaussianCount() == stats.outputCount,
+                    "Native lifecycle did not adopt actual nonempty ADC output");
+            require(stats.outputCount == previousCount + stats.cloneSources + stats.splitSources -
+                                             stats.prunedSources,
+                    "Native lifecycle count conservation failed");
+            grew |= stats.outputCount > previousCount;
+        }
+        previousCount = training.gaussianCount();
         adoptions += observation.densification;
+        if (observation.opacityReset)
+            require(training.inspectNativeOpacityReset(),
+                    "Native lifecycle reset must change opacity and clear both opacity moments");
         resets += observation.opacityReset;
         require(!training.buffers().gaussianParamsInfo().buffer,
                 "Native lifecycle retained canonical model");
     }
-    require(adoptions == 3 && resets == 1 && training.mortonStats().reorderCount == 1,
+    require(grew && adoptions == 3 && resets == 1 && training.mortonStats().reorderCount == 1,
             "Native ADC/reset/Morton lifecycle coverage incomplete");
     require(training.inspectTrainingStateFinite().passed(),
             "Native final finite inspection failed");
-    return 8;
+    adc.densifyUntilIteration = 12;
+    adc.densifyGradThreshold = 1e6f;
+    adc.minOpacity = 0.9f;
+    training.setDensificationConfig(adc);
+    training.trainStep();
+    bool emptyRejected = false;
+    try {
+        training.trainStep();
+    } catch (const VkSplatAdcEmptyResult& e) {
+        emptyRejected = e.result.stats.outputCount == 0 && training.gaussianCount() == 0 &&
+                        training.densificationStats().outputCount == 0 &&
+                        !training.hasTrainableModel();
+    }
+    require(emptyRejected,
+            "Empty native ADC must propagate zero count and stop the training model");
+    return 9;
 }
 } // namespace vksplat_backend_checks

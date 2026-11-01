@@ -4,6 +4,7 @@
 #include "training/core/backward/backward_pass_context.hpp"
 #include "vulkan/compute_pipeline.hpp"
 
+#include "training/core/training_vksplat_adc.hpp"
 #include <array>
 
 namespace vulkan3DGS {
@@ -13,6 +14,10 @@ class TrainingVkSplatBackend {
 public:
     TrainingVkSplatBackend(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
                            uint32_t family);
+    ~TrainingVkSplatBackend();
+    TrainingVkSplatAdc& adc() {
+        return *adc_;
+    }
     static bool supportsLifecycle(vk::PhysicalDevice physical);
     void importCanonical(TrainingBuffers& buffers, uint32_t count);
     void exportCanonical(TrainingBuffers& buffers, uint32_t count);
@@ -30,6 +35,7 @@ public:
     }
 
 private:
+    friend class TrainingVkSplatAdc;
     enum Stage : uint32_t {
         Project,
         Optimize,
@@ -58,6 +64,8 @@ private:
     std::array<std::vector<vk::DescriptorBufferInfo>, Count> lastBindings_;
     std::array<Buffer, 10> model_;
     Buffer rectangles_;
+    Buffer officialRadii_;
+    std::unique_ptr<TrainingVkSplatAdc> adc_;
     std::array<ComputePipeline, Count> pipelines_;
     std::array<BackwardDescriptorPool, Count> descriptors_;
     std::array<vk::DescriptorSet, Count> sets_{};

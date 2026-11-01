@@ -63,6 +63,7 @@ add_library(vulkan_3dgs_core STATIC
     training/core/training_image_runtime.cpp
     training/core/training_resident_images.cpp
     training/core/training_vksplat_backend.cpp
+    training/core/training_vksplat_adc.cpp
     training/core/training_step_executor.cpp
     training/core/training_buffers.cpp
     training/core/training_scanline_capture.cpp

@@ -1,7 +1,6 @@
 #include "../vksplat/native.slang"
 [[vk::binding(13,0)]] StructuredBuffer<ProjectedGaussianGrad> projectedGrads;
 [[vk::binding(32,0)]] StructuredBuffer<uint2> gaussianTileRanges;
-[[vk::binding(16,0)]] RWStructuredBuffer<GaussianDensificationState> densificationStates;
 typedef vector<float,1> float1;
 
 // "standard" Adam with bias correction
@@ -121,11 +120,6 @@ void main(
     float4 v_scale_opac = is_zero_grad ? float4(0) :
         float4(v_gauss.d.scales, v_gauss.d.opacities);
 
-    GaussianDensificationState state=densificationStates[g_idx];
-    bool touched=gaussianTileRanges[g_idx].y>0u;
-    if (touched) state.screenGradSum+=length(projectedGrads[g_idx].centerRadius.xy * (0.5*float2(params.width,params.height)));
-    if (touched || params.densificationGradientMode==1u) state.screenGradCount+=1u;
-    densificationStates[g_idx]=state;
     if (params.optimizerEnabled==0u) return;
     // optimizers
 

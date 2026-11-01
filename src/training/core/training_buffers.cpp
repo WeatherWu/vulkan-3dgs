@@ -601,6 +601,42 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     }
 }
 
+void TrainingBuffers::adoptNativeGaussianCount(uint32_t gaussianCount) {
+    if (!gaussianCount) throw std::runtime_error("Empty native model requires dataset reload");
+    if (gaussianCount > gaussianWorkspaceCapacity_) {
+        const uint64_t geometricCapacity = std::max<uint64_t>(
+            gaussianCount, static_cast<uint64_t>(gaussianWorkspaceCapacity_) * 3ull / 2ull);
+        const uint32_t workspaceCapacity = roundedGaussianCapacity(static_cast<uint32_t>(
+            std::min<uint64_t>(geometricCapacity, std::numeric_limits<uint32_t>::max())));
+        gaussianGrads_.cleanup();
+        projected_.cleanup();
+        gaussianTileRanges_.cleanup();
+        gaussianTilePrefixScratch_.cleanup();
+        densificationStates_.cleanup();
+        projectedGrads_.cleanup();
+        previewInstances_.cleanup();
+        createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) * workspaceCapacity);
+        createStorageBuffer(projected_, sizeof(ProjectedGaussian) * workspaceCapacity);
+        createStorageBuffer(gaussianTileRanges_, sizeof(glm::uvec2) * workspaceCapacity);
+        createStorageBuffer(gaussianTilePrefixScratch_,
+                            sizeof(uint32_t) *
+                                gaussianPrefixScratchElementCount(workspaceCapacity));
+        createZeroedStorageBuffer(densificationStates_,
+                                  sizeof(GaussianDensificationState) * workspaceCapacity);
+        createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * workspaceCapacity);
+        createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * workspaceCapacity);
+        gaussianWorkspaceCapacity_ = workspaceCapacity;
+    }
+    gaussianCapacity_ = std::max(gaussianCount, gaussianCapacity_);
+    const uint64_t bytes = uint64_t((gaussianCapacity_ + kTrainingValidationWorkgroupSize - 1u) /
+                                    kTrainingValidationWorkgroupSize) *
+                           sizeof(TrainingGaussianValidationPartial);
+    if (gaussianValidationPartials_.getSize() < bytes) {
+        gaussianValidationPartials_.cleanup();
+        createStorageBuffer(gaussianValidationPartials_, bytes);
+    }
+}
+
 std::array<Buffer, 3> TrainingBuffers::createGaussianReorderTargets() {
     std::array<Buffer, 3> targets;
     createStorageBuffer(targets[0], gaussianParams_.getSize());

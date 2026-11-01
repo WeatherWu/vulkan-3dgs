@@ -100,6 +100,10 @@ TrainingValidationService::acquire(TrainingValidationReadbackMetadata metadata) 
     return std::nullopt;
 }
 
+void TrainingValidationService::setGaussianCount(ReadbackTicket ticket, uint32_t count) {
+    slot(ticket).gaussianCount = count;
+}
+
 void TrainingValidationService::setAdaptiveStats(ReadbackTicket ticket,
                                                  TrainingAdaptiveTileReadbackStats stats) {
     slot(ticket).adaptiveStats = stats;

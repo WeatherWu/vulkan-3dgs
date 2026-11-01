@@ -17,3 +17,13 @@ common projected-gradient interface come from the project reference shaders,
 with upstream alpha-cap and saturation-gradient conventions. These components
 are combined with the project ADC/optimizer schedule and exact-depth sorting,
 not the complete upstream scheduler or quantized sorting.
+
+The native ADC uses `default.slang`, `cumsum.slang` and `where.slang` from the same
+commit. Vulkan adapters replace entry uniforms with push constants and read the
+project projected-gradient packet. Additional writes preserve unused canonical
+padding and count pruning reasons; they do not change masks or growth decisions.
+SH remains blocked by 32 on all devices; only the scan subgroup configuration is
+selected as 32 or 64. Stable recursive block scans supply exact prefix counts.
+The upstream default strategy uses two children, activated opacity/scale and an
+independent seed-42 `std::default_random_engine` with the upstream uniform distribution. The project ADC/reset trigger schedule is retained;
+2D radius rules are disabled with `refine_scale2d_stop_iter=0`.

@@ -123,6 +123,7 @@ void GaussianTraining::cleanup() {
 }
 
 void GaussianTraining::resize(uint32_t gaussianCount, TrainingExtent extent) {
+    vkSplat_.reset();
     mortonReorder_.reset();
     mortonStats_ = {};
     buffers_.resize(gaussianCount, extent);
@@ -195,10 +196,8 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
     }
 
     densification_ = std::make_unique<GaussianDensificationRenderer>();
-    densification_->initialize(device,
-                               physicalDevice,
-                               computeQueue,
-                               computeQueueFamilyIndex);
+    if (!vkSplatComputeRequested_)
+        densification_->initialize(device, physicalDevice, computeQueue, computeQueueFamilyIndex);
 
     computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     validationService_.initialize(device, physicalDevice);
@@ -371,13 +370,6 @@ void GaussianTraining::trainStep() {
     }
 
     const bool runDensificationThisStep = !fixedBenchmarkThisStep && shouldRunDensification();
-    if (vkSplat_ && runDensificationThisStep) {
-        const auto start = Clock::now();
-        vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
-        recordCpuProfilingSample(
-            TrainingCpuProfileStage::VkSplatStateBoundary,
-            std::chrono::duration<float, std::milli>(Clock::now() - start).count());
-    }
     if (runDensificationThisStep) {
         imageRuntime_.reserveForDensification(trainingIteration_, buffers_);
     } else if (!fixedBenchmarkThisStep && (trainingIteration_ % 16u) == 0u) {
@@ -432,41 +424,46 @@ void GaussianTraining::trainStep() {
     const uint32_t capacityBefore = buffers_.tileItemCapacity();
     const uint32_t executedFrame = static_cast<uint32_t>(currentFrameIndex());
     if (optimizerCapture_) optimizerCapture_->setFrame(static_cast<uint32_t>(currentFrameIndex()));
-    const TrainingStepExecutionResult execution = stepExecutor_.execute({
-        .buffers = buffers_,
-        .forward = *gaussianForward,
-        .backward = *gaussianBackward,
-        .densification = *densification_,
-        .validation = validationService_,
-        .profiling = profilingService_,
-        .pushConstants = pushConstants,
-        .densificationPushConstants = densificationPush,
-        .uploadSemaphore = imageRuntime_.uploadSemaphore(),
-        .uploadWaitValue = imageRuntime_.pendingUploadValue(),
-        .trainableGaussianCount = trainableGaussianCount_,
-        .maxGaussianCount = densificationConfig_.maxGaussianCount,
-        .splitChildren = densificationConfig_.splitChildren,
-        .runDensification = runDensificationThisStep,
-        .pruneByScreenSize = pruneByScreenSize,
-        .checkpointDiagnostics = fixedBenchmarkThisStep && checkpointDiagnosticsRequested_,
-        .checkpointWarp = fixedBenchmarkThisStep && checkpointWarpRequested_,
-        .tensorEarlyCull = trainingPixelCullForStep(fixedBenchmarkThisStep,
-            benchmarkTensorEarlyCullRequested_, pixelCullStatus),
-        .checkpointResetCounters = fixedBenchmarkCompletedSteps_ == 0u ||
-                                   fixedBenchmarkCompletedSteps_ == fixedBenchmarkStats_.warmupSteps,
-        .optimizerCapture = optimizerCapture_,
-        .fixedBenchmark = fixedBenchmarkThisStep,
-        .frameIndex = static_cast<uint32_t>(currentFrameIndex()),
-        .ssimMode = static_cast<uint32_t>(activeSsimMode()),
-        .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
-        .compositeMode = static_cast<uint32_t>(forwardCompositeMode_),
-    });
-    if (vkSplat_ && execution.densificationRan) {
-        const auto start = Clock::now();
-        vkSplat_->importCanonical(buffers_, execution.gaussianCount);
-        recordCpuProfilingSample(
-            TrainingCpuProfileStage::VkSplatStateBoundary,
-            std::chrono::duration<float, std::milli>(Clock::now() - start).count());
+    TrainingStepExecutionResult execution;
+    try {
+        execution = stepExecutor_.execute({
+            .buffers = buffers_,
+            .forward = *gaussianForward,
+            .backward = *gaussianBackward,
+            .densification = *densification_,
+            .validation = validationService_,
+            .profiling = profilingService_,
+            .pushConstants = pushConstants,
+            .densificationPushConstants = densificationPush,
+            .uploadSemaphore = imageRuntime_.uploadSemaphore(),
+            .uploadWaitValue = imageRuntime_.pendingUploadValue(),
+            .trainableGaussianCount = trainableGaussianCount_,
+            .maxGaussianCount = densificationConfig_.maxGaussianCount,
+            .splitChildren = densificationConfig_.splitChildren,
+            .runDensification = runDensificationThisStep,
+            .pruneByScreenSize = pruneByScreenSize,
+            .checkpointDiagnostics = fixedBenchmarkThisStep && checkpointDiagnosticsRequested_,
+            .checkpointWarp = fixedBenchmarkThisStep && checkpointWarpRequested_,
+            .tensorEarlyCull = trainingPixelCullForStep(
+                fixedBenchmarkThisStep, benchmarkTensorEarlyCullRequested_, pixelCullStatus),
+            .checkpointResetCounters =
+                fixedBenchmarkCompletedSteps_ == 0u ||
+                fixedBenchmarkCompletedSteps_ == fixedBenchmarkStats_.warmupSteps,
+            .optimizerCapture = optimizerCapture_,
+            .fixedBenchmark = fixedBenchmarkThisStep,
+            .frameIndex = static_cast<uint32_t>(currentFrameIndex()),
+            .ssimMode = static_cast<uint32_t>(activeSsimMode()),
+            .pixelMode = static_cast<uint32_t>(activePixelTo2DGSMode()),
+            .compositeMode = static_cast<uint32_t>(forwardCompositeMode_),
+            .native = vkSplat_.get(),
+            .nativeAdcConfig = densificationConfig_,
+            .sceneExtent = std::max(sceneExtent_, 1e-6f),
+        });
+    } catch (const VkSplatAdcEmptyResult& empty) {
+        trainableGaussianCount_ = 0;
+        lastDensificationStats_ = empty.result.stats;
+        lastDensificationStatsIteration_ = currentIteration;
+        throw;
     }
     lastVkSplatLossActive_ = gaussianBackward->vkSplatLossActive();
     lastVkSplatSubtile_ = vkSplat_ && vkSplatSubtile_;
@@ -584,6 +581,12 @@ void GaussianTraining::trainStep() {
             .key16 = lastKey16State_,
             .validation = validationService_.stats(),
             .profiling = profilingService_.stats()};
+}
+
+bool GaussianTraining::inspectNativeOpacityReset() {
+    if (!vkSplat_) return false;
+    return vkSplat_->adc().inspectOpacityReset(trainableGaussianCount_,
+                                               densificationConfig_.minOpacity);
 }
 
 TrainingStateFiniteCheck GaussianTraining::inspectTrainingStateFinite() {

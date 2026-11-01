@@ -32,6 +32,7 @@ public:
     void resizeTileItems(uint32_t tileItemCapacity);
     void ensureTileSortStorage(uint32_t tileItemCapacity, vk::DeviceSize sortStorageSize, vk::BufferUsageFlags sortStorageUsage);
     void ensureDensificationCapacity(uint32_t gaussianCapacity);
+    void adoptNativeGaussianCount(uint32_t count);
     void adoptDensifiedGaussians(uint32_t gaussianCount);
     void ensureCanonicalModelStorage();
     void releaseCanonicalModelStorage();

@@ -293,7 +293,23 @@ foreach(NAME IN ITEMS train_vksplat_ssim_forward train_vksplat_ssim_backward tra
         train_vksplat_project train_vksplat_optimizer train_vksplat_state_import train_vksplat_state_export
         train_vksplat_composite train_vksplat_composite_subtile train_vksplat_tensor_shared
         train_vksplat_tensor_global train_vksplat_validation train_vksplat_emit
-        train_vksplat_composite_64 train_vksplat_composite_subtile_64)
+        train_vksplat_composite_64 train_vksplat_composite_subtile_64
+        train_vksplat_adc_update
+        train_vksplat_adc_grow
+        train_vksplat_adc_duplicate
+        train_vksplat_adc_split
+        train_vksplat_adc_keep
+        train_vksplat_adc_compact
+        train_vksplat_adc_compact_mean
+        train_vksplat_adc_compact_sh
+        train_vksplat_adc_reset
+        train_vksplat_adc_where
+        train_vksplat_adc_scan_32
+        train_vksplat_adc_scan_64
+        train_vksplat_adc_blocks_32
+        train_vksplat_adc_blocks_64
+        train_vksplat_adc_offsets_32
+        train_vksplat_adc_offsets_64)
     compile_vksplat_shader(${NAME})
 endforeach()
 

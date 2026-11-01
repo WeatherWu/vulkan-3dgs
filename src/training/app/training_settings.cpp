@@ -434,6 +434,8 @@ TrainingSettingsValidation TrainingSettingsStore::validate(const TrainingSetting
     if (run.computeBackend < 0 || run.computeBackend > 1)
         return invalid("Compute backend is invalid");
     if (run.computeBackend == 1) {
+        if (settings.densification.splitChildren != 2 || settings.densification.gradientMode != 0)
+            return invalid("VkSplat ADC requires Split Children=2 and Visible Support statistics");
         const auto& o = settings.optimizer;
         if (o.adamBeta1 != 0.9f || o.adamBeta2 != 0.999f || o.adamEpsilon != 1e-15f ||
             o.gradientClip != 0.0f)

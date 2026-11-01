@@ -25,7 +25,7 @@ std::vector<uint32_t> bindingsFor(uint32_t stage) {
     if (stage == 6 || stage == 7) return {3, 4, 5, 12, 13, 14};
     std::vector<uint32_t> result(nativeBindings.begin(), nativeBindings.end());
     const std::array<std::vector<uint32_t>, 4> extras{
-        {{3, 16, 32, 75, 11, 64}, {13, 16, 32, 11, 64}, {0, 2}, {0, 2}}};
+        {{3, 32, 75, 77, 11, 64}, {13, 32, 11, 64}, {0, 2, 16, 78, 79}, {0, 2, 16, 78, 79}}};
     if (stage < 4)
         result.insert(result.end(), extras[stage].begin(), extras[stage].end());
     else
@@ -47,7 +47,10 @@ TrainingVkSplatBackend::TrainingVkSplatBackend(vk::Device device, vk::PhysicalDe
     pool_.create(device_, family_, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     command_ = pool_.allocateCommandBuffer();
     fence_ = device_.createFenceUnique({});
+    adc_ = std::make_unique<TrainingVkSplatAdc>(*this);
 }
+
+TrainingVkSplatBackend::~TrainingVkSplatBackend() = default;
 
 void TrainingVkSplatBackend::ensureCapacity(uint32_t count) {
     if (count <= capacity_) return;
@@ -67,6 +70,10 @@ void TrainingVkSplatBackend::ensureCapacity(uint32_t count) {
         allocate(replacement[i], stride[i] * capacity);
     Buffer rectangles;
     allocate(rectangles, uint64_t(capacity) * 16u);
+    Buffer radii;
+    allocate(radii, uint64_t(capacity) * 4u);
+    adc_->ensureStatistics(capacity);
+    officialRadii_ = std::move(radii);
     model_ = std::move(replacement);
     rectangles_ = std::move(rectangles);
     capacity_ = capacity;
@@ -150,6 +157,15 @@ void TrainingVkSplatBackend::record(Stage stage, const BackwardPassContext& cont
             case 75:
                 infos.push_back(rectangles());
                 break;
+            case 77:
+                infos.push_back(officialRadii_.getDescriptorInfo());
+                break;
+            case 78:
+                infos.push_back(adc_->gradients());
+                break;
+            case 79:
+                infos.push_back(adc_->radii());
+                break;
             default:
                 throw std::logic_error("Unknown VkSplat binding");
         }
@@ -192,6 +208,8 @@ void TrainingVkSplatBackend::record(Stage stage, const BackwardPassContext& cont
 }
 
 void TrainingVkSplatBackend::boundary(Stage stage, TrainingBuffers& buffers, uint32_t count) {
+    if (adc_->failed())
+        throw std::runtime_error("VkSplat native state requires explicit dataset reload");
     const auto started = std::chrono::steady_clock::now();
     if (stage == Import)
         ensureCapacity(std::max(count, 1u));
@@ -256,12 +274,13 @@ void TrainingVkSplatBackend::recordPixel(const BackwardPassContext& c, bool glob
 }
 void TrainingVkSplatBackend::recordOptimizer(const BackwardPassContext& c) {
     record(Optimize, c);
+    adc_->recordStatistics(c);
 }
 void TrainingVkSplatBackend::recordValidation(const BackwardPassContext& c) {
     record(Validate, c);
 }
 uint64_t TrainingVkSplatBackend::allocatedBytes() const {
-    uint64_t bytes = rectangles_.getSize();
+    uint64_t bytes = rectangles_.getSize() + officialRadii_.getSize() + adc_->allocatedBytes();
     for (const auto& b : model_)
         bytes += b.getSize();
     return bytes;

@@ -322,6 +322,12 @@ bool testVkSplatSettings(const std::filesystem::path& path) {
     settings.run.computeBackend = 0;
     settings.run.vkSplatSubtile = false;
     if (immutable.run.computeBackend != 1 || !immutable.run.vkSplatSubtile) return false;
+    loaded.densification.splitChildren = 3;
+    if (TrainingSettingsStore::validate(loaded)) return false;
+    loaded.densification.splitChildren = 2;
+    loaded.densification.gradientMode = 1;
+    if (TrainingSettingsStore::validate(loaded)) return false;
+    loaded.densification.gradientMode = 0;
     loaded.optimizer.adamBeta1 = 0.8f;
     if (TrainingSettingsStore::validate(loaded)) return false;
     loaded.optimizer.adamBeta1 = 0.9f;
