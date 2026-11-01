@@ -1,8 +1,8 @@
 #include "gaussian_training.hpp"
 
-#include "utils/logger.hpp"
-#include "utils/file_utils.hpp"
 #include "training/core/training_optimizer_capture_gpu.hpp"
+#include "utils/file_utils.hpp"
+#include "utils/logger.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -22,8 +22,7 @@ namespace vulkan3DGS {
 
 namespace {
 
-float positionLearningRateAtStep(const TrainingOptimizerConfig& config,
-                                 float step,
+float positionLearningRateAtStep(const TrainingOptimizerConfig& config, float step,
                                  float spatialScale) {
     const float lrInit = std::max(config.positionLearningRate * spatialScale, 0.0f);
     const float lrFinal = std::max(config.positionLearningRateFinal * spatialScale, 0.0f);
@@ -33,14 +32,13 @@ float positionLearningRateAtStep(const TrainingOptimizerConfig& config,
 
     const float maxSteps = std::max(config.positionLearningRateMaxSteps, 1.0f);
     const float t = std::clamp(step / maxSteps, 0.0f, 1.0f);
-    float learningRate = std::exp(std::lerp(std::log(std::max(lrInit, 1e-12f)),
-                                             std::log(std::max(lrFinal, 1e-12f)),
-                                             t));
+    float learningRate = std::exp(
+        std::lerp(std::log(std::max(lrInit, 1e-12f)), std::log(std::max(lrFinal, 1e-12f)), t));
     if (config.positionLearningRateDelaySteps > 0.0f) {
         const float delayMult = std::clamp(config.positionLearningRateDelayMult, 0.0f, 1.0f);
         const float delayT = std::clamp(step / config.positionLearningRateDelaySteps, 0.0f, 1.0f);
-        const float delayRate = delayMult +
-            (1.0f - delayMult) * std::sin(0.5f * 3.14159265358979323846f * delayT);
+        const float delayRate =
+            delayMult + (1.0f - delayMult) * std::sin(0.5f * 3.14159265358979323846f * delayT);
         learningRate *= delayRate;
     }
     return learningRate;
@@ -138,8 +136,7 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                                                    vk::PhysicalDevice physicalDevice,
                                                    vk::Queue computeQueue,
                                                    uint32_t computeQueueFamilyIndex,
-                                                    uint32_t gaussianCount,
-                                                    TrainingExtent extent) {
+                                                   uint32_t gaussianCount, TrainingExtent extent) {
     mortonReorder_.reset();
     destroyTrainingProfilingResources();
     if (rendererInitialized_) {
@@ -159,23 +156,15 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
     }
 
     forward_ = std::make_unique<GaussianForwardRenderer>();
-    forward_->initialize(device,
-                         physicalDevice,
-                         computeQueue,
-                         computeQueueFamilyIndex,
-                         gaussianCount,
-                         extent);
+    forward_->initialize(device, physicalDevice, computeQueue, computeQueueFamilyIndex,
+                         gaussianCount, extent);
     if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
         gaussianForward->setCompositeMode(forwardCompositeMode_);
     }
 
     backward_ = std::make_unique<GaussianBackwardRenderer>();
-    backward_->initialize(device,
-                          physicalDevice,
-                          computeQueue,
-                          computeQueueFamilyIndex,
-                          gaussianCount,
-                          extent);
+    backward_->initialize(device, physicalDevice, computeQueue, computeQueueFamilyIndex,
+                          gaussianCount, extent);
     if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
         gaussianBackward->setPixelTo2DGSMode(pixelTo2DGSMode_);
         gaussianBackward->setAdaptiveTensorChildBatch(adaptiveTensorChildBatch_);
@@ -184,8 +173,8 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
         gaussianBackward->setTensorRgbLatencyHiding(tensorRgbLatencyHiding_);
         gaussianBackward->setSsimMode(ssimMode_);
         gaussianBackward->setVkSplatLoss(vkSplatLossRequested_);
-        gaussianBackward->setAdaptiveSpatialTiles(
-            tileMode_ == TrainingTileMode::AdaptiveSpatial);
+        gaussianBackward->setVkSplatLossOnCheck(lossOnCheck_);
+        gaussianBackward->setAdaptiveSpatialTiles(tileMode_ == TrainingTileMode::AdaptiveSpatial);
         if (tileMode_ == TrainingTileMode::AdaptiveSpatial &&
             !gaussianBackward->adaptiveSpatialModeSupported()) {
             LOG_WARN("Adaptive Spatial requires a supported VkSplat Tensor or Per-Splat "
@@ -211,8 +200,10 @@ void GaussianTraining::initializeTrainingRenderers(vk::Device device,
                                      "least 45 KiB shared memory");
         if (!vkSplat_) {
             vkSplat_ = std::make_unique<TrainingVkSplatBackend>(
-                device, physicalDevice, computeQueue, computeQueueFamilyIndex);
+                device, physicalDevice, computeQueue, computeQueueFamilyIndex, vkSplatAdcReuse_,
+                vkSplatProjectionSoA_);
             vkSplat_->importCanonical(buffers_, trainableGaussianCount_);
+            if (vkSplatAdcReuse_) buffers_.enableNativeWorkspaceReuse();
         }
         dynamic_cast<GaussianForwardRenderer*>(forward_.get())
             ->setVkSplatBackend(vkSplat_.get(), vkSplatSubtile_);
@@ -259,8 +250,9 @@ void GaussianTraining::captureOptimizerStepAndPause(const std::filesystem::path&
         uint32_t(tensorSubgroupReductionActive()) | (uint32_t(tensorGlobalPixelGradActive()) << 1) |
         (uint32_t(tensorRgbLatencyHidingActive()) << 2) |
         (uint32_t(tensorEarlyCullStatus() == TrainingPixelCullStatus::Active) << 3);
-    fillOptimizerCaptureIdentity(header, physicalDevice_,
-                                 FileUtils::resolvePath("shaders/train_backward_2dgs_to_3dgs_optimizer.comp.spv"));
+    fillOptimizerCaptureIdentity(
+        header, physicalDevice_,
+        FileUtils::resolvePath("shaders/train_backward_2dgs_to_3dgs_optimizer.comp.spv"));
     TrainingOptimizerCaptureSession capture(device_, physicalDevice_, stepExecutor_.computeQueue(),
                                             computeQueueFamilyIndex_, header, path);
     const uint32_t before = trainingIteration_;
@@ -326,7 +318,8 @@ void GaussianTraining::trainStep() {
     }
 
     if (!hasTrainableModel()) {
-        throw std::runtime_error("GaussianTraining::trainStep called without initialized training gaussians");
+        throw std::runtime_error(
+            "GaussianTraining::trainStep called without initialized training gaussians");
     }
 
     const bool fixedBenchmarkThisStep = fixedBenchmarkStats_.active;
@@ -383,14 +376,16 @@ void GaussianTraining::trainStep() {
             prefetchUpcomingTrainingFrames();
         }
         uploadCurrentTrainingFrame();
-        recordCpuProfilingSample(TrainingCpuProfileStage::FrameUpload,
-                                 std::chrono::duration<float, std::milli>(Clock::now() - frameUploadStart).count());
+        recordCpuProfilingSample(
+            TrainingCpuProfileStage::FrameUpload,
+            std::chrono::duration<float, std::milli>(Clock::now() - frameUploadStart).count());
     }
 
     auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get());
     auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get());
     if (!gaussianForward || !gaussianBackward) {
-        throw std::runtime_error("GaussianTraining currently requires GaussianForwardRenderer and GaussianBackwardRenderer");
+        throw std::runtime_error("GaussianTraining currently requires GaussianForwardRenderer and "
+                                 "GaussianBackwardRenderer");
     }
 
     if (vkSplat_) {
@@ -404,22 +399,19 @@ void GaussianTraining::trainStep() {
     gaussianForward->setPhysicalTileKey16(!vkSplat_ && key16Requested_);
     auto pushConstants = createPushConstants();
     const uint32_t currentIteration = trainingIteration_ + 1u;
-    const bool beforeFinalIteration =
-        frameScheduler_.totalIterations() == 0u ||
-        currentIteration < frameScheduler_.totalIterations();
-    pushConstants.optimizerEnabled = !fixedBenchmarkThisStep &&
-                                     !runDensificationThisStep &&
-                                     beforeFinalIteration ? 1u : 0u;
+    const bool beforeFinalIteration = frameScheduler_.totalIterations() == 0u ||
+                                      currentIteration < frameScheduler_.totalIterations();
+    pushConstants.optimizerEnabled =
+        !fixedBenchmarkThisStep && !runDensificationThisStep && beforeFinalIteration ? 1u : 0u;
     if (fixedBenchmarkThisStep) {
-        const uint32_t totalBenchmarkSteps = fixedBenchmarkStats_.warmupSteps +
-                                             fixedBenchmarkStats_.measuredSteps;
+        const uint32_t totalBenchmarkSteps =
+            fixedBenchmarkStats_.warmupSteps + fixedBenchmarkStats_.measuredSteps;
         const bool finalBenchmarkStep = fixedBenchmarkCompletedSteps_ + 1u >= totalBenchmarkSteps;
         pushConstants.validationEnabled = finalBenchmarkStep ? 1u : 0u;
         pushConstants.validationIteration = currentIteration;
     }
 
-    const bool pruneByScreenSize =
-        currentIteration > densificationConfig_.opacityResetInterval;
+    const bool pruneByScreenSize = currentIteration > densificationConfig_.opacityResetInterval;
     const auto densificationPush = createDensificationPushConstants(pruneByScreenSize);
     const uint32_t capacityBefore = buffers_.tileItemCapacity();
     const uint32_t executedFrame = static_cast<uint32_t>(currentFrameIndex());
@@ -466,6 +458,8 @@ void GaussianTraining::trainStep() {
         throw;
     }
     lastVkSplatLossActive_ = gaussianBackward->vkSplatLossActive();
+    if (!lastVkSplatLossActive_ || !lossOnCheck_ || pushConstants.validationEnabled)
+        lastLossStep_ = currentIteration;
     lastVkSplatSubtile_ = vkSplat_ && vkSplatSubtile_;
     lastSortState_ = {true, gaussianForward->fasterSortRequested(),
                       gaussianForward->fasterSortActive(), pushConstants.tileSize};
@@ -485,27 +479,23 @@ void GaussianTraining::trainStep() {
     if (execution.densificationRan) {
         lastDensificationStats_ = execution.densification;
         lastDensificationStatsIteration_ = currentIteration;
-        LOG_INFO(
-            "Training densify/prune stats at iteration {}: output={} kept={} cloned={} split={} pruned={} pruneHits(opacity={}, screen={}, world={})",
-            currentIteration, execution.densification.outputCount,
-            execution.densification.keptSources,
-            execution.densification.cloneSources,
-            execution.densification.splitSources,
-            execution.densification.prunedSources,
-            execution.densification.pruneOpacityHits,
-            execution.densification.pruneScreenHits,
-            execution.densification.pruneWorldHits);
+        LOG_INFO("Training densify/prune stats at iteration {}: output={} kept={} cloned={} "
+                 "split={} pruned={} pruneHits(opacity={}, screen={}, world={})",
+                 currentIteration, execution.densification.outputCount,
+                 execution.densification.keptSources, execution.densification.cloneSources,
+                 execution.densification.splitSources, execution.densification.prunedSources,
+                 execution.densification.pruneOpacityHits, execution.densification.pruneScreenHits,
+                 execution.densification.pruneWorldHits);
         if (execution.gaussianCount != trainableGaussianCount_) {
-            LOG_INFO(
-                "Training densify/prune changed gaussian count from {} to {} at iteration {}",
-                trainableGaussianCount_, execution.gaussianCount,
-                currentIteration);
+            LOG_INFO("Training densify/prune changed gaussian count from {} to {} at iteration {}",
+                     trainableGaussianCount_, execution.gaussianCount, currentIteration);
         }
         trainableGaussianCount_ = execution.gaussianCount;
     }
 
-    recordCpuProfilingSample(TrainingCpuProfileStage::Total,
-                             std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count());
+    recordCpuProfilingSample(
+        TrainingCpuProfileStage::Total,
+        std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count());
 
     if (fixedBenchmarkThisStep) {
         ++fixedBenchmarkCompletedSteps_;
@@ -514,29 +504,33 @@ void GaussianTraining::trainStep() {
             fixedBenchmarkStats_.checkpointErrorFlags = execution.checkpointFlags;
             fixedBenchmarkStats_.checkpointTaskCount = execution.checkpointTasks;
         }
-        if (checkpointDiagnosticsRequested_ && fixedBenchmarkCompletedSteps_ > fixedBenchmarkStats_.warmupSteps) {
-            if (execution.checkpointDiagnosticsRan) ++fixedBenchmarkStats_.checkpointDiagnosticSteps;
-            else ++fixedBenchmarkStats_.checkpointSkippedSteps;
+        if (checkpointDiagnosticsRequested_ &&
+            fixedBenchmarkCompletedSteps_ > fixedBenchmarkStats_.warmupSteps) {
+            if (execution.checkpointDiagnosticsRan)
+                ++fixedBenchmarkStats_.checkpointDiagnosticSteps;
+            else
+                ++fixedBenchmarkStats_.checkpointSkippedSteps;
         }
-        fixedBenchmarkStats_.completedWarmupSteps = std::min(
-            fixedBenchmarkCompletedSteps_, fixedBenchmarkStats_.warmupSteps);
-        fixedBenchmarkStats_.completedMeasuredSteps = fixedBenchmarkCompletedSteps_ >
-                                                      fixedBenchmarkStats_.warmupSteps
-            ? std::min(fixedBenchmarkCompletedSteps_ - fixedBenchmarkStats_.warmupSteps,
-                       fixedBenchmarkStats_.measuredSteps)
-            : 0u;
+        fixedBenchmarkStats_.completedWarmupSteps =
+            std::min(fixedBenchmarkCompletedSteps_, fixedBenchmarkStats_.warmupSteps);
+        fixedBenchmarkStats_.completedMeasuredSteps =
+            fixedBenchmarkCompletedSteps_ > fixedBenchmarkStats_.warmupSteps
+                ? std::min(fixedBenchmarkCompletedSteps_ - fixedBenchmarkStats_.warmupSteps,
+                           fixedBenchmarkStats_.measuredSteps)
+                : 0u;
         if (fixedBenchmarkStats_.warmupSteps > 0u &&
             fixedBenchmarkCompletedSteps_ == fixedBenchmarkStats_.warmupSteps) {
             resetProfilingStats();
             resetCandidateProfileStats();
         }
-        const uint32_t totalBenchmarkSteps = fixedBenchmarkStats_.warmupSteps +
-                                             fixedBenchmarkStats_.measuredSteps;
+        const uint32_t totalBenchmarkSteps =
+            fixedBenchmarkStats_.warmupSteps + fixedBenchmarkStats_.measuredSteps;
         if (fixedBenchmarkCompletedSteps_ >= totalBenchmarkSteps) {
             const bool pureWarp = checkpointWarpRequested_ &&
-                fixedBenchmarkStats_.checkpointSkippedSteps == 0u &&
-                fixedBenchmarkStats_.checkpointFallbackCount == 0u &&
-                fixedBenchmarkStats_.checkpointErrorFlags == 0u && execution.checkpointReadbackValid;
+                                  fixedBenchmarkStats_.checkpointSkippedSteps == 0u &&
+                                  fixedBenchmarkStats_.checkpointFallbackCount == 0u &&
+                                  fixedBenchmarkStats_.checkpointErrorFlags == 0u &&
+                                  execution.checkpointReadbackValid;
             if (pureWarp) {
                 fixedBenchmarkStats_.pixelMode = TrainingPixelTo2DGSMode::CheckpointedWarp;
                 fixedBenchmarkStats_.tensorSubgroupReduction = false;
@@ -546,8 +540,7 @@ void GaussianTraining::trainStep() {
             fixedBenchmarkStats_.active = false;
             fixedBenchmarkStats_.complete = true;
             LOG_INFO("Fixed workload benchmark completed: frame {}, warmup {}, measured {}",
-                     fixedBenchmarkStats_.frameIndex,
-                     fixedBenchmarkStats_.warmupSteps,
+                     fixedBenchmarkStats_.frameIndex, fixedBenchmarkStats_.warmupSteps,
                      fixedBenchmarkStats_.measuredSteps);
         }
         return;
@@ -590,58 +583,98 @@ bool GaussianTraining::inspectNativeOpacityReset() {
 }
 
 TrainingStateFiniteCheck GaussianTraining::inspectTrainingStateFinite() {
-    if (!trainingIteration_ || !hasTrainableModel()) throw std::runtime_error("Finite inspection requires a completed training step");
+    if (!trainingIteration_ || !hasTrainableModel())
+        throw std::runtime_error("Finite inspection requires a completed training step");
+    if (lossOnCheck_ && lastVkSplatLossActive_ && lastLossStep_ != trainingIteration_) {
+        const auto refreshStarted = std::chrono::steady_clock::now();
+        CommandPool pool;
+        pool.create(device_, computeQueueFamilyIndex_, vk::CommandPoolCreateFlagBits::eTransient);
+        auto command = pool.allocateCommandBuffer();
+        command.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        auto push = createPushConstants();
+        push.validationEnabled = 1;
+        auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get());
+        renderer->recordExplicitLoss(BackwardPassContext{buffers_, command, push});
+        command.end();
+        auto fence = device_.createFenceUnique({});
+        stepExecutor_.computeQueue().submit(vk::SubmitInfo{}.setCommandBuffers(command), *fence);
+        (void)device_.waitForFences(*fence, true, UINT64_MAX);
+        lastLossStep_ = trainingIteration_;
+        profilingService_.recordCpu(TrainingCpuProfileStage::ExplicitLossRefresh,
+                                    std::chrono::duration<float, std::milli>(
+                                        std::chrono::steady_clock::now() - refreshStarted)
+                                        .count());
+    }
     stepExecutor_.synchronizeDiagnosticDownloads(transferQueue_);
     validationService_.collect(buffers_.extent(), buffers_.gaussianCapacity());
     if (vkSplat_) vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
-    OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_);
+    OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_,
+                                      transferQueueFamilyIndex_);
     TrainingStateFiniteCheck result;
     result.maxLoss = -std::numeric_limits<double>::infinity();
     const uint64_t pixels = uint64_t(buffers_.extent().width) * buffers_.extent().height;
     std::vector<float> chunk(optimizerCaptureChunkBytes / sizeof(float));
     for (uint64_t offset = 0; offset < pixels;) {
-        const size_t count = static_cast<size_t>(std::min<uint64_t>(chunk.size(), pixels-offset));
-        transfer.download(buffers_.lossInfo(), offset*4, std::as_writable_bytes(std::span(chunk).first(count)));
-        for (size_t i=0;i<count;++i) {
+        const size_t count = static_cast<size_t>(std::min<uint64_t>(chunk.size(), pixels - offset));
+        transfer.download(buffers_.lossInfo(), offset * 4,
+                          std::as_writable_bytes(std::span(chunk).first(count)));
+        for (size_t i = 0; i < count; ++i) {
             ++result.lossValues;
-            if (!std::isfinite(chunk[i])) ++result.invalidLossValues;
-            else { result.meanLoss += double(chunk[i])/double(pixels); result.maxLoss = std::max(result.maxLoss,double(chunk[i])); }
+            if (!std::isfinite(chunk[i]))
+                ++result.invalidLossValues;
+            else {
+                result.meanLoss += double(chunk[i]) / double(pixels);
+                result.maxLoss = std::max(result.maxLoss, double(chunk[i]));
+            }
         }
         offset += count;
     }
-    if (result.invalidLossValues) result.meanLoss = result.maxLoss = std::numeric_limits<double>::quiet_NaN();
+    if (result.invalidLossValues)
+        result.meanLoss = result.maxLoss = std::numeric_limits<double>::quiet_NaN();
     std::vector<GaussianTrainParam> params(optimizerCaptureChunkBytes / sizeof(GaussianTrainParam));
-    for (uint64_t offset=0;offset<trainableGaussianCount_;) {
-        const size_t count=static_cast<size_t>(std::min<uint64_t>(params.size(),trainableGaussianCount_-offset));
-        transfer.download(buffers_.gaussianParamsInfo(), offset*sizeof(GaussianTrainParam),
-            std::as_writable_bytes(std::span(params).first(count)));
-        for (size_t i=0;i<count;++i) {
-            std::array<float,sizeof(GaussianTrainParam)/sizeof(float)> values;
-            std::memcpy(values.data(),&params[i],sizeof(GaussianTrainParam));
-            for(float value:values) {++result.gaussianValues;result.invalidGaussianValues+=!std::isfinite(value);}
-            for(int axis=0;axis<3;++axis) result.invalidActivatedScales+=!std::isfinite(std::exp(params[i].scale[axis]));
+    for (uint64_t offset = 0; offset < trainableGaussianCount_;) {
+        const size_t count = static_cast<size_t>(
+            std::min<uint64_t>(params.size(), trainableGaussianCount_ - offset));
+        transfer.download(buffers_.gaussianParamsInfo(), offset * sizeof(GaussianTrainParam),
+                          std::as_writable_bytes(std::span(params).first(count)));
+        for (size_t i = 0; i < count; ++i) {
+            std::array<float, sizeof(GaussianTrainParam) / sizeof(float)> values;
+            std::memcpy(values.data(), &params[i], sizeof(GaussianTrainParam));
+            for (float value : values) {
+                ++result.gaussianValues;
+                result.invalidGaussianValues += !std::isfinite(value);
+            }
+            for (int axis = 0; axis < 3; ++axis)
+                result.invalidActivatedScales += !std::isfinite(std::exp(params[i].scale[axis]));
         }
-        offset+=count;
+        offset += count;
     }
     if (vkSplat_) buffers_.releaseCanonicalModelStorage();
     return result;
 }
 
 uint64_t GaussianTraining::diagnosticTrainingStateHash() {
-    if (!hasTrainableModel()) throw std::runtime_error("State fingerprint requires an initialized model");
+    if (!hasTrainableModel())
+        throw std::runtime_error("State fingerprint requires an initialized model");
     stepExecutor_.synchronizeDiagnosticDownloads(transferQueue_);
     if (vkSplat_) vkSplat_->exportCanonical(buffers_, trainableGaussianCount_);
-    OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_);
+    OptimizerCaptureTransfer transfer(device_, physicalDevice_, transferQueue_,
+                                      transferQueueFamilyIndex_);
     std::vector<std::byte> chunk(optimizerCaptureChunkBytes);
-    uint64_t hash = optimizerHash(std::as_bytes(std::span{&trainableGaussianCount_,1}));
-    const std::array<vk::DescriptorBufferInfo,3> buffers{buffers_.gaussianParamsInfo(),buffers_.adamStatesInfo(),buffers_.densificationStatesInfo()};
-    const std::array<size_t,3> strides{sizeof(GaussianTrainParam),sizeof(AdamState),sizeof(GaussianDensificationState)};
-    for(size_t block=0;block<buffers.size();++block) {
-        const uint64_t bytes=uint64_t(trainableGaussianCount_)*strides[block];
-        for(uint64_t offset=0;offset<bytes;) {
-            const size_t count=static_cast<size_t>(std::min<uint64_t>(chunk.size(),bytes-offset));
-            transfer.download(buffers[block],offset,std::span(chunk).first(count));
-            hash=optimizerHash(std::span<const std::byte>(chunk).first(count),hash);offset+=count;
+    uint64_t hash = optimizerHash(std::as_bytes(std::span{&trainableGaussianCount_, 1}));
+    const std::array<vk::DescriptorBufferInfo, 3> buffers{buffers_.gaussianParamsInfo(),
+                                                          buffers_.adamStatesInfo(),
+                                                          buffers_.densificationStatesInfo()};
+    const std::array<size_t, 3> strides{sizeof(GaussianTrainParam), sizeof(AdamState),
+                                        sizeof(GaussianDensificationState)};
+    for (size_t block = 0; block < buffers.size(); ++block) {
+        const uint64_t bytes = uint64_t(trainableGaussianCount_) * strides[block];
+        for (uint64_t offset = 0; offset < bytes;) {
+            const size_t count =
+                static_cast<size_t>(std::min<uint64_t>(chunk.size(), bytes - offset));
+            transfer.download(buffers[block], offset, std::span(chunk).first(count));
+            hash = optimizerHash(std::span<const std::byte>(chunk).first(count), hash);
+            offset += count;
         }
     }
     if (vkSplat_) buffers_.releaseCanonicalModelStorage();
@@ -661,36 +694,34 @@ void GaussianTraining::loadDataset(TrainingDataset dataset,
     frameScheduler_.setFrameCount(dataset_.size());
 
     const auto& firstFrame = dataset_.frames.front();
-    LOG_INFO("GaussianTraining loaded dataset {} ({} frames, {} sparse points, {}x{}, downscale {})",
-             dataset_.sceneRoot.string(),
-             dataset_.size(),
-             dataset_.sparsePoints.size(),
-             firstFrame.width,
-             firstFrame.height,
-             dataset_.imageDownscale);
+    LOG_INFO(
+        "GaussianTraining loaded dataset {} ({} frames, {} sparse points, {}x{}, downscale {})",
+        dataset_.sceneRoot.string(), dataset_.size(), dataset_.sparsePoints.size(),
+        firstFrame.width, firstFrame.height, dataset_.imageDownscale);
 }
 
 void GaussianTraining::initializeModelFromDataset(const TrainingInitializationConfig& config) {
     if (!initialized_) {
-        throw std::runtime_error("GaussianTraining must be initialized before dataset model initialization");
+        throw std::runtime_error(
+            "GaussianTraining must be initialized before dataset model initialization");
     }
     if (dataset_.empty()) {
         throw std::runtime_error("Load a training dataset before initializing training gaussians");
     }
-    TrainingModelInitialization initialization =
-        TrainingModelIO::initialize(dataset_, config);
+    TrainingModelInitialization initialization = TrainingModelIO::initialize(dataset_, config);
     usedRandomInitialization_ = initialization.usedRandomFallback;
-    std::vector<GaussianTrainParam> params =
-        std::move(initialization.parameters);
+    std::vector<GaussianTrainParam> params = std::move(initialization.parameters);
     if (params.empty()) {
         throw std::runtime_error("No Gaussian initialization data was available");
     }
 
     const auto& firstFrame = dataset_.frames.front();
-    resize(static_cast<uint32_t>(params.size()), TrainingExtent{firstFrame.width, firstFrame.height});
+    resize(static_cast<uint32_t>(params.size()),
+           TrainingExtent{firstFrame.width, firstFrame.height});
     buffers_.uploadGaussianParams(params.data(), static_cast<uint32_t>(params.size()));
     trainableGaussianCount_ = static_cast<uint32_t>(params.size());
     trainingIteration_ = 0;
+    lastLossStep_ = 0;
     lastSortState_ = {};
     lastProjectionState_ = {};
     lastKey16State_ = {};
@@ -709,9 +740,11 @@ void GaussianTraining::initializeModelFromDataset(const TrainingInitializationCo
     sceneExtent_ = initialization.sceneExtent;
 
     if (usedRandomInitialization_) {
-        LOG_INFO("Initialized training model from {} random fallback gaussians", trainableGaussianCount_);
+        LOG_INFO("Initialized training model from {} random fallback gaussians",
+                 trainableGaussianCount_);
     } else {
-        LOG_INFO("Initialized training model from {} COLMAP sparse points", trainableGaussianCount_);
+        LOG_INFO("Initialized training model from {} COLMAP sparse points",
+                 trainableGaussianCount_);
     }
     LOG_INFO("Training scene extent set to {} using camera-center normalization", sceneExtent_);
 }
@@ -744,7 +777,8 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
         (fixedBenchmarkStats_.checkpointSkippedSteps != 0u ||
          fixedBenchmarkStats_.checkpointFallbackCount != 0u ||
          fixedBenchmarkStats_.checkpointErrorFlags != 0u))
-        throw std::runtime_error("Checkpoint capture had skipped/fallback/failed steps; export a clean benchmark run");
+        throw std::runtime_error(
+            "Checkpoint capture had skipped/fallback/failed steps; export a clean benchmark run");
     if (!validation.valid || validation.parentTileItemCount == 0u ||
         fixedBenchmarkStats_.gaussianCount != trainableGaussianCount_) {
         throw std::runtime_error("Completed benchmark has no valid gradient snapshot");
@@ -773,8 +807,7 @@ void GaussianTraining::exportFixedBenchmarkGradients(const std::filesystem::path
     constexpr char magic[8] = {'V', '3', 'D', 'G', 'G', 'R', 'D', '1'};
     output.write(magic, sizeof(magic));
     const auto writeU32 = [&output](uint32_t value) {
-        char bytes[4] = {static_cast<char>(value & 0xffu),
-                         static_cast<char>((value >> 8u) & 0xffu),
+        char bytes[4] = {static_cast<char>(value & 0xffu), static_cast<char>((value >> 8u) & 0xffu),
                          static_cast<char>((value >> 16u) & 0xffu),
                          static_cast<char>((value >> 24u) & 0xffu)};
         output.write(bytes, sizeof(bytes));
@@ -831,7 +864,9 @@ void GaussianTraining::exportScanlineDiagnosticInputs(const std::filesystem::pat
         b.pixelMode != TrainingPixelTo2DGSMode::VkSplatTensor || !b.tensorSubgroupReduction ||
         !b.tensorGlobalPixelGrad || b.tensorRgbLatencyHiding || b.pixelCullMethod ||
         b.checkpointDiagnosticsRequested)
-        throw std::runtime_error("S3-2 export requires a completed original Fixed16 Tensor Subgroup/Global Baseline benchmark, without EarlyCull/checkpoints");
+        throw std::runtime_error(
+            "S3-2 export requires a completed original Fixed16 Tensor Subgroup/Global Baseline "
+            "benchmark, without EarlyCull/checkpoints");
     TrainingScanlineHeader header;
     header.gaussianCount = b.gaussianCount;
     header.iteration = b.trainingIteration;
@@ -860,16 +895,19 @@ void GaussianTraining::exportAdaptiveTileDiagnostics(const std::filesystem::path
     const auto& validation = validationService_.stats();
     if (!benchmark.complete || benchmark.active ||
         benchmark.tileMode != TrainingTileMode::AdaptiveSpatial || !validation.valid ||
-        validation.parentTileItemCount == 0u || benchmark.gaussianCount != trainableGaussianCount_) {
-        throw std::runtime_error("Complete an Adaptive Spatial Fixed Benchmark before exporting tile diagnostics");
+        validation.parentTileItemCount == 0u ||
+        benchmark.gaussianCount != trainableGaussianCount_) {
+        throw std::runtime_error(
+            "Complete an Adaptive Spatial Fixed Benchmark before exporting tile diagnostics");
     }
     const auto rows = buffers_.downloadAdaptiveTileDiagnostics(validation.parentTileItemCount);
-    const bool hasClassifiedParents = std::any_of(rows.begin(), rows.end(), [&benchmark](const auto& row) {
-        return row.parentItems >= benchmark.adaptiveSplitThreshold;
-    });
+    const bool hasClassifiedParents =
+        std::any_of(rows.begin(), rows.end(), [&benchmark](const auto& row) {
+            return row.parentItems >= benchmark.adaptiveSplitThreshold;
+        });
     const auto rawMasks = hasClassifiedParents
-                             ? buffers_.downloadAdaptiveChildMasks(validation.parentTileItemCount)
-                             : std::vector<uint32_t>{};
+                              ? buffers_.downloadAdaptiveChildMasks(validation.parentTileItemCount)
+                              : std::vector<uint32_t>{};
     std::vector<uint8_t> packedMasks(validation.parentTileItemCount, 0u);
     size_t offset = 0u;
     for (const auto& row : rows) {
@@ -880,14 +918,16 @@ void GaussianTraining::exportAdaptiveTileDiagnostics(const std::filesystem::path
             std::array<uint32_t, 4> counted{};
             for (size_t item = offset; item < offset + row.parentItems; ++item) {
                 const uint32_t mask = rawMasks[item];
-                if (mask > 15u) throw std::runtime_error("Adaptive diagnostics found an invalid child mask");
+                if (mask > 15u)
+                    throw std::runtime_error("Adaptive diagnostics found an invalid child mask");
                 packedMasks[item] = static_cast<uint8_t>(mask);
                 for (uint32_t child = 0u; child < 4u; ++child) {
                     counted[child] += (mask >> child) & 1u;
                 }
             }
             if (counted != row.childItems) {
-                throw std::runtime_error("Adaptive mask counts do not match the classified parent lists");
+                throw std::runtime_error(
+                    "Adaptive mask counts do not match the classified parent lists");
             }
         }
         offset += row.parentItems;
@@ -897,32 +937,43 @@ void GaussianTraining::exportAdaptiveTileDiagnostics(const std::filesystem::path
     if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path);
     if (!output) throw std::runtime_error("Could not open adaptive tile output: " + path.string());
-    output << "frame,iteration,gaussians,width,height,threshold,pixel_mode,parent_index,parent_x,parent_y,"
+    output << "frame,iteration,gaussians,width,height,threshold,pixel_mode,parent_index,parent_x,"
+              "parent_y,"
               "parent_items,child0,child1,child2,child3,selected,max0,max1,max2,max3,child_batch\n";
     for (size_t index = 0u; index < rows.size(); ++index) {
         const auto& row = rows[index];
         output << benchmark.frameIndex << ',' << benchmark.trainingIteration << ','
                << benchmark.gaussianCount << ',' << extent.width << ',' << extent.height << ','
-               << benchmark.adaptiveSplitThreshold << ',' << static_cast<uint32_t>(benchmark.pixelMode)
-               << ',' << index << ',' << index % layout.tileCountX << ',' << index / layout.tileCountX
-               << ',' << row.parentItems;
-        for (uint32_t count : row.childItems) output << ',' << count;
+               << benchmark.adaptiveSplitThreshold << ','
+               << static_cast<uint32_t>(benchmark.pixelMode) << ',' << index << ','
+               << index % layout.tileCountX << ',' << index / layout.tileCountX << ','
+               << row.parentItems;
+        for (uint32_t count : row.childItems)
+            output << ',' << count;
         output << ',' << (row.selected ? 1u : 0u);
-        for (uint32_t count : row.maxProcessed) output << ',' << count;
+        for (uint32_t count : row.maxProcessed)
+            output << ',' << count;
         output << ',' << benchmark.adaptiveTensorChildBatch << '\n';
     }
-    if (!output) throw std::runtime_error("Failed to write adaptive tile diagnostics: " + path.string());
+    if (!output)
+        throw std::runtime_error("Failed to write adaptive tile diagnostics: " + path.string());
     std::filesystem::path maskPath = path;
     maskPath.replace_extension(".masks.bin");
     std::ofstream maskOutput(maskPath, std::ios::binary | std::ios::trunc);
-    if (!maskOutput) throw std::runtime_error("Could not open child mask output: " + maskPath.string());
+    if (!maskOutput)
+        throw std::runtime_error("Could not open child mask output: " + maskPath.string());
     static_assert(std::endian::native == std::endian::little);
     maskOutput.write("V3DMSK01", 8);
-    const std::array<uint32_t, 10> header = {
-        1u, benchmark.gaussianCount, benchmark.trainingIteration, benchmark.frameIndex,
-        extent.width, extent.height, benchmark.adaptiveSplitThreshold,
-        static_cast<uint32_t>(benchmark.pixelMode), validation.parentTileItemCount,
-        static_cast<uint32_t>(rows.size())};
+    const std::array<uint32_t, 10> header = {1u,
+                                             benchmark.gaussianCount,
+                                             benchmark.trainingIteration,
+                                             benchmark.frameIndex,
+                                             extent.width,
+                                             extent.height,
+                                             benchmark.adaptiveSplitThreshold,
+                                             static_cast<uint32_t>(benchmark.pixelMode),
+                                             validation.parentTileItemCount,
+                                             static_cast<uint32_t>(rows.size())};
     static_assert(sizeof(header) == 40u);
     maskOutput.write(reinterpret_cast<const char*>(header.data()), sizeof(header));
     maskOutput.write(reinterpret_cast<const char*>(packedMasks.data()),
@@ -945,7 +996,8 @@ void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkC
         throw std::runtime_error("Initialize training before starting a fixed workload benchmark");
     }
     if (!hasTrainableModel()) {
-        throw std::runtime_error("A trainable Gaussian model is required for a fixed workload benchmark");
+        throw std::runtime_error(
+            "A trainable Gaussian model is required for a fixed workload benchmark");
     }
     if (dataset_.empty()) {
         throw std::runtime_error("A loaded dataset is required for a fixed workload benchmark");
@@ -962,19 +1014,20 @@ void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkC
          forwardCompositeMode_ != TrainingForwardCompositeMode::WorkgroupShared ||
          activePixelTo2DGSMode() != TrainingPixelTo2DGSMode::VkSplatTensor ||
          !tensorGlobalPixelGradActive() || tensorRgbLatencyHidingActive()))
-        throw std::runtime_error("EarlyCull requires Fixed16 / Workgroup Shared / Tensor Subgroup Global / RGB Baseline, without checkpoint diagnostics");
+        throw std::runtime_error("EarlyCull requires Fixed16 / Workgroup Shared / Tensor Subgroup "
+                                 "Global / RGB Baseline, without checkpoint diagnostics");
     if (checkpointRequested &&
         (tileMode_ != TrainingTileMode::Fixed16 ||
          forwardCompositeMode_ != TrainingForwardCompositeMode::WorkgroupShared ||
          activePixelTo2DGSMode() != TrainingPixelTo2DGSMode::VkSplatTensor ||
          !tensorGlobalPixelGradActive() || tensorRgbLatencyHidingActive()))
-        throw std::runtime_error("Checkpoint P1 diagnostics require Fixed16 / Workgroup Shared / Tensor Subgroup Global / RGB Baseline");
+        throw std::runtime_error("Checkpoint P1 diagnostics require Fixed16 / Workgroup Shared / "
+                                 "Tensor Subgroup Global / RGB Baseline");
     checkpointDiagnosticsRequested_ = checkpointRequested;
     checkpointWarpRequested_ = config.checkpointWarp;
     benchmarkTensorEarlyCullRequested_ = config.tensorEarlyCull;
 
-    validationService_.collect(
-        buffers_.extent(), buffers_.gaussianCapacity());
+    validationService_.collect(buffers_.extent(), buffers_.gaussianCapacity());
     validationService_.resetStats();
     frameScheduler_.setCurrentFrame(config.frameIndex);
     fixedBenchmarkStats_ = {};
@@ -982,7 +1035,8 @@ void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkC
     fixedBenchmarkStats_.checkpointWarpRequested = config.checkpointWarp;
     fixedBenchmarkStats_.pixelCullMethod = config.tensorEarlyCull ? 1u : 0u;
     if (checkpointDiagnosticsRequested_)
-        LOG_INFO("Checkpoint {} enabled for Fixed Benchmark", config.checkpointWarp ? "P2 warp backward" : "P1 state diagnostic");
+        LOG_INFO("Checkpoint {} enabled for Fixed Benchmark",
+                 config.checkpointWarp ? "P2 warp backward" : "P1 state diagnostic");
     fixedBenchmarkStats_.active = true;
     fixedBenchmarkStats_.frameIndex = config.frameIndex;
     fixedBenchmarkStats_.gaussianCount = trainableGaussianCount_;
@@ -1002,8 +1056,7 @@ void GaussianTraining::startFixedWorkloadBenchmark(const TrainingFixedBenchmarkC
     resetProfilingStats();
     resetCandidateProfileStats();
     LOG_INFO("Started fixed workload benchmark: frame {}, warmup {}, measured {}",
-             fixedBenchmarkStats_.frameIndex,
-             fixedBenchmarkStats_.warmupSteps,
+             fixedBenchmarkStats_.frameIndex, fixedBenchmarkStats_.warmupSteps,
              fixedBenchmarkStats_.measuredSteps);
 }
 
@@ -1030,7 +1083,8 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.trainingIteration = trainingIteration_;
     const uint32_t shInterval = std::max(optimizerConfig_.shDegreeInterval, 1u);
     pushConstants.maxSHDegree = std::min(optimizerConfig_.maxSHDegree, 3u);
-    pushConstants.activeSHDegree = std::min((trainingIteration_ + 1u) / shInterval, pushConstants.maxSHDegree);
+    pushConstants.activeSHDegree =
+        std::min((trainingIteration_ + 1u) / shInterval, pushConstants.maxSHDegree);
     const float spatialLearningRateScale = std::max(sceneExtent_, 1e-6f);
     pushConstants.positionLearningRate = positionLearningRateAtStep(
         optimizerConfig_, static_cast<float>(trainingIteration_ + 1u), spatialLearningRateScale);
@@ -1044,18 +1098,18 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
     pushConstants.optimizerOneMinusBeta1 = 1.0f - pushConstants.optimizerBeta1;
     pushConstants.optimizerOneMinusBeta2 = 1.0f - pushConstants.optimizerBeta2;
     const float optimizerStep = static_cast<float>(std::max(optimizerStep_ + 1u, 1u));
-    pushConstants.optimizerInvFirstMomentCorrection = 1.0f / std::max(
-        1.0f - std::pow(pushConstants.optimizerBeta1, optimizerStep), 1e-8f);
-    pushConstants.optimizerInvSecondMomentCorrection = 1.0f / std::max(
-        1.0f - std::pow(pushConstants.optimizerBeta2, optimizerStep), 1e-8f);
+    pushConstants.optimizerInvFirstMomentCorrection =
+        1.0f / std::max(1.0f - std::pow(pushConstants.optimizerBeta1, optimizerStep), 1e-8f);
+    pushConstants.optimizerInvSecondMomentCorrection =
+        1.0f / std::max(1.0f - std::pow(pushConstants.optimizerBeta2, optimizerStep), 1e-8f);
     pushConstants.optimizerEpsilon = optimizerConfig_.epsilon;
     pushConstants.optimizerGradClip = optimizerConfig_.gradClip;
     pushConstants.lossDssimWeight = std::clamp(optimizerConfig_.lossDssimWeight, 0.0f, 1.0f);
     pushConstants.optimizerStep = optimizerStep_ + 1u;
     const uint32_t nextIteration = trainingIteration_ + 1u;
     pushConstants.validationEnabled =
-        (nextIteration <= 5u ||
-         (validationInterval_ > 0u && nextIteration % validationInterval_ == 0u))
+        trainingNumericCheckDue(nextIteration, frameScheduler_.totalIterations(),
+                                validationInterval_, numericChecksFirstLast_)
             ? 1u
             : 0u;
     pushConstants.validationIteration = nextIteration;
@@ -1063,9 +1117,8 @@ TrainingPushConstants GaussianTraining::createPushConstants() const {
         std::clamp(pixelTo2DGSMinSubgroupUtilization_, 0.0f, 1.0f);
     pushConstants.densificationGradientMode =
         static_cast<uint32_t>(densificationConfig_.gradientMode);
-    pushConstants.tileSize = tileMode_ == TrainingTileMode::AdaptiveSpatial
-                                 ? 32u
-                                 : trainingTileSize(tileMode_);
+    pushConstants.tileSize =
+        tileMode_ == TrainingTileMode::AdaptiveSpatial ? 32u : trainingTileSize(tileMode_);
     if (tileMode_ == TrainingTileMode::AdaptiveSpatial) {
         pushConstants.tileItemCount = adaptiveTileSplitThreshold_;
     }
@@ -1103,6 +1156,18 @@ void GaussianTraining::setVkSplatCompute(bool enabled) {
     vkSplatComputeRequested_ = enabled;
 }
 
+void GaussianTraining::setVkSplatOptimizations(bool adcReuse, bool projectionSoA) {
+    if (hasTrainableModel() &&
+        (adcReuse != vkSplatAdcReuse_ || projectionSoA != vkSplatProjectionSoA_))
+        throw std::runtime_error("VkSplat resource changes require Load Dataset");
+    vkSplatAdcReuse_ = adcReuse;
+    vkSplatProjectionSoA_ = projectionSoA;
+}
+void GaussianTraining::setLossOnCheck(bool enabled) {
+    lossOnCheck_ = enabled;
+    if (auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get()))
+        renderer->setVkSplatLossOnCheck(enabled);
+}
 void GaussianTraining::setVkSplatLoss(bool enabled) {
     vkSplatLossRequested_ = enabled;
     if (auto* renderer = dynamic_cast<GaussianBackwardRenderer*>(backward_.get()))
@@ -1133,15 +1198,16 @@ void GaussianTraining::setTensorRgbLatencyHiding(bool enabled) {
 
 TrainingPixelCullStatus GaussianTraining::tensorEarlyCullStatus() const {
     const auto* renderer = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
-    return resolveTrainingPixelCull(tensorEarlyCull_, {
-        .rendererReady = rendererInitialized_ && renderer != nullptr,
-        .pipelineAvailable = renderer && renderer->tensorEarlyCullSupported(),
-        .tileMode = tileMode_,
-        .forwardMode = forwardCompositeMode_,
-        .pixelMode = activePixelTo2DGSMode(),
-        .globalPixelGrad = tensorGlobalPixelGradActive(),
-        .rgbLatencyHiding = tensorRgbLatencyHidingActive(),
-    });
+    return resolveTrainingPixelCull(
+        tensorEarlyCull_, {
+                              .rendererReady = rendererInitialized_ && renderer != nullptr,
+                              .pipelineAvailable = renderer && renderer->tensorEarlyCullSupported(),
+                              .tileMode = tileMode_,
+                              .forwardMode = forwardCompositeMode_,
+                              .pixelMode = activePixelTo2DGSMode(),
+                              .globalPixelGrad = tensorGlobalPixelGradActive(),
+                              .rgbLatencyHiding = tensorRgbLatencyHidingActive(),
+                          });
 }
 
 void GaussianTraining::resetTensorEarlyCullRunStats() {
@@ -1195,8 +1261,7 @@ void GaussianTraining::setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
     pixelTo2DGSMode_ = mode;
     if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
         gaussianBackward->setPixelTo2DGSMode(mode);
-        gaussianBackward->setAdaptiveSpatialTiles(
-            tileMode_ == TrainingTileMode::AdaptiveSpatial);
+        gaussianBackward->setAdaptiveSpatialTiles(tileMode_ == TrainingTileMode::AdaptiveSpatial);
         if (tileMode_ == TrainingTileMode::AdaptiveSpatial &&
             !gaussianBackward->adaptiveSpatialModeSupported()) {
             LOG_WARN("Selected Pixel-to-2DGS mode is not supported with Adaptive Spatial; "
@@ -1241,16 +1306,16 @@ bool GaussianTraining::adaptiveSpatialBackwardSupported() const {
 
 TrainingPixelTo2DGSMode GaussianTraining::activePixelTo2DGSMode() const {
     const auto* gaussianBackward = dynamic_cast<const GaussianBackwardRenderer*>(backward_.get());
-    return gaussianBackward
-        ? gaussianBackward->activePixelTo2DGSMode()
-        : TrainingPixelTo2DGSMode::Direct;
+    return gaussianBackward ? gaussianBackward->activePixelTo2DGSMode()
+                            : TrainingPixelTo2DGSMode::Direct;
 }
 
-TrainingDensificationPushConstants GaussianTraining::createDensificationPushConstants(bool pruneByScreenSize) const {
+TrainingDensificationPushConstants
+GaussianTraining::createDensificationPushConstants(bool pruneByScreenSize) const {
     TrainingDensificationPushConstants pushConstants{};
     pushConstants.gaussianCount = trainableGaussianCount_;
-    pushConstants.maxGaussianCount = std::min(buffers_.densificationCapacity(),
-                                              densificationConfig_.maxGaussianCount);
+    pushConstants.maxGaussianCount =
+        std::min(buffers_.densificationCapacity(), densificationConfig_.maxGaussianCount);
     pushConstants.splitChildren = std::max(densificationConfig_.splitChildren, 2u);
     pushConstants.pruneByScreenSize = pruneByScreenSize ? 1u : 0u;
     pushConstants.sceneExtent = std::max(sceneExtent_, 1e-6f);
@@ -1282,8 +1347,7 @@ bool GaussianTraining::shouldRunDensification() const {
 }
 
 void GaussianTraining::prefetchUpcomingTrainingFrames() {
-    const std::vector<size_t> frameIndices =
-        frameScheduler_.upcomingFrames(2u);
+    const std::vector<size_t> frameIndices = frameScheduler_.upcomingFrames(2u);
     imageRuntime_.prefetch(frameIndices);
 }
 
@@ -1313,7 +1377,8 @@ void GaussianTraining::uploadCurrentTrainingFrame() {
                              result.targetUploadMilliseconds);
 }
 
-TrainingForwardCamera GaussianTraining::createTrainingCamera(const TrainingCameraFrame& frame) const {
+TrainingForwardCamera
+GaussianTraining::createTrainingCamera(const TrainingCameraFrame& frame) const {
     TrainingForwardCamera camera{};
     camera.view = frame.worldToCamera;
     camera.model = glm::mat4(1.0f);
@@ -1322,9 +1387,7 @@ TrainingForwardCamera GaussianTraining::createTrainingCamera(const TrainingCamer
     const float width = static_cast<float>(frame.width);
     const float height = static_cast<float>(frame.height);
     camera.viewport = glm::vec4(0.0f, 0.0f, width, height);
-    camera.focalTan = glm::vec4(frame.fx,
-                                frame.fy,
-                                width / std::max(2.0f * frame.fx, 1e-6f),
+    camera.focalTan = glm::vec4(frame.fx, frame.fy, width / std::max(2.0f * frame.fx, 1e-6f),
                                 height / std::max(2.0f * frame.fy, 1e-6f));
     camera.cameraPosition = glm::vec4(frame.position, 1.0f);
     return camera;
@@ -1350,8 +1413,8 @@ glm::mat4 GaussianTraining::createProjectionMatrix(const TrainingCameraFrame& fr
 void GaussianTraining::createTrainingProfilingResources(vk::Device device,
                                                         vk::PhysicalDevice physicalDevice,
                                                         uint32_t computeQueueFamilyIndex) {
-    profilingService_.initialize(
-        device, physicalDevice, computeQueueFamilyIndex, vulkanValidationLayersEnabled_);
+    profilingService_.initialize(device, physicalDevice, computeQueueFamilyIndex,
+                                 vulkanValidationLayersEnabled_);
     const vk::QueryPool queryPool = profilingService_.queryPool();
 
     if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
@@ -1385,12 +1448,10 @@ void GaussianTraining::resetCandidateProfileStats() {
 }
 
 void GaussianTraining::detachProfilingQueryPool() {
-    if (auto* gaussianForward =
-            dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
+    if (auto* gaussianForward = dynamic_cast<GaussianForwardRenderer*>(forward_.get())) {
         gaussianForward->setProfilingQueryPool(nullptr);
     }
-    if (auto* gaussianBackward =
-            dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
+    if (auto* gaussianBackward = dynamic_cast<GaussianBackwardRenderer*>(backward_.get())) {
         gaussianBackward->setProfilingQueryPool(nullptr);
     }
     if (densification_) {

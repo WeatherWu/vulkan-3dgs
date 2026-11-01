@@ -9,7 +9,7 @@
 namespace vulkan3DGS {
 namespace {
 constexpr std::array<uint32_t, 10> nativeBindings{66, 67, 68, 69, 70, 71, 72, 73, 74, 76};
-constexpr std::array<const char*, 11> shaderNames{"train_vksplat_project",
+constexpr std::array<const char*, 19> shaderNames{"train_vksplat_project",
                                                   "train_vksplat_optimizer",
                                                   "train_vksplat_state_import",
                                                   "train_vksplat_state_export",
@@ -19,8 +19,26 @@ constexpr std::array<const char*, 11> shaderNames{"train_vksplat_project",
                                                   "train_vksplat_tensor_global",
                                                   "train_vksplat_validation",
                                                   "train_vksplat_composite_64",
-                                                  "train_vksplat_composite_subtile_64"};
+                                                  "train_vksplat_composite_subtile_64",
+                                                  "train_vksplat_project_soa",
+                                                  "train_vksplat_composite_soa",
+                                                  "train_vksplat_composite_subtile_soa",
+                                                  "train_vksplat_tensor_shared_soa",
+                                                  "train_vksplat_tensor_global_soa",
+                                                  "train_vksplat_composite_64_soa",
+                                                  "train_vksplat_composite_subtile_64_soa",
+                                                  "train_vksplat_legacy_emit_soa"};
 std::vector<uint32_t> bindingsFor(uint32_t stage) {
+    if (stage == 11) {
+        std::vector<uint32_t> b(nativeBindings.begin(), nativeBindings.begin() + 4);
+        b.insert(b.end(), {11, 64, 80, 81, 82, 83, 84, 85, 86});
+        return b;
+    }
+    if (stage >= 12 && stage <= 17) {
+        if (stage == 14 || stage == 15) return {4, 5, 12, 13, 14, 80, 81, 82, 83, 84, 85, 86};
+        return {4, 5, 6, 14, 80, 81, 82, 83, 84, 85, 86};
+    }
+    if (stage == 18) return {4, 20, 21, 22, 32, 80, 81, 82, 83, 84, 85, 86};
     if (stage == 4 || stage == 5 || stage == 9 || stage == 10) return {3, 4, 5, 6, 14};
     if (stage == 6 || stage == 7) return {3, 4, 5, 12, 13, 14};
     std::vector<uint32_t> result(nativeBindings.begin(), nativeBindings.end());
@@ -35,8 +53,10 @@ std::vector<uint32_t> bindingsFor(uint32_t stage) {
 } // namespace
 
 TrainingVkSplatBackend::TrainingVkSplatBackend(vk::Device device, vk::PhysicalDevice physical,
-                                               vk::Queue queue, uint32_t family)
-    : device_(device), physical_(physical), queue_(queue), family_(family) {
+                                               vk::Queue queue, uint32_t family, bool adcReuse,
+                                               bool projectionSoA)
+    : device_(device), physical_(physical), queue_(queue), family_(family),
+      projectionSoA_(projectionSoA), optimizedRecording_(projectionSoA) {
     vk::PhysicalDeviceSubgroupProperties subgroup;
     vk::PhysicalDeviceProperties2 properties;
     properties.pNext = &subgroup;
@@ -47,7 +67,7 @@ TrainingVkSplatBackend::TrainingVkSplatBackend(vk::Device device, vk::PhysicalDe
     pool_.create(device_, family_, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     command_ = pool_.allocateCommandBuffer();
     fence_ = device_.createFenceUnique({});
-    adc_ = std::make_unique<TrainingVkSplatAdc>(*this);
+    adc_ = std::make_unique<TrainingVkSplatAdc>(*this, adcReuse);
 }
 
 TrainingVkSplatBackend::~TrainingVkSplatBackend() = default;
@@ -81,6 +101,7 @@ void TrainingVkSplatBackend::ensureCapacity(uint32_t count) {
 
 void TrainingVkSplatBackend::initializePipeline(Stage stage) {
     if (sets_[stage]) return;
+    if (optimizedRecording_) cachedBindings_[stage] = bindingsFor(stage);
     ComputePipelineConfig config{};
     uint32_t storage = 0, uniforms = 0;
     for (auto binding : bindingsFor(stage)) {
@@ -99,10 +120,18 @@ void TrainingVkSplatBackend::initializePipeline(Stage stage) {
 
 void TrainingVkSplatBackend::record(Stage stage, const BackwardPassContext& context) {
     initializePipeline(stage);
-    const auto bindings = bindingsFor(stage);
-    std::vector<vk::DescriptorBufferInfo> infos;
+    const auto referenceBindings =
+        optimizedRecording_ ? std::vector<uint32_t>{} : bindingsFor(stage);
+    const auto& bindings = optimizedRecording_ ? cachedBindings_[stage] : referenceBindings;
+    std::vector<vk::DescriptorBufferInfo> referenceInfos;
+    auto& infos = optimizedRecording_ ? cachedInfos_[stage] : referenceInfos;
+    infos.clear();
     const auto& b = context.buffers;
     for (auto binding : bindings) {
+        if (binding >= 80 && binding <= 86) {
+            infos.push_back(soa_[binding - 80].getDescriptorInfo());
+            continue;
+        }
         auto native = std::find(nativeBindings.begin(), nativeBindings.end(), binding);
         if (native != nativeBindings.end()) {
             infos.push_back(model_[native - nativeBindings.begin()].getDescriptorInfo());
@@ -148,6 +177,15 @@ void TrainingVkSplatBackend::record(Stage stage, const BackwardPassContext& cont
             case 30:
                 infos.push_back(b.gaussianValidationPartialsInfo());
                 break;
+            case 20:
+                infos.push_back(b.tileKeyLowInfo());
+                break;
+            case 21:
+                infos.push_back(b.tileKeyHighInfo());
+                break;
+            case 22:
+                infos.push_back(b.tileSortIndicesInfo());
+                break;
             case 32:
                 infos.push_back(b.gaussianTileRangesInfo());
                 break;
@@ -170,7 +208,9 @@ void TrainingVkSplatBackend::record(Stage stage, const BackwardPassContext& cont
                 throw std::logic_error("Unknown VkSplat binding");
         }
     }
-    std::vector<vk::WriteDescriptorSet> writes(bindings.size());
+    std::vector<vk::WriteDescriptorSet> referenceWrites;
+    auto& writes = optimizedRecording_ ? cachedWrites_[stage] : referenceWrites;
+    writes.resize(bindings.size());
     for (size_t i = 0; i < bindings.size(); ++i)
         writes[i]
             .setDstSet(sets_[stage])
@@ -192,12 +232,14 @@ void TrainingVkSplatBackend::record(Stage stage, const BackwardPassContext& cont
     context.commandBuffer.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0,
                                         sizeof(TrainingPushConstants), &context.pushConstants);
     const auto& p = context.pushConstants;
-    if ((stage >= Composite && stage <= PixelGlobal) || stage == Composite64 || stage == Subtile64)
+    if ((stage >= Composite && stage <= PixelGlobal) || stage == Composite64 ||
+        stage == Subtile64 || (stage >= CompositeSoA && stage <= Subtile64SoA))
         context.commandBuffer.dispatch((p.width + 15) / 16, (p.height + 15) / 16, 1);
     else if (p.gaussianCount)
-        context.commandBuffer.dispatch((p.gaussianCount + (stage <= Optimize ? 31u : 255u)) /
-                                           (stage <= Optimize ? 32u : 256u),
-                                       1, 1);
+        context.commandBuffer.dispatch(
+            (p.gaussianCount + (stage <= Optimize || stage == ProjectSoA ? 31u : 255u)) /
+                (stage <= Optimize || stage == ProjectSoA ? 32u : 256u),
+            1, 1);
     vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite,
                               vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
                                   vk::AccessFlagBits::eTransferRead};
@@ -249,14 +291,39 @@ void TrainingVkSplatBackend::recordProject(const BackwardPassContext& c) {
             "VkSplat backend expects world-space parameters and an identity model transform");
     if (!c.buffers.hasExactIntrinsics())
         throw std::runtime_error("VkSplat projection requires exact intrinsics");
-    record(Project, c);
+    if (projectionSoA_) {
+        if (std::max(c.pushConstants.gaussianCount, 1u) > soaCapacity_) {
+            std::array<Buffer, 7> next;
+            const uint32_t cap = (std::max(c.pushConstants.gaussianCount, 1u) + 31u) / 32u * 32u;
+            constexpr std::array<uint32_t, 7> stride{8, 4, 16, 12, 8, 4, 4};
+            for (uint32_t i = 0; i < 7; ++i) {
+                const uint64_t bytes = uint64_t(cap) * stride[i];
+                if (bytes > physical_.getProperties().limits.maxStorageBufferRange)
+                    throw std::runtime_error("VkSplat SoA output exceeds buffer limits");
+                next[i].create(device_, physical_, queue_, family_, nullptr, bytes,
+                               vk::BufferUsageFlagBits::eStorageBuffer |
+                                   vk::BufferUsageFlagBits::eTransferSrc |
+                                   vk::BufferUsageFlagBits::eTransferDst,
+                               vk::MemoryPropertyFlagBits::eDeviceLocal, {family_});
+            }
+            soa_ = std::move(next);
+            soaCapacity_ = cap;
+        }
+        record(ProjectSoA, c);
+    } else
+        record(Project, c);
 }
 void TrainingVkSplatBackend::recordComposite(const BackwardPassContext& c, bool subtile) {
     if (subgroupSize_ != 32u && subgroupSize_ != 64u)
         throw std::runtime_error("VkSplat composite requires subgroup size 32 or 64");
-    record(subgroupSize_ == 64u ? (subtile ? Subtile64 : Composite64)
-                                : (subtile ? Subtile : Composite),
-           c);
+    if (projectionSoA_)
+        record(subgroupSize_ == 64u ? (subtile ? Subtile64SoA : Composite64SoA)
+                                    : (subtile ? SubtileSoA : CompositeSoA),
+               c);
+    else
+        record(subgroupSize_ == 64u ? (subtile ? Subtile64 : Composite64)
+                                    : (subtile ? Subtile : Composite),
+               c);
 }
 bool TrainingVkSplatBackend::supportsLifecycle(vk::PhysicalDevice physical) {
     vk::PhysicalDeviceSubgroupProperties subgroup;
@@ -270,7 +337,9 @@ void TrainingVkSplatBackend::recordPixel(const BackwardPassContext& c, bool glob
     if (!pixelSupported_)
         throw std::runtime_error(
             "VkSplat Tensor requires native subgroup32 and at least 45 KiB shared memory");
-    record(global ? PixelGlobal : PixelShared, c);
+    record(projectionSoA_ ? (global ? PixelGlobalSoA : PixelSharedSoA)
+                          : (global ? PixelGlobal : PixelShared),
+           c);
 }
 void TrainingVkSplatBackend::recordOptimizer(const BackwardPassContext& c) {
     record(Optimize, c);
@@ -279,8 +348,48 @@ void TrainingVkSplatBackend::recordOptimizer(const BackwardPassContext& c) {
 void TrainingVkSplatBackend::recordValidation(const BackwardPassContext& c) {
     record(Validate, c);
 }
+std::array<vk::DescriptorBufferInfo, 7> TrainingVkSplatBackend::projectionInfos() const {
+    std::array<vk::DescriptorBufferInfo, 7> result;
+    for (uint32_t i = 0; i < 7; ++i)
+        result[i] = soa_[i].getDescriptorInfo();
+    return result;
+}
+void TrainingVkSplatBackend::recordSoALegacyEmit(const BackwardPassContext& c) {
+    record(LegacyEmitSoA, c);
+}
+void TrainingVkSplatBackend::recordSoAPrefix(const BackwardPassContext& c,
+                                             const TrainingPrefixPushConstants& prefix,
+                                             uint32_t groups) {
+    if (!soaPrefixSet_) {
+        ComputePipelineConfig config;
+        config.pushConstantSize = sizeof(prefix);
+        for (uint32_t b : {32u, 33u, 86u})
+            config.descriptorBindings.push_back(backwardStorageBinding(b));
+        soaPrefixPipeline_.initialize(device_, "shaders/train_vksplat_prefix_soa.comp.spv", config);
+        soaPrefixSet_ = soaPrefixDescriptors_.create(
+            device_, 3, 0, {soaPrefixPipeline_.getDescriptorSetLayout()})[0];
+    }
+    std::array<vk::DescriptorBufferInfo, 3> info{c.buffers.gaussianTileRangesInfo(),
+                                                 c.buffers.gaussianTilePrefixScratchInfo(),
+                                                 soa_[6].getDescriptorInfo()};
+    std::array<vk::WriteDescriptorSet, 3> writes;
+    constexpr std::array<uint32_t, 3> bindings{32, 33, 86};
+    for (uint32_t i = 0; i < 3; ++i)
+        writes[i] = {soaPrefixSet_, bindings[i], 0, 1, vk::DescriptorType::eStorageBuffer,
+                     nullptr,       &info[i]};
+    device_.updateDescriptorSets(writes, {});
+    auto layout = soaPrefixPipeline_.getPipelineLayout();
+    c.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, soaPrefixPipeline_.getPipeline());
+    c.commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, layout, 0, soaPrefixSet_,
+                                       {});
+    c.commandBuffer.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(prefix),
+                                  &prefix);
+    if (groups) c.commandBuffer.dispatch(groups, 1, 1);
+}
 uint64_t TrainingVkSplatBackend::allocatedBytes() const {
     uint64_t bytes = rectangles_.getSize() + officialRadii_.getSize() + adc_->allocatedBytes();
+    for (const auto& b : soa_)
+        bytes += b.getSize();
     for (const auto& b : model_)
         bytes += b.getSize();
     return bytes;

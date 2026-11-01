@@ -17,29 +17,40 @@
 namespace vulkan3DGS {
 
 enum class TrainingSortTimestamp : uint32_t {
-    CountBegin, CountEnd, PrefixEnd, EmitBegin, EmitEnd, DepthEnd,
-    HighGatherEnd, TileEnd, ItemGatherEnd, RangesEnd,
-    RangeBoundaryDispatchEnd, RangeBoundaryBarrierEnd, RangeFinalizeDispatchEnd, Count
+    CountBegin,
+    CountEnd,
+    PrefixEnd,
+    EmitBegin,
+    EmitEnd,
+    DepthEnd,
+    HighGatherEnd,
+    TileEnd,
+    ItemGatherEnd,
+    RangesEnd,
+    RangeBoundaryDispatchEnd,
+    RangeBoundaryBarrierEnd,
+    RangeFinalizeDispatchEnd,
+    Count
 };
 inline constexpr uint32_t kTrainingSortTimestampCount = uint32_t(TrainingSortTimestamp::Count);
 
 class GaussianForwardRenderer : public ForwardTrainingRenderer {
 public:
-    void initialize(vk::Device device,
-                    vk::PhysicalDevice physicalDevice,
-                    vk::Queue computeQueue,
-                    uint32_t computeQueueFamilyIndex,
-                    uint32_t gaussianCount,
+    void initialize(vk::Device device, vk::PhysicalDevice physicalDevice, vk::Queue computeQueue,
+                    uint32_t computeQueueFamilyIndex, uint32_t gaussianCount,
                     TrainingExtent extent) override;
     void cleanup() override;
 
-    void setTrainingBuffers(TrainingBuffers& trainingBuffers,
-                            vk::CommandBuffer commandBuffer,
+    void setTrainingBuffers(TrainingBuffers& trainingBuffers, vk::CommandBuffer commandBuffer,
                             TrainingPushConstants pushConstants);
     void setProfilingQueryPool(vk::QueryPool queryPool);
-    void setCompositeMode(TrainingForwardCompositeMode mode) { compositeMode_ = mode; }
+    void setCompositeMode(TrainingForwardCompositeMode mode) {
+        compositeMode_ = mode;
+    }
     void setVkSplatBackend(TrainingVkSplatBackend* backend, bool subtile) {
-        if (bool(vkSplat_) != bool(backend)) fasterSort_.reset();
+        if (bool(vkSplat_) != bool(backend) ||
+            (backend && vkSplat_ && backend->projectionSoA() != vkSplat_->projectionSoA()))
+            fasterSort_.reset();
         vkSplat_ = backend;
         vkSplatSubtile_ = subtile;
     }
@@ -47,7 +58,9 @@ public:
     void prepareTileItems();
     void renderPreparedTiles(uint32_t tileItemCount);
     // Private replay callers own the query pool and restore inputs before recording.
-    void setSortDiagnosticQueryPool(vk::QueryPool pool) { sortDiagnosticQueries_ = pool; }
+    void setSortDiagnosticQueryPool(vk::QueryPool pool) {
+        sortDiagnosticQueries_ = pool;
+    }
     void prepareProjectedTileItems();
     void emitPreparedTileItems(uint32_t tileItemCount);
     void buildPreparedTileLists(uint32_t tileItemCount);
@@ -69,12 +82,22 @@ public:
     const TrainingKey16State& key16State() const {
         return key16State_;
     }
-    void setFasterSortEnabled(bool enabled) { fasterSortRequested_ = enabled; }
-    bool fasterSortActive() const { return fasterSortPrepared_; }
-    bool fasterSortRequested() const { return fasterSortRequested_; }
-    uint32_t fasterSortParticipatingCount() const { return fasterSortPrepared_ && fasterSort_ ? fasterSort_->participatingCount() : 0u; }
+    void setFasterSortEnabled(bool enabled) {
+        fasterSortRequested_ = enabled;
+    }
+    bool fasterSortActive() const {
+        return fasterSortPrepared_;
+    }
+    bool fasterSortRequested() const {
+        return fasterSortRequested_;
+    }
+    uint32_t fasterSortParticipatingCount() const {
+        return fasterSortPrepared_ && fasterSort_ ? fasterSort_->participatingCount() : 0u;
+    }
 
-    bool isInitialized() const override { return initialized_; }
+    bool isInitialized() const override {
+        return initialized_;
+    }
 
 private:
     struct TilePipelineVariant {

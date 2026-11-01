@@ -62,7 +62,7 @@ inline std::string run(vk::Device device, vk::PhysicalDevice physical, vk::Queue
     pool.create(device, family, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
     const auto command = pool.allocateCommandBuffer();
     auto fence = device.createFenceUnique({});
-    uint32_t cases = 0, fallbackCases = 0;
+    uint32_t cases = 0, fallbackCases = 0, reportingCases = 0;
     for (auto size : {glm::uvec2(11, 11), glm::uvec2(17, 19), glm::uvec2(32, 17), glm::uvec2(2, 2),
                       glm::uvec2(10, 17)}) {
         for (uint32_t alpha : {255u, 128u, 0u, 64u}) {
@@ -135,6 +135,29 @@ inline std::string run(vk::Device device, vk::PhysicalDevice physical, vk::Queue
                         close(gradients[i].color[c], derivative,
                               "VkSplat source-gradient contract mismatch");
                     }
+                for (uint32_t mode : {1u, 2u, 0u}) {
+                    pass.setVkSplatOnCheck(mode != 0);
+                    push.validationEnabled = mode == 2 ? 1u : 0u;
+                    std::vector<float> sentinel(n, -123.0f);
+                    morton_checks::upload(transfer, buffers.lossInfo(), sentinel);
+                    command.reset();
+                    command.begin(
+                        vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+                    pass.recordLoss({buffers, command, push});
+                    pass.recordLossToPixel({buffers, command, push});
+                    command.end();
+                    queue.submit(vk::SubmitInfo{}.setCommandBuffers(command), *fence);
+                    (void)device.waitForFences(*fence, true, UINT64_MAX);
+                    device.resetFences(*fence);
+                    const auto actualGradient =
+                        morton_checks::read<PixelGrad>(transfer, buffers.pixelGradsInfo());
+                    morton_checks::exact(actualGradient, gradients,
+                                         "On Check changed per-step pixel gradients");
+                    const auto scalar = morton_checks::read<float>(transfer, buffers.lossInfo());
+                    morton_checks::exact(scalar, mode == 1 ? sentinel : loss,
+                                         "Loss scalar reporting/write contract failed");
+                    ++reportingCases;
+                }
                 ++cases;
             }
         }
@@ -219,7 +242,8 @@ inline std::string run(vk::Device device, vk::PhysicalDevice physical, vk::Queue
             "GPU Resident training requested host pixels or uploaded images again");
     return "{\"source_commit\":\"b3ad2b048918496616e0e9346e35c606d813ab55\","
            "\"loss_cases\":" +
-           std::to_string(cases) + ",\"loss_fallback_cases\":" + std::to_string(fallbackCases) +
+           std::to_string(cases) + ",\"loss_reporting_cases\":" + std::to_string(reportingCases) +
+           ",\"loss_fallback_cases\":" + std::to_string(fallbackCases) +
            ",\"soft_alpha_source_gradient_checked\":true,\"resident_images\":3,"
            "\"resident_synthetic_training_steps\":2,\"real_training\":false}";
 }

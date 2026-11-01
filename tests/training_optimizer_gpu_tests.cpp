@@ -679,9 +679,29 @@ int main(int argc, char** argv) {
                     << vksplat_backend_checks::stateEvents(*device, physical, queue, family);
             details << ",\"vksplat_native_adc_boundary_cases\":"
                     << vksplat_backend_checks::adcBoundaries(*device, physical, queue, family);
+            details << ",\"vksplat_reuse_adc_boundary_cases\":"
+                    << vksplat_backend_checks::adcBoundaries(*device, physical, queue, family,
+                                                             true);
+            details << ",\"vksplat_reuse_adc_event_cases\":"
+                    << vksplat_backend_checks::stateEvents(*device, physical, queue, family, true);
+            details << ",\"vksplat_soa_cases\":"
+                    << vksplat_backend_checks::projectionStorage(*device, physical, queue, family);
             details << R"(,"vksplat_shader_fnv1a64":{)";
             bool firstNativeShader = true;
-            for (const char* name : {"train_vksplat_project",
+            for (const char* name : {"train_vksplat_composite_64_soa",
+                                     "train_vksplat_composite_subtile_64_soa",
+                                     "train_vksplat_tensor_shared_soa",
+                                     "train_vksplat_emit_soa",
+                                     "train_vksplat_sort_prepare_soa",
+                                     "train_vksplat_prefix_soa",
+                                     "train_vksplat_legacy_emit_soa",
+                                     "train_vksplat_project_soa",
+                                     "train_vksplat_composite_soa",
+                                     "train_vksplat_composite_subtile_soa",
+                                     "train_vksplat_tensor_global_soa",
+                                     "train_vksplat_ssim_gradient_forward",
+                                     "train_vksplat_adc_sum",
+                                     "train_vksplat_project",
                                      "train_vksplat_optimizer",
                                      "train_vksplat_ssim_forward",
                                      "train_vksplat_ssim_backward",
@@ -728,6 +748,19 @@ int main(int argc, char** argv) {
                     << (nativeLife
                             ? vksplat_backend_checks::lifecycle(*device, physical, queue, family)
                             : 0);
+            details << ",\"vksplat_candidate_lifecycle_steps\":[";
+            bool firstCandidate = true;
+            for (uint32_t candidate : {1u, 2u, 3u, 4u}) {
+                if (!firstCandidate) details << ',';
+                firstCandidate = false;
+                details << (nativeLife ? vksplat_backend_checks::lifecycle(
+                                             *device, physical, queue, family,
+                                             candidate == 1 || candidate == 4,
+                                             candidate == 2 || candidate == 4,
+                                             candidate == 3 || candidate == 4)
+                                       : 0);
+            }
+            details << ']';
         } else if (directOnly) {
             details << ",\"direct_intrinsics\":"
                     << direct_intrinsics_checks::run(*device, physical, queue, family);

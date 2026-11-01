@@ -36,6 +36,8 @@ TrainingSettings populatedSettings() {
     settings.run.ssimMode = 2;
     settings.run.trainingImageStorage = 1;
     settings.run.lossBackend = 1;
+    settings.run.vkSplatAdcExecution = settings.run.vkSplatProjectionStorage = 1;
+    settings.run.vkSplatLossReporting = settings.run.trainingNumericChecks = 1;
     settings.run.pureTraining = true;
     settings.optimizer.positionLearningRate = 0.012345f;
     settings.densification.maxGaussians = 7654321;
@@ -60,6 +62,8 @@ bool testRoundTrip(const std::filesystem::path& path) {
            loaded.run.tensorEarlyCull && loaded.run.fasterSort && loaded.run.mortonOrdering &&
            loaded.run.directIntrinsicsProjection && loaded.run.physicalTileKey16 &&
            loaded.run.ssimMode == 2 && loaded.run.trainingImageStorage == 1 &&
+           loaded.run.vkSplatAdcExecution == 1 && loaded.run.vkSplatProjectionStorage == 1 &&
+           loaded.run.vkSplatLossReporting == 1 && loaded.run.trainingNumericChecks == 1 &&
            loaded.run.lossBackend == 1 && loaded.run.pureTraining &&
            loaded.optimizer.positionLearningRate == source.optimizer.positionLearningRate &&
            loaded.densification.maxGaussians == 7654321 &&
@@ -74,6 +78,19 @@ bool testValidationAndImmutableRunConfig() {
     if (TrainingSettings{}.run.mortonOrdering ||
         TrainingSettings{}.run.directIntrinsicsProjection ||
         TrainingSettings{}.run.physicalTileKey16)
+        return false;
+    if (TrainingSettings{}.run.vkSplatAdcExecution ||
+        TrainingSettings{}.run.vkSplatProjectionStorage ||
+        TrainingSettings{}.run.vkSplatLossReporting || TrainingSettings{}.run.trainingNumericChecks)
+        return false;
+    uint32_t periodic = 0, firstLast = 0;
+    for (uint32_t step = 1; step <= 30000; ++step) {
+        periodic += trainingNumericCheckDue(step, 30000, 100, false);
+        const bool due = trainingNumericCheckDue(step, 30000, 100, true);
+        if (due != (step <= 5 || step == 30000)) return false;
+        firstLast += due;
+    }
+    if (periodic != 305 || firstLast != 6 || trainingNumericCheckDue(0, 30000, 100, true))
         return false;
     if (TrainingSettings{}.run.ssimMode != 0) return false;
     TrainingSettings settings = populatedSettings();
@@ -307,6 +324,8 @@ bool testVkSplatSettings(const std::filesystem::path& path) {
     setTextBuffer(settings.paths.outputName, "model.ply");
     settings.run.trainingImageStorage = 1;
     settings.run.lossBackend = 1;
+    settings.run.vkSplatAdcExecution = settings.run.vkSplatProjectionStorage = 1;
+    settings.run.vkSplatLossReporting = settings.run.trainingNumericChecks = 1;
     settings.run.computeBackend = 1;
     settings.run.vkSplatSubtile = true;
     settings.run.fasterSort = true;

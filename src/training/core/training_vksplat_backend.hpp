@@ -13,7 +13,7 @@ namespace vulkan3DGS {
 class TrainingVkSplatBackend {
 public:
     TrainingVkSplatBackend(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                           uint32_t family);
+                           uint32_t family, bool adcReuse = false, bool projectionSoA = false);
     ~TrainingVkSplatBackend();
     TrainingVkSplatAdc& adc() {
         return *adc_;
@@ -21,6 +21,16 @@ public:
     static bool supportsLifecycle(vk::PhysicalDevice physical);
     void importCanonical(TrainingBuffers& buffers, uint32_t count);
     void exportCanonical(TrainingBuffers& buffers, uint32_t count);
+    bool projectionSoA() const {
+        return projectionSoA_;
+    }
+    std::array<vk::DescriptorBufferInfo, 7> projectionInfos() const;
+    vk::DescriptorBufferInfo officialRadiiInfo() const {
+        return projectionSoA_ ? soa_[5].getDescriptorInfo() : officialRadii_.getDescriptorInfo();
+    }
+    void recordSoAPrefix(const BackwardPassContext& context,
+                         const TrainingPrefixPushConstants& prefix, uint32_t groups);
+    void recordSoALegacyEmit(const BackwardPassContext& context);
     void recordProject(const BackwardPassContext& context);
     void recordComposite(const BackwardPassContext& context, bool subtile);
     void recordPixel(const BackwardPassContext& context, bool subgroupGlobal);
@@ -48,6 +58,14 @@ private:
         Validate,
         Composite64,
         Subtile64,
+        ProjectSoA,
+        CompositeSoA,
+        SubtileSoA,
+        PixelSharedSoA,
+        PixelGlobalSoA,
+        Composite64SoA,
+        Subtile64SoA,
+        LegacyEmitSoA,
         Count
     };
     void ensureCapacity(uint32_t count);
@@ -61,6 +79,16 @@ private:
     uint32_t capacity_ = 0;
     uint32_t subgroupSize_ = 0;
     bool pixelSupported_ = false;
+    bool projectionSoA_ = false;
+    bool optimizedRecording_ = false;
+    std::array<std::vector<uint32_t>, Count> cachedBindings_;
+    std::array<std::vector<vk::DescriptorBufferInfo>, Count> cachedInfos_;
+    std::array<std::vector<vk::WriteDescriptorSet>, Count> cachedWrites_;
+    uint32_t soaCapacity_ = 0;
+    std::array<Buffer, 7> soa_;
+    ComputePipeline soaPrefixPipeline_;
+    BackwardDescriptorPool soaPrefixDescriptors_;
+    vk::DescriptorSet soaPrefixSet_{};
     std::array<std::vector<vk::DescriptorBufferInfo>, Count> lastBindings_;
     std::array<Buffer, 10> model_;
     Buffer rectangles_;

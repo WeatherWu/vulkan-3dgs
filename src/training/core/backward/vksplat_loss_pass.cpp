@@ -8,15 +8,15 @@
 namespace vulkan3DGS {
 
 VkSplatLossPass::VkSplatLossPass(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                                 uint32_t family)
-    : device_(device), physical_(physical), queue_(queue), family_(family) {
-    const std::array<const char*, 3> names = {"train_vksplat_ssim_forward",
-                                              "train_vksplat_ssim_backward",
-                                              "train_vksplat_loss_statistics"};
-    const std::array<std::array<uint32_t, 4>, 3> bindings = {
-        std::array<uint32_t, 4>{0, 1, 2, 4}, {0, 1, 2, 3}, {6, 8, 14, 29}};
+                                 uint32_t family, bool onCheck)
+    : device_(device), physical_(physical), queue_(queue), family_(family), onCheck_(onCheck) {
+    const std::array<const char*, 4> names = {
+        "train_vksplat_ssim_forward", "train_vksplat_ssim_backward",
+        "train_vksplat_loss_statistics", "train_vksplat_ssim_gradient_forward"};
+    const std::array<std::array<uint32_t, 4>, 4> bindings = {
+        std::array<uint32_t, 4>{0, 1, 2, 4}, {0, 1, 2, 3}, {6, 8, 14, 29}, {0, 1, 2, 4}};
     std::vector<vk::DescriptorSetLayout> layouts;
-    for (uint32_t i = 0; i < 3; ++i) {
+    for (uint32_t i = 0; i < (onCheck_ ? 4u : 3u); ++i) {
         ComputePipelineConfig config{};
         for (auto binding : bindings[i])
             config.descriptorBindings.push_back(backwardStorageBinding(binding));
@@ -26,7 +26,7 @@ VkSplatLossPass::VkSplatLossPass(vk::Device device, vk::PhysicalDevice physical,
             config);
         layouts.push_back(pipelines_[i].getDescriptorSetLayout());
     }
-    sets_ = descriptors_.create(device_, 12u, 0u, layouts);
+    sets_ = descriptors_.create(device_, onCheck_ ? 16u : 12u, 0u, layouts);
 }
 
 void VkSplatLossPass::recordForward(const BackwardPassContext& context) {
@@ -41,7 +41,7 @@ void VkSplatLossPass::recordForward(const BackwardPassContext& context) {
                      vk::MemoryPropertyFlagBits::eDeviceLocal, {family_});
         state_ = std::move(state);
     }
-    record(context, 0);
+    record(context, onCheck_ && !context.pushConstants.validationEnabled ? 3u : 0u);
     recordBackwardBufferBarrier(
         context.commandBuffer, {state_.getDescriptorInfo(), context.buffers.lossInfo()},
         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eTransferRead);
@@ -64,7 +64,7 @@ void VkSplatLossPass::record(const BackwardPassContext& context, uint32_t stage)
     const auto state = state_.getDescriptorInfo();
     std::array<vk::DescriptorBufferInfo, 4> infos;
     std::array<uint32_t, 4> bindings;
-    if (stage == 0) {
+    if (stage == 0 || stage == 3) {
         infos = {buffers.renderedColorInfo(), buffers.targetColorInfo(), state, buffers.lossInfo()};
         bindings = {0, 1, 2, 4};
     } else if (stage == 1) {
@@ -84,7 +84,10 @@ void VkSplatLossPass::record(const BackwardPassContext& context, uint32_t stage)
             .setDescriptorCount(1)
             .setDescriptorType(vk::DescriptorType::eStorageBuffer)
             .setPBufferInfo(&infos[i]);
-    device_.updateDescriptorSets(writes, {});
+    if (!onCheck_ || lastInfos_[stage] != infos) {
+        device_.updateDescriptorSets(writes, {});
+        lastInfos_[stage] = infos;
+    }
     const auto layout = pipelines_[stage].getPipelineLayout();
     context.commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute,
                                        pipelines_[stage].getPipeline());

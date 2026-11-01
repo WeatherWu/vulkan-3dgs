@@ -25,8 +25,7 @@ uint32_t roundedGaussianCapacity(uint32_t requestedCapacity) {
     constexpr uint32_t capacityChunk = 16384u;
     const uint64_t requested = std::max<uint64_t>(requestedCapacity, 1u);
     const uint64_t rounded = ((requested + capacityChunk - 1u) / capacityChunk) * capacityChunk;
-    return static_cast<uint32_t>(std::min<uint64_t>(rounded,
-                                                    std::numeric_limits<uint32_t>::max()));
+    return static_cast<uint32_t>(std::min<uint64_t>(rounded, std::numeric_limits<uint32_t>::max()));
 }
 
 uint32_t gaussianPrefixScratchElementCount(uint32_t gaussianCapacity) {
@@ -39,8 +38,7 @@ uint32_t gaussianPrefixScratchElementCount(uint32_t gaussianCapacity) {
         }
         levelCount = (levelCount + 255u) / 256u;
     }
-    return static_cast<uint32_t>(std::min<uint64_t>(total,
-                                                    std::numeric_limits<uint32_t>::max()));
+    return static_cast<uint32_t>(std::min<uint64_t>(total, std::numeric_limits<uint32_t>::max()));
 }
 
 } // namespace
@@ -56,31 +54,19 @@ void TrainingBuffers::initialize(vk::Device device, vk::PhysicalDevice physicalD
     computeQueueFamilyIndex_ = computeQueueFamilyIndex;
     try {
         tileItemCountReadback_.create(
-            device_,
-            physicalDevice_,
-            transferQueue_,
-            transferQueueFamilyIndex_,
-            nullptr,
-            sizeof(glm::uvec4),
-            vk::BufferUsageFlagBits::eTransferDst,
-            vk::MemoryPropertyFlagBits::eHostVisible |
-                vk::MemoryPropertyFlagBits::eHostCoherent,
+            device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
+            sizeof(glm::uvec4), vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
             {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
-        tileItemCountReadbackMapped_ = device_.mapMemory(
-            tileItemCountReadback_.getMemory(), 0, sizeof(glm::uvec4));
+        tileItemCountReadbackMapped_ =
+            device_.mapMemory(tileItemCountReadback_.getMemory(), 0, sizeof(glm::uvec4));
         densificationStatsReadback_.create(
-            device_,
-            physicalDevice_,
-            transferQueue_,
-            transferQueueFamilyIndex_,
-            nullptr,
-            sizeof(uint32_t) * 16u,
-            vk::BufferUsageFlagBits::eTransferDst,
-            vk::MemoryPropertyFlagBits::eHostVisible |
-                vk::MemoryPropertyFlagBits::eHostCoherent,
+            device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
+            sizeof(uint32_t) * 16u, vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
             {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
-        densificationStatsReadbackMapped_ = device_.mapMemory(
-            densificationStatsReadback_.getMemory(), 0, sizeof(uint32_t) * 16u);
+        densificationStatsReadbackMapped_ =
+            device_.mapMemory(densificationStatsReadback_.getMemory(), 0, sizeof(uint32_t) * 16u);
     } catch (...) {
         if (densificationStatsReadbackMapped_ && densificationStatsReadback_.getMemory()) {
             device_.unmapMemory(densificationStatsReadback_.getMemory());
@@ -105,7 +91,8 @@ void TrainingBuffers::ensureCheckpointCapacity(uint32_t tileItemCount) {
         throw std::runtime_error("Checkpoint workspace exceeds descriptor/index limits");
     if (checkpoint_ && checkpoint_->capacity.tileCount == capacity.tileCount &&
         checkpoint_->capacity.slotCapacity >= capacity.slotCapacity &&
-        checkpoint_->capacity.taskCapacity >= capacity.taskCapacity) return;
+        checkpoint_->capacity.taskCapacity >= capacity.taskCapacity)
+        return;
     if (checkpoint_) {
         capacity.slotCapacity = std::max(capacity.slotCapacity, checkpoint_->capacity.slotCapacity);
         capacity.taskCapacity = std::max(capacity.taskCapacity, checkpoint_->capacity.taskCapacity);
@@ -124,8 +111,8 @@ void TrainingBuffers::ensureCheckpointCapacity(uint32_t tileItemCount) {
     // transactional replacement) through the driver's current heap usage.
     bool supportsBudget = false;
     for (const auto& extension : physicalDevice_.enumerateDeviceExtensionProperties())
-        supportsBudget |= std::string_view(extension.extensionName.data()) ==
-                          VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+        supportsBudget |=
+            std::string_view(extension.extensionName.data()) == VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (supportsBudget) {
         vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
         vk::PhysicalDeviceMemoryProperties2 memory{};
@@ -133,16 +120,19 @@ void TrainingBuffers::ensureCheckpointCapacity(uint32_t tileItemCount) {
         physicalDevice_.getMemoryProperties2(&memory);
         uint64_t bestAvailable = 0;
         for (uint32_t i = 0; i < memory.memoryProperties.memoryHeapCount; ++i) {
-            if (!(memory.memoryProperties.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal))
+            if (!(memory.memoryProperties.memoryHeaps[i].flags &
+                  vk::MemoryHeapFlagBits::eDeviceLocal))
                 continue;
             const uint64_t free = budget.heapBudget[i] > budget.heapUsage[i]
-                                      ? budget.heapBudget[i] - budget.heapUsage[i] : 0u;
-            const uint64_t reserve = std::max<uint64_t>(512u * 1024u * 1024u,
-                                                       budget.heapBudget[i] * 15u / 100u);
+                                      ? budget.heapBudget[i] - budget.heapUsage[i]
+                                      : 0u;
+            const uint64_t reserve =
+                std::max<uint64_t>(512u * 1024u * 1024u, budget.heapBudget[i] * 15u / 100u);
             bestAvailable = std::max(bestAvailable, free > reserve ? free - reserve : 0u);
         }
         if (bytes > bestAvailable)
-            throw std::runtime_error("Checkpoint diagnostic workspace exceeds available VRAM budget");
+            throw std::runtime_error(
+                "Checkpoint diagnostic workspace exceeds available VRAM budget");
     }
     auto next = std::make_unique<CheckpointWorkspace>();
     next->capacity = capacity;
@@ -151,38 +141,50 @@ void TrainingBuffers::ensureCheckpointCapacity(uint32_t tileItemCount) {
     createStorageBuffer(next->tasks, std::max<uint64_t>(capacity.taskBytes, 16u));
     for (auto& bank : next->banks)
         createStorageBuffer(bank, std::max<uint64_t>(capacity.bankBytes, 16u));
-    next->control.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
-                         sizeof(TrainingCheckpointControl),
-                         vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
-                             vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndirectBuffer,
-                         vk::MemoryPropertyFlagBits::eDeviceLocal,
-                         {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
-    next->readback.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
-                          sizeof(TrainingCheckpointControl), vk::BufferUsageFlagBits::eTransferDst,
-                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                          {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+    next->control.create(
+        device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
+        sizeof(TrainingCheckpointControl),
+        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+            vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndirectBuffer,
+        vk::MemoryPropertyFlagBits::eDeviceLocal,
+        {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+    next->readback.create(
+        device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
+        sizeof(TrainingCheckpointControl), vk::BufferUsageFlagBits::eTransferDst,
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+        {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     checkpoint_ = std::move(next);
-    LOG_INFO("Checkpoint P1 diagnostic workspace: {} logical buffer bytes, {} slots, {} tasks (layout 2), CPU allocation {} ms",
-             bytes, capacity.slotCapacity, capacity.taskCapacity,
-             std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - allocationStart).count());
+    LOG_INFO(
+        "Checkpoint P1 diagnostic workspace: {} logical buffer bytes, {} slots, {} tasks (layout "
+        "2), CPU allocation {} ms",
+        bytes, capacity.slotCapacity, capacity.taskCapacity,
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - allocationStart)
+            .count());
 }
 
 TrainingCheckpointResources TrainingBuffers::checkpointResources() const {
     if (!checkpoint_) throw std::runtime_error("Checkpoint diagnostic workspace is unavailable");
     TrainingCheckpointResources resources{};
     resources.capacity = checkpoint_->capacity;
-    resources.descriptors = {projectedInfo(), tileItemsInfo(), tileRangesInfo(), pixelBlendStatesInfo(),
-        checkpoint_->metadata.getDescriptorInfo(), checkpoint_->scratch.getDescriptorInfo(),
-        checkpoint_->banks[0].getDescriptorInfo(), checkpoint_->banks[1].getDescriptorInfo(),
-        checkpoint_->banks[2].getDescriptorInfo(), checkpoint_->banks[3].getDescriptorInfo(),
-        checkpoint_->tasks.getDescriptorInfo(), checkpoint_->control.getDescriptorInfo()};
+    resources.descriptors = {projectedInfo(),
+                             tileItemsInfo(),
+                             tileRangesInfo(),
+                             pixelBlendStatesInfo(),
+                             checkpoint_->metadata.getDescriptorInfo(),
+                             checkpoint_->scratch.getDescriptorInfo(),
+                             checkpoint_->banks[0].getDescriptorInfo(),
+                             checkpoint_->banks[1].getDescriptorInfo(),
+                             checkpoint_->banks[2].getDescriptorInfo(),
+                             checkpoint_->banks[3].getDescriptorInfo(),
+                             checkpoint_->tasks.getDescriptorInfo(),
+                             checkpoint_->control.getDescriptorInfo()};
     return resources;
 }
 
 void TrainingBuffers::recordCheckpointReadback(vk::CommandBuffer command) {
     if (!checkpoint_) return;
     command.copyBuffer(checkpoint_->control.getBuffer(), checkpoint_->readback.getBuffer(),
-                        vk::BufferCopy{0, 0, sizeof(TrainingCheckpointControl)});
+                       vk::BufferCopy{0, 0, sizeof(TrainingCheckpointControl)});
     vk::MemoryBarrier memory{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead};
     command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
                             {}, memory, {}, {});
@@ -252,6 +254,7 @@ void TrainingBuffers::cleanup() {
     gaussianGrads_.cleanup();
     gaussianParams_.cleanup();
 
+    nativeWorkspaceReuse_ = false;
     gaussianCapacity_ = 0;
     gaussianWorkspaceCapacity_ = 0;
     densificationCapacity_ = 0;
@@ -275,15 +278,17 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     const uint32_t safeGaussianCount = std::max(gaussianCount, 1u);
     const uint32_t initialTileCapacity = radixKeyValueCapacity(
         static_cast<uint32_t>(std::min<uint64_t>(uint64_t(safeGaussianCount) * 8u,
-                                               std::numeric_limits<uint32_t>::max())),
+                                                 std::numeric_limits<uint32_t>::max())),
         physicalDevice_.getProperties().limits.minStorageBufferOffsetAlignment);
     const uint32_t safeWidth = std::max(extent.width, 1u);
     const uint32_t safeHeight = std::max(extent.height, 1u);
-    const uint64_t pixelCount = static_cast<uint64_t>(safeWidth) * static_cast<uint64_t>(safeHeight);
-    const uint64_t parentTileCount = makeTrainingTileLayout(
-        TrainingExtent{safeWidth, safeHeight}, kTrainingTileSize16).tileCount;
-    const uint64_t tileRangeCapacity = trainingAdaptiveRangeCapacity(
-        TrainingExtent{safeWidth, safeHeight});
+    const uint64_t pixelCount =
+        static_cast<uint64_t>(safeWidth) * static_cast<uint64_t>(safeHeight);
+    const uint64_t parentTileCount =
+        makeTrainingTileLayout(TrainingExtent{safeWidth, safeHeight}, kTrainingTileSize16)
+            .tileCount;
+    const uint64_t tileRangeCapacity =
+        trainingAdaptiveRangeCapacity(TrainingExtent{safeWidth, safeHeight});
     if (parentTileCount * 4u > std::numeric_limits<uint32_t>::max() ||
         parentTileCount * 4u > static_cast<uint64_t>(kAdaptiveTrainingChildDispatchWidth) *
                                    kAdaptiveTrainingChildDispatchWidth) {
@@ -379,26 +384,24 @@ void TrainingBuffers::resize(uint32_t gaussianCount, TrainingExtent extent) {
     const uint64_t validationGroupCountY = (safeHeight + 15u) / 16u;
     const uint64_t pixelValidationPartialCount = validationGroupCountX * validationGroupCountY;
     const uint32_t gaussianValidationPartialCount =
-        (safeGaussianCount + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
+        (safeGaussianCount + kTrainingValidationWorkgroupSize - 1u) /
+        kTrainingValidationWorkgroupSize;
     createStorageBuffer(pixelValidationPartials_,
                         sizeof(TrainingPixelValidationPartial) * pixelValidationPartialCount);
     createStorageBuffer(gaussianValidationPartials_,
                         sizeof(TrainingGaussianValidationPartial) * gaussianValidationPartialCount);
     createStorageBuffer(validationFinalResult_, sizeof(TrainingValidationGpuResult));
     createStorageBuffer(pixelBlendStates_, sizeof(PixelBlendState) * pixelCount);
-    createZeroedStorageBuffer(densificationStates_, sizeof(GaussianDensificationState) * safeGaussianCount);
+    createZeroedStorageBuffer(densificationStates_,
+                              sizeof(GaussianDensificationState) * safeGaussianCount);
     createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * safeGaussianCount);
     createStorageBuffer(loss_, sizeof(float) * pixelCount);
     const glm::uvec4 zeroCounters{0, 0, 0, 0};
-    counters_.create(device_,
-                     physicalDevice_,
-                     transferQueue_,
-                     transferQueueFamilyIndex_,
-                     &zeroCounters,
-                     sizeof(glm::uvec4),
+    counters_.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_,
+                     &zeroCounters, sizeof(glm::uvec4),
                      vk::BufferUsageFlagBits::eStorageBuffer |
                          vk::BufferUsageFlagBits::eTransferSrc |
-                     vk::BufferUsageFlagBits::eTransferDst,
+                         vk::BufferUsageFlagBits::eTransferDst,
                      vk::MemoryPropertyFlagBits::eDeviceLocal,
                      {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * safeGaussianCount);
@@ -424,7 +427,8 @@ void TrainingBuffers::configureSsimScratch(TrainingSsimMode mode) {
     const vk::DeviceSize bytes = pixels * planes * sizeof(glm::vec4);
     if (bytes > physicalDevice_.getProperties().limits.maxStorageBufferRange ||
         pixels > std::numeric_limits<uint32_t>::max() / planes) {
-        throw std::runtime_error("Separable SSIM scratch exceeds maxStorageBufferRange or shader indexing limit");
+        throw std::runtime_error(
+            "Separable SSIM scratch exceeds maxStorageBufferRange or shader indexing limit");
     }
     if (ssimScratch_.getSize() != bytes) {
         Buffer scratch;
@@ -438,7 +442,8 @@ void TrainingBuffers::resizeTileItems(uint32_t tileItemCapacity) {
         throw std::runtime_error("TrainingBuffers must be initialized before resizing tile items");
     }
 
-    const uint32_t safeCapacity = radixKeyValueCapacity(std::max(tileItemCapacity, 1u),
+    const uint32_t safeCapacity = radixKeyValueCapacity(
+        std::max(tileItemCapacity, 1u),
         physicalDevice_.getProperties().limits.minStorageBufferOffsetAlignment);
     if (safeCapacity <= tileItemCapacity_ && tileItems_.getBuffer()) {
         return;
@@ -466,18 +471,16 @@ void TrainingBuffers::ensureTileSortStorage(uint32_t tileItemCapacity,
                                             vk::DeviceSize sortStorageSize,
                                             vk::BufferUsageFlags sortStorageUsage) {
     if (!device_) {
-        throw std::runtime_error("TrainingBuffers must be initialized before resizing tile sort storage");
+        throw std::runtime_error(
+            "TrainingBuffers must be initialized before resizing tile sort storage");
     }
 
-    const uint32_t safeCapacity = radixKeyValueCapacity(std::max(tileItemCapacity, 1u),
+    const uint32_t safeCapacity = radixKeyValueCapacity(
+        std::max(tileItemCapacity, 1u),
         physicalDevice_.getProperties().limits.minStorageBufferOffsetAlignment);
-    if (safeCapacity > tileItemCapacity_ ||
-        !tileItems_.getBuffer() ||
-        !tileKeyLow_.getBuffer() ||
-        !tileKeyHigh_.getBuffer() ||
-        !tileSortIndices_.getBuffer() ||
-        !tileSortScratch_.getBuffer() ||
-        !tileItemsSorted_.getBuffer()) {
+    if (safeCapacity > tileItemCapacity_ || !tileItems_.getBuffer() || !tileKeyLow_.getBuffer() ||
+        !tileKeyHigh_.getBuffer() || !tileSortIndices_.getBuffer() ||
+        !tileSortScratch_.getBuffer() || !tileItemsSorted_.getBuffer()) {
         resizeTileItems(safeCapacity);
     }
 
@@ -491,13 +494,8 @@ void TrainingBuffers::ensureTileSortStorage(uint32_t tileItemCapacity,
     }
 
     tileSortStorage_.cleanup();
-    tileSortStorage_.create(device_,
-                            physicalDevice_,
-                            transferQueue_,
-                            transferQueueFamilyIndex_,
-                            nullptr,
-                            sortStorageSize,
-                            sortStorageUsage,
+    tileSortStorage_.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_,
+                            nullptr, sortStorageSize, sortStorageUsage,
                             vk::MemoryPropertyFlagBits::eDeviceLocal,
                             {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 }
@@ -508,10 +506,8 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
     }
 
     const uint32_t safeCapacity = roundedGaussianCapacity(gaussianCapacity);
-    if (safeCapacity <= densificationCapacity_ &&
-        densifiedParams_.getBuffer() &&
-        densifiedAdamStates_.getBuffer() &&
-        densifiedGaussianValidationPartials_.getBuffer() &&
+    if (safeCapacity <= densificationCapacity_ && densifiedParams_.getBuffer() &&
+        densifiedAdamStates_.getBuffer() && densifiedGaussianValidationPartials_.getBuffer() &&
         densificationCounters_.getBuffer()) {
         return;
     }
@@ -523,29 +519,37 @@ void TrainingBuffers::ensureDensificationCapacity(uint32_t gaussianCapacity) {
     createStorageBuffer(densifiedParams_, sizeof(GaussianTrainParam) * safeCapacity);
     createStorageBuffer(densifiedAdamStates_, sizeof(AdamState) * safeCapacity);
     const uint32_t validationPartialCount =
-        (safeCapacity + kTrainingValidationWorkgroupSize - 1u) /
-        kTrainingValidationWorkgroupSize;
+        (safeCapacity + kTrainingValidationWorkgroupSize - 1u) / kTrainingValidationWorkgroupSize;
     createStorageBuffer(densifiedGaussianValidationPartials_,
                         sizeof(TrainingGaussianValidationPartial) * validationPartialCount);
     if (!densificationCounters_.getBuffer()) {
         const std::array<uint32_t, 16> zeroCounters{};
-        densificationCounters_.create(device_,
-                                      physicalDevice_,
-                                      transferQueue_,
-                                      transferQueueFamilyIndex_,
-                                      zeroCounters.data(),
-                                      zeroCounters.size() * sizeof(uint32_t),
-                                      vk::BufferUsageFlagBits::eStorageBuffer |
-                                          vk::BufferUsageFlagBits::eIndirectBuffer |
-                                          vk::BufferUsageFlagBits::eTransferSrc |
-                                          vk::BufferUsageFlagBits::eTransferDst,
-                                      vk::MemoryPropertyFlagBits::eDeviceLocal,
-                                      {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+        densificationCounters_.create(
+            device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_,
+            zeroCounters.data(), zeroCounters.size() * sizeof(uint32_t),
+            vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer |
+                vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eDeviceLocal,
+            {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
     }
     densificationCapacity_ = safeCapacity;
 }
 
+void TrainingBuffers::enableNativeWorkspaceReuse() {
+    nativeWorkspaceReuse_ = true;
+    gaussianGrads_.cleanup();
+    previewInstances_.cleanup();
+    densificationStates_.cleanup();
+    createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad));
+}
 void TrainingBuffers::ensureCanonicalModelStorage() {
+    if (nativeWorkspaceReuse_ &&
+        densificationStates_.getSize() <
+            uint64_t(gaussianCapacity_) * sizeof(GaussianDensificationState)) {
+        densificationStates_.cleanup();
+        createStorageBuffer(densificationStates_,
+                            uint64_t(gaussianCapacity_) * sizeof(GaussianDensificationState));
+    }
     if (!gaussianParams_.getBuffer())
         createStorageBuffer(gaussianParams_,
                             uint64_t(gaussianCapacity_) * sizeof(GaussianTrainParam));
@@ -559,6 +563,7 @@ void TrainingBuffers::releaseCanonicalModelStorage() {
     densifiedParams_.cleanup();
     densifiedAdamStates_.cleanup();
     densificationCapacity_ = 0;
+    if (nativeWorkspaceReuse_) densificationStates_.cleanup();
 }
 
 void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
@@ -573,36 +578,6 @@ void TrainingBuffers::adoptDensifiedGaussians(uint32_t gaussianCount) {
     gaussianCapacity_ = newActiveCapacity;
     densificationCapacity_ = oldActiveCapacity;
 
-    if (gaussianCount > gaussianWorkspaceCapacity_) {
-        const uint64_t geometricCapacity = std::max<uint64_t>(
-            gaussianCount,
-            static_cast<uint64_t>(gaussianWorkspaceCapacity_) * 3ull / 2ull);
-        const uint32_t workspaceCapacity = roundedGaussianCapacity(
-            static_cast<uint32_t>(std::min<uint64_t>(geometricCapacity,
-                                                     std::numeric_limits<uint32_t>::max())));
-        gaussianGrads_.cleanup();
-        projected_.cleanup();
-        gaussianTileRanges_.cleanup();
-        gaussianTilePrefixScratch_.cleanup();
-        densificationStates_.cleanup();
-        projectedGrads_.cleanup();
-        previewInstances_.cleanup();
-        createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) * workspaceCapacity);
-        createStorageBuffer(projected_, sizeof(ProjectedGaussian) * workspaceCapacity);
-        createStorageBuffer(gaussianTileRanges_, sizeof(glm::uvec2) * workspaceCapacity);
-        createStorageBuffer(
-            gaussianTilePrefixScratch_,
-            sizeof(uint32_t) * gaussianPrefixScratchElementCount(workspaceCapacity));
-        createZeroedStorageBuffer(
-            densificationStates_, sizeof(GaussianDensificationState) * workspaceCapacity);
-        createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * workspaceCapacity);
-        createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * workspaceCapacity);
-        gaussianWorkspaceCapacity_ = workspaceCapacity;
-    }
-}
-
-void TrainingBuffers::adoptNativeGaussianCount(uint32_t gaussianCount) {
-    if (!gaussianCount) throw std::runtime_error("Empty native model requires dataset reload");
     if (gaussianCount > gaussianWorkspaceCapacity_) {
         const uint64_t geometricCapacity = std::max<uint64_t>(
             gaussianCount, static_cast<uint64_t>(gaussianWorkspaceCapacity_) * 3ull / 2ull);
@@ -625,6 +600,37 @@ void TrainingBuffers::adoptNativeGaussianCount(uint32_t gaussianCount) {
                                   sizeof(GaussianDensificationState) * workspaceCapacity);
         createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * workspaceCapacity);
         createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * workspaceCapacity);
+        gaussianWorkspaceCapacity_ = workspaceCapacity;
+    }
+}
+
+void TrainingBuffers::adoptNativeGaussianCount(uint32_t gaussianCount) {
+    if (!gaussianCount) throw std::runtime_error("Empty native model requires dataset reload");
+    if (gaussianCount > gaussianWorkspaceCapacity_) {
+        const uint64_t geometricCapacity = std::max<uint64_t>(
+            gaussianCount, static_cast<uint64_t>(gaussianWorkspaceCapacity_) * 3ull / 2ull);
+        const uint32_t workspaceCapacity = roundedGaussianCapacity(static_cast<uint32_t>(
+            std::min<uint64_t>(geometricCapacity, std::numeric_limits<uint32_t>::max())));
+        gaussianGrads_.cleanup();
+        projected_.cleanup();
+        gaussianTileRanges_.cleanup();
+        gaussianTilePrefixScratch_.cleanup();
+        densificationStates_.cleanup();
+        projectedGrads_.cleanup();
+        previewInstances_.cleanup();
+        createStorageBuffer(gaussianGrads_, sizeof(GaussianGrad) *
+                                                (nativeWorkspaceReuse_ ? 1u : workspaceCapacity));
+        createStorageBuffer(projected_, sizeof(ProjectedGaussian) * workspaceCapacity);
+        createStorageBuffer(gaussianTileRanges_, sizeof(glm::uvec2) * workspaceCapacity);
+        createStorageBuffer(gaussianTilePrefixScratch_,
+                            sizeof(uint32_t) *
+                                gaussianPrefixScratchElementCount(workspaceCapacity));
+        if (!nativeWorkspaceReuse_)
+            createZeroedStorageBuffer(densificationStates_,
+                                      sizeof(GaussianDensificationState) * workspaceCapacity);
+        createStorageBuffer(projectedGrads_, sizeof(ProjectedGaussianGrad) * workspaceCapacity);
+        if (!nativeWorkspaceReuse_)
+            createStorageBuffer(previewInstances_, sizeof(GaussianTrainParam) * workspaceCapacity);
         gaussianWorkspaceCapacity_ = workspaceCapacity;
     }
     gaussianCapacity_ = std::max(gaussianCount, gaussianCapacity_);
@@ -656,7 +662,8 @@ void TrainingBuffers::adoptGaussianReorder(std::array<Buffer, 3>& targets) {
     std::swap(densificationStates_, targets[2]);
 }
 
-void TrainingBuffers::uploadGaussianParams(const GaussianTrainParam* params, uint32_t gaussianCount) {
+void TrainingBuffers::uploadGaussianParams(const GaussianTrainParam* params,
+                                           uint32_t gaussianCount) {
     if (!params) {
         throw std::runtime_error("Training gaussian params are null");
     }
@@ -664,7 +671,8 @@ void TrainingBuffers::uploadGaussianParams(const GaussianTrainParam* params, uin
         throw std::runtime_error("Training gaussian param upload exceeds buffer capacity");
     }
 
-    gaussianParams_.upload(params, static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianTrainParam));
+    gaussianParams_.upload(params,
+                           static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianTrainParam));
 }
 
 std::vector<GaussianTrainParam> TrainingBuffers::downloadGaussianParams(uint32_t gaussianCount) {
@@ -678,8 +686,8 @@ std::vector<GaussianTrainParam> TrainingBuffers::downloadGaussianParams(uint32_t
     }
 
     LOG_DEBUG("Reading back {} training Gaussian parameters", gaussianCount);
-    gaussianParams_.download(params.data(),
-                             static_cast<vk::DeviceSize>(gaussianCount) * sizeof(GaussianTrainParam));
+    gaussianParams_.download(params.data(), static_cast<vk::DeviceSize>(gaussianCount) *
+                                                sizeof(GaussianTrainParam));
     LOG_DEBUG("Completed training Gaussian parameter readback");
     return params;
 }
@@ -690,14 +698,14 @@ std::vector<ProjectedGaussianGrad> TrainingBuffers::downloadProjectedGrads(uint3
     }
     std::vector<ProjectedGaussianGrad> gradients(gaussianCount);
     if (gaussianCount != 0u) {
-        projectedGrads_.download(gradients.data(),
-                                 static_cast<vk::DeviceSize>(gaussianCount) *
-                                     sizeof(ProjectedGaussianGrad));
+        projectedGrads_.download(gradients.data(), static_cast<vk::DeviceSize>(gaussianCount) *
+                                                       sizeof(ProjectedGaussianGrad));
     }
     return gradients;
 }
 
-TrainingScanlineCapture TrainingBuffers::downloadScanlineCapture(const TrainingScanlineHeader& header) {
+TrainingScanlineCapture
+TrainingBuffers::downloadScanlineCapture(const TrainingScanlineHeader& header) {
     (void)trainingScanlineCaptureBytes(header);
     if (header.width != extent_.width || header.height != extent_.height ||
         header.gaussianCount > gaussianCapacity_ || header.itemCount > tileItemCapacity_)
@@ -708,8 +716,11 @@ TrainingScanlineCapture TrainingBuffers::downloadScanlineCapture(const TrainingS
     data.items.resize(header.itemCount);
     data.ranges.resize(header.tileCount);
     data.blends.resize(size_t(header.width) * header.height);
-    if (!data.projected.empty()) projected_.download(data.projected.data(), data.projected.size() * sizeof(ProjectedGaussian));
-    if (!data.items.empty()) tileItemsSorted_.download(data.items.data(), data.items.size() * sizeof(uint32_t));
+    if (!data.projected.empty())
+        projected_.download(data.projected.data(),
+                            data.projected.size() * sizeof(ProjectedGaussian));
+    if (!data.items.empty())
+        tileItemsSorted_.download(data.items.data(), data.items.size() * sizeof(uint32_t));
     tileRanges_.download(data.ranges.data(), data.ranges.size() * sizeof(glm::uvec4));
     pixelBlendStates_.download(data.blends.data(), data.blends.size() * sizeof(PixelBlendState));
     data.pixelGrads = downloadPixelGrads(static_cast<uint32_t>(data.blends.size()));
@@ -717,8 +728,8 @@ TrainingScanlineCapture TrainingBuffers::downloadScanlineCapture(const TrainingS
     return data;
 }
 
-std::vector<TrainingAdaptiveTileDiagnostic> TrainingBuffers::downloadAdaptiveTileDiagnostics(
-    uint32_t parentItemCount) {
+std::vector<TrainingAdaptiveTileDiagnostic>
+TrainingBuffers::downloadAdaptiveTileDiagnostics(uint32_t parentItemCount) {
     if (parentItemCount > tileItemCapacity_) {
         throw std::runtime_error("Adaptive diagnostics exceed tile item buffer capacity");
     }
@@ -728,7 +739,8 @@ std::vector<TrainingAdaptiveTileDiagnostic> TrainingBuffers::downloadAdaptiveTil
     if (parentItemCount != 0u) {
         // The original high keys retain the parent ID for every emitted pair.
         // Unlike leaf ranges, they are not overwritten when children install.
-        tileKeyHigh_.download(keys.data(), static_cast<vk::DeviceSize>(parentItemCount) * sizeof(uint32_t));
+        tileKeyHigh_.download(keys.data(),
+                              static_cast<vk::DeviceSize>(parentItemCount) * sizeof(uint32_t));
     }
     for (uint32_t parent : keys) {
         if (parent >= layout.tileCount) {
@@ -758,7 +770,8 @@ std::vector<TrainingAdaptiveTileDiagnostic> TrainingBuffers::downloadAdaptiveTil
         for (uint32_t x = 0u; x < extent_.width; ++x) {
             auto& parent = result[(y / 16u) * layout.tileCountX + x / 16u];
             const uint32_t child = ((y % 16u) / 8u) * 2u + (x % 16u) / 8u;
-            const uint32_t rangeCount = parent.selected ? parent.childItems[child] : parent.parentItems;
+            const uint32_t rangeCount =
+                parent.selected ? parent.childItems[child] : parent.parentItems;
             const uint32_t processed = std::min(
                 blends[static_cast<size_t>(y) * extent_.width + x].processedCount, rangeCount);
             parent.maxProcessed[child] = std::max(parent.maxProcessed[child], processed);
@@ -773,14 +786,15 @@ std::vector<uint32_t> TrainingBuffers::downloadAdaptiveChildMasks(uint32_t paren
     }
     std::vector<uint32_t> masks(parentItemCount);
     if (parentItemCount != 0u) {
-        adaptiveChildMasks_.download(masks.data(),
-                                     static_cast<vk::DeviceSize>(parentItemCount) * sizeof(uint32_t));
+        adaptiveChildMasks_.download(masks.data(), static_cast<vk::DeviceSize>(parentItemCount) *
+                                                       sizeof(uint32_t));
     }
     return masks;
 }
 
-std::vector<uint8_t> TrainingBuffers::downloadAdaptiveChildMembership(
-    uint32_t gaussianCount, uint32_t parentItemCount, uint32_t childItemCount) {
+std::vector<uint8_t> TrainingBuffers::downloadAdaptiveChildMembership(uint32_t gaussianCount,
+                                                                      uint32_t parentItemCount,
+                                                                      uint32_t childItemCount) {
     if (gaussianCount > gaussianCapacity_) {
         throw std::runtime_error("Child membership download exceeds Gaussian buffer capacity");
     }
@@ -811,13 +825,15 @@ std::vector<PixelGrad> TrainingBuffers::downloadPixelGrads(uint32_t pixelCount) 
     }
     std::vector<PixelGrad> result(pixelCount);
     if (pixelCount != 0u) {
-        pixelGrads_.download(result.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(PixelGrad));
+        pixelGrads_.download(result.data(),
+                             static_cast<vk::DeviceSize>(pixelCount) * sizeof(PixelGrad));
     }
     return result;
 }
 
 std::vector<float> TrainingBuffers::downloadLoss(uint32_t pixelCount) {
-    const uint64_t capacity = static_cast<uint64_t>(extent_.width) * static_cast<uint64_t>(extent_.height);
+    const uint64_t capacity =
+        static_cast<uint64_t>(extent_.width) * static_cast<uint64_t>(extent_.height);
     if (pixelCount > capacity) {
         throw std::runtime_error("Training loss download exceeds buffer capacity");
     }
@@ -834,7 +850,8 @@ std::vector<float> TrainingBuffers::downloadLoss(uint32_t pixelCount) {
 }
 
 std::vector<glm::vec4> TrainingBuffers::downloadRenderedColor(uint32_t pixelCount) {
-    const uint64_t capacity = static_cast<uint64_t>(extent_.width) * static_cast<uint64_t>(extent_.height);
+    const uint64_t capacity =
+        static_cast<uint64_t>(extent_.width) * static_cast<uint64_t>(extent_.height);
     if (pixelCount > capacity) {
         throw std::runtime_error("Training rendered color download exceeds buffer capacity");
     }
@@ -845,7 +862,8 @@ std::vector<glm::vec4> TrainingBuffers::downloadRenderedColor(uint32_t pixelCoun
     }
 
     LOG_DEBUG("Reading back {} rendered training pixels", pixelCount);
-    renderedColor_.download(rendered.data(), static_cast<vk::DeviceSize>(pixelCount) * sizeof(glm::vec4));
+    renderedColor_.download(rendered.data(),
+                            static_cast<vk::DeviceSize>(pixelCount) * sizeof(glm::vec4));
     LOG_DEBUG("Completed rendered training pixel readback");
     return rendered;
 }
@@ -855,12 +873,12 @@ void TrainingBuffers::uploadTargetColor(const uint8_t* pixels, uint32_t width, u
         throw std::runtime_error("Training target pixels are null");
     }
     if (width != extent_.width || height != extent_.height) {
-        throw std::runtime_error("Training target image size does not match training buffer extent");
+        throw std::runtime_error(
+            "Training target image size does not match training buffer extent");
     }
 
-    const vk::DeviceSize uploadSize = static_cast<vk::DeviceSize>(width) *
-                                      static_cast<vk::DeviceSize>(height) *
-                                      sizeof(uint32_t);
+    const vk::DeviceSize uploadSize =
+        static_cast<vk::DeviceSize>(width) * static_cast<vk::DeviceSize>(height) * sizeof(uint32_t);
     targetColor_.upload(pixels, uploadSize);
 }
 
@@ -898,21 +916,15 @@ void TrainingBuffers::recordTileItemCountReadback(vk::CommandBuffer commandBuffe
 
     vk::BufferMemoryBarrier hostReadBarrier{};
     hostReadBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-                   .setDstAccessMask(vk::AccessFlagBits::eHostRead)
-                   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                   .setBuffer(tileItemCountReadback_.getBuffer())
-                   .setOffset(0)
-                   .setSize(sizeof(glm::uvec4));
+        .setDstAccessMask(vk::AccessFlagBits::eHostRead)
+        .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setBuffer(tileItemCountReadback_.getBuffer())
+        .setOffset(0)
+        .setSize(sizeof(glm::uvec4));
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                  vk::PipelineStageFlagBits::eHost,
-                                  vk::DependencyFlagBits{},
-                                  0,
-                                  nullptr,
-                                  1,
-                                  &hostReadBarrier,
-                                  0,
-                                  nullptr);
+                                  vk::PipelineStageFlagBits::eHost, vk::DependencyFlagBits{}, 0,
+                                  nullptr, 1, &hostReadBarrier, 0, nullptr);
 }
 
 uint32_t TrainingBuffers::requiredTileItemCount() {
@@ -941,26 +953,20 @@ void TrainingBuffers::recordDensificationStatsReadback(vk::CommandBuffer command
 
     vk::BufferCopy copy{};
     copy.setSize(sizeof(uint32_t) * 16u);
-    commandBuffer.copyBuffer(
-        densificationCounters_.getBuffer(), densificationStatsReadback_.getBuffer(), copy);
+    commandBuffer.copyBuffer(densificationCounters_.getBuffer(),
+                             densificationStatsReadback_.getBuffer(), copy);
 
     vk::BufferMemoryBarrier hostReadBarrier{};
     hostReadBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-                   .setDstAccessMask(vk::AccessFlagBits::eHostRead)
-                   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                   .setBuffer(densificationStatsReadback_.getBuffer())
-                   .setOffset(0)
-                   .setSize(sizeof(uint32_t) * 16u);
+        .setDstAccessMask(vk::AccessFlagBits::eHostRead)
+        .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setBuffer(densificationStatsReadback_.getBuffer())
+        .setOffset(0)
+        .setSize(sizeof(uint32_t) * 16u);
     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                  vk::PipelineStageFlagBits::eHost,
-                                  vk::DependencyFlagBits{},
-                                  0,
-                                  nullptr,
-                                  1,
-                                  &hostReadBarrier,
-                                  0,
-                                  nullptr);
+                                  vk::PipelineStageFlagBits::eHost, vk::DependencyFlagBits{}, 0,
+                                  nullptr, 1, &hostReadBarrier, 0, nullptr);
 }
 
 uint32_t TrainingBuffers::densifiedGaussianCount() {
@@ -968,8 +974,7 @@ uint32_t TrainingBuffers::densifiedGaussianCount() {
         throw std::runtime_error("Densification stats readback is not mapped");
     }
     std::array<uint32_t, 16> counters{};
-    std::memcpy(counters.data(),
-                densificationStatsReadbackMapped_,
+    std::memcpy(counters.data(), densificationStatsReadbackMapped_,
                 counters.size() * sizeof(uint32_t));
     return counters[1];
 }
@@ -979,8 +984,7 @@ TrainingDensificationStats TrainingBuffers::densificationStats() {
         throw std::runtime_error("Densification stats readback is not mapped");
     }
     std::array<uint32_t, 16> counters{};
-    std::memcpy(counters.data(),
-                densificationStatsReadbackMapped_,
+    std::memcpy(counters.data(), densificationStatsReadbackMapped_,
                 counters.size() * sizeof(uint32_t));
 
     TrainingDensificationStats stats{};
@@ -996,14 +1000,9 @@ TrainingDensificationStats TrainingBuffers::densificationStats() {
 }
 
 void TrainingBuffers::createStorageBuffer(Buffer& buffer, vk::DeviceSize size) {
-    buffer.create(device_,
-                  physicalDevice_,
-                  transferQueue_,
-                  transferQueueFamilyIndex_,
-                  nullptr,
+    buffer.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr,
                   size,
-                  vk::BufferUsageFlagBits::eStorageBuffer |
-                      vk::BufferUsageFlagBits::eTransferSrc |
+                  vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
                       vk::BufferUsageFlagBits::eTransferDst,
                   vk::MemoryPropertyFlagBits::eDeviceLocal,
                   {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
@@ -1011,31 +1010,20 @@ void TrainingBuffers::createStorageBuffer(Buffer& buffer, vk::DeviceSize size) {
 
 void TrainingBuffers::createZeroedStorageBuffer(Buffer& buffer, vk::DeviceSize size) {
     std::vector<std::byte> zeros(static_cast<size_t>(size));
-    buffer.create(device_,
-                  physicalDevice_,
-                  transferQueue_,
-                  transferQueueFamilyIndex_,
-                  zeros.data(),
+    buffer.create(device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, zeros.data(),
                   size,
-                  vk::BufferUsageFlagBits::eStorageBuffer |
-                      vk::BufferUsageFlagBits::eTransferSrc |
+                  vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
                       vk::BufferUsageFlagBits::eTransferDst,
                   vk::MemoryPropertyFlagBits::eDeviceLocal,
                   {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 }
 
 void TrainingBuffers::createUniformBuffer(Buffer& buffer, vk::DeviceSize size) {
-    buffer.create(device_,
-                  physicalDevice_,
-                  transferQueue_,
-                  transferQueueFamilyIndex_,
-                  nullptr,
-                  size,
-                  vk::BufferUsageFlagBits::eUniformBuffer |
-                      vk::BufferUsageFlagBits::eTransferDst,
-                  vk::MemoryPropertyFlagBits::eHostVisible |
-                      vk::MemoryPropertyFlagBits::eHostCoherent,
-                  {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
+    buffer.create(
+        device_, physicalDevice_, transferQueue_, transferQueueFamilyIndex_, nullptr, size,
+        vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eTransferDst,
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+        {transferQueueFamilyIndex_, computeQueueFamilyIndex_});
 }
 
 } // namespace vulkan3DGS

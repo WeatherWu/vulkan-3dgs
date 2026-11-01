@@ -11,7 +11,12 @@
 namespace vulkan3DGS {
 class TrainingVkSplatBackend;
 struct BackwardPassContext;
+struct VkSplatAdcCosts {
+    double allocationMs = 0, countMs = 0, growthMs = 0, compactionMs = 0;
+    double resetMs = 0, waitMs = 0, copyRecordMs = 0;
+};
 struct VkSplatAdcResult {
+    VkSplatAdcCosts costs;
     TrainingDensificationStats stats{};
     uint32_t input = 0, capacity = 0, seed = 0;
     bool reset = false;
@@ -31,7 +36,7 @@ public:
 // Official default strategy operating directly on the native model and moments.
 class TrainingVkSplatAdc {
 public:
-    explicit TrainingVkSplatAdc(TrainingVkSplatBackend& backend);
+    explicit TrainingVkSplatAdc(TrainingVkSplatBackend& backend, bool reuse = false);
     void prepare(const TrainingDensificationConfig& config, float extent, uint32_t iteration,
                  bool benchmark);
     void ensureStatistics(uint32_t capacity);
@@ -44,6 +49,9 @@ public:
         return radius_.getDescriptorInfo();
     }
     uint64_t allocatedBytes() const;
+    bool reuseEnabled() const {
+        return reuse_;
+    }
     bool inspectOpacityReset(uint32_t count, float minimum);
     void markFailed() {
         failed_ = true;
@@ -60,9 +68,23 @@ private:
         int32_t scale2dStop = 0, start = 0, stop = 0, resetEvery = 0, every = 0, pause = 0;
     } u_;
     static_assert(sizeof(Uniforms) == 72);
+    struct CachedSet {
+        vk::DescriptorSet set{};
+        std::vector<vk::DescriptorBufferInfo> infos;
+    };
     struct Pipeline {
         ComputePipeline pipeline;
+        std::vector<CachedSet> sets;
+        size_t used = 0;
     };
+    VkSplatAdcResult executeReuse(uint32_t count, bool refine, bool reset);
+    Buffer& reuseBuffer(const std::string& name, uint64_t bytes);
+    uint32_t sum(Buffer& input, uint32_t count);
+    bool reuse_ = false;
+    uint32_t scratchIndex_ = 0;
+    std::map<std::string, Buffer> reusable_;
+    void copy(vk::Buffer input, vk::Buffer output, vk::BufferCopy region);
+    VkSplatAdcCosts costs_;
     Buffer allocate(uint64_t bytes, bool host = false);
     void begin();
     void submit();

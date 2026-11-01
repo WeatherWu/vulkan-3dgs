@@ -289,11 +289,16 @@ function(compile_vksplat_shader NAME)
         DEPENDS "${SPV}" VERBATIM)
     set(ALL_SHADER_FILES ${ALL_SHADER_FILES} "${SPV}" "${DEST}" PARENT_SCOPE)
 endfunction()
-foreach(NAME IN ITEMS train_vksplat_ssim_forward train_vksplat_ssim_backward train_vksplat_loss_statistics
+foreach(NAME IN ITEMS train_vksplat_project_soa train_vksplat_composite_soa
+        train_vksplat_composite_subtile_soa train_vksplat_composite_64_soa
+        train_vksplat_composite_subtile_64_soa train_vksplat_tensor_shared_soa
+        train_vksplat_tensor_global_soa train_vksplat_sort_prepare_soa train_vksplat_emit_soa
+        train_vksplat_legacy_emit_soa train_vksplat_prefix_soa train_vksplat_ssim_gradient_forward train_vksplat_ssim_forward train_vksplat_ssim_backward train_vksplat_loss_statistics
         train_vksplat_project train_vksplat_optimizer train_vksplat_state_import train_vksplat_state_export
         train_vksplat_composite train_vksplat_composite_subtile train_vksplat_tensor_shared
         train_vksplat_tensor_global train_vksplat_validation train_vksplat_emit
         train_vksplat_composite_64 train_vksplat_composite_subtile_64
+        train_vksplat_adc_sum
         train_vksplat_adc_update
         train_vksplat_adc_grow
         train_vksplat_adc_duplicate

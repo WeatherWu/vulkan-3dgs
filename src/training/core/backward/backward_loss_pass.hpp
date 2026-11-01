@@ -19,12 +19,20 @@ public:
         vkSplatRequested_ = requested;
         if (!requested) vkSplat_.reset();
     }
+    void setVkSplatOnCheck(bool enabled) {
+        if (vkSplatOnCheck_ != enabled) vkSplat_.reset();
+        vkSplatOnCheck_ = enabled;
+    }
     bool vkSplatActive() const {
         return vkSplatActive_;
     }
     void cleanup();
-    void setSsimMode(TrainingSsimMode mode) { ssimMode_ = mode; }
-    [[nodiscard]] TrainingSsimMode activeSsimMode() const { return ssimMode_; }
+    void setSsimMode(TrainingSsimMode mode) {
+        ssimMode_ = mode;
+    }
+    [[nodiscard]] TrainingSsimMode activeSsimMode() const {
+        return ssimMode_;
+    }
 
     void recordLoss(const BackwardPassContext& context);
     void recordClear(const BackwardPassContext& context, bool fusedProjectionOptimizerEnabled);
@@ -55,6 +63,7 @@ private:
     vk::Queue queue_ = nullptr;
     uint32_t family_ = 0;
     bool vkSplatRequested_ = false;
+    bool vkSplatOnCheck_ = false;
     bool vkSplatActive_ = false;
     std::unique_ptr<VkSplatLossPass> vkSplat_;
 };

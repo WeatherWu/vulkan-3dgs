@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -18,6 +19,151 @@ namespace vulkan3DGS {
 namespace {
 
 constexpr uint32_t kTrainingSnapshotPublishInterval = 100u;
+
+void writeCompletionReport(const std::filesystem::path& path, const TrainingUiSnapshot& s,
+                           const TrainingRunConfig& config, double seconds,
+                           const std::string& deviceName, const std::string& uuid,
+                           std::optional<bool> validation,
+                           const std::vector<std::array<uint32_t, 7>>& trajectory) {
+    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::out | std::ios::trunc);
+    if (!out) throw std::runtime_error("Cannot write training report: " + path.string());
+    out << std::setprecision(17)
+        << "{\"schema\":1,\"completed\":true,\"training_seconds\":" << seconds
+        << ",\"image_preload_seconds\":" << s.imagePreparationSeconds
+        << ",\"model_setup_seconds\":" << s.modelPreparationSeconds
+        << ",\"accounted_total_seconds\":"
+        << seconds + s.imagePreparationSeconds + s.modelPreparationSeconds
+        << ",\"gaussians\":" << s.gaussianCount << ",\"steps\":" << s.trainingIteration
+        << ",\"device\":" << schedulingJsonQuote(deviceName)
+        << ",\"device_uuid\":" << schedulingJsonQuote(uuid) << ",\"vulkan_validation_enabled\":"
+        << (validation ? (*validation ? "true" : "false") : "null")
+        << ",\"gpu_timestamps_available\":"
+        << (s.profiling.gpuTimestampsAvailable ? "true" : "false")
+        << ",\"vksplat_source_commit\":\"b3ad2b048918496616e0e9346e35c606d813ab55\""
+        << ",\"build\":" << trainingSmokeBuildJson() << ",\"saved_configuration\":"
+        << schedulingJsonQuote(TrainingSettingsStore::describeRun(config))
+        << ",\"actual\":{\"compute_vksplat\":" << (s.vkSplatCompute ? "true" : "false")
+        << ",\"adc_reuse\":" << (s.vkSplatCompute && s.vkSplatAdcReuse ? "true" : "false")
+        << ",\"projection_soa\":" << (s.vkSplatCompute && s.vkSplatProjectionSoA ? "true" : "false")
+        << ",\"loss_on_check\":" << (s.vkSplatLossActive && s.lossOnCheck ? "true" : "false")
+        << ",\"numeric_first_last\":" << (s.numericChecksFirstLast ? "true" : "false")
+        << ",\"last_scalar_loss_step\":" << s.lastLossStep
+        << "},\"timing_scope\":\"CPU submit includes GPU waits. ADC subranges, GPU intervals and "
+           "Total overlap; do not sum all rows. Preparation excludes dataset parsing, model export "
+           "and quality evaluation.\",\"cpu\":[";
+    static constexpr std::array<const char*, 26> cpuNames{"FrameUpload",
+                                                          "ImageRequest",
+                                                          "TargetUpload",
+                                                          "PrepareSubmit",
+                                                          "TileCountReadback",
+                                                          "TileBufferResize",
+                                                          "MainRecord",
+                                                          "MainSubmit",
+                                                          "Validation",
+                                                          "DensificationAdopt",
+                                                          "Total",
+                                                          "CheckpointCapacity",
+                                                          "MortonReorder",
+                                                          "VkSplatStateBoundary",
+                                                          "PrepareRecord",
+                                                          "QueryCollect",
+                                                          "NativeWorkspaceAdopt",
+                                                          "NativePostValidation",
+                                                          "AdcAllocation",
+                                                          "AdcCount",
+                                                          "AdcGrowth",
+                                                          "AdcCompaction",
+                                                          "AdcReset",
+                                                          "AdcWait",
+                                                          "AdcCopyRecord",
+                                                          "ExplicitLossRefresh"};
+    static constexpr std::array<const char*, 27> gpuNames{"GaussianProjection",
+                                                          "TileCoverageCount",
+                                                          "TilePrefix",
+                                                          "TileEmit",
+                                                          "TileSortAndRanges",
+                                                          "Composite",
+                                                          "Loss",
+                                                          "BackwardClear",
+                                                          "LossToPixel",
+                                                          "PixelTo2DGS",
+                                                          "TileLocalBackward",
+                                                          "TwoDGSTo3DGS",
+                                                          "FusedProjectionOptimizer",
+                                                          "Optimizer",
+                                                          "Validation",
+                                                          "Densification",
+                                                          "AdaptiveChildCount",
+                                                          "AdaptiveChildSelect",
+                                                          "AdaptiveChildScatter",
+                                                          "AdaptiveChildRangeInstall",
+                                                          "AdaptiveParentBackward",
+                                                          "AdaptiveChildBackward",
+                                                          "CheckpointLayout",
+                                                          "CheckpointStateBuild",
+                                                          "CheckpointTasks",
+                                                          "CheckpointWarpBackward",
+                                                          "MortonReorder"};
+    static_assert(cpuNames.size() == kTrainingCpuProfileStageCount &&
+                  gpuNames.size() == kTrainingGpuProfileStageCount);
+    auto timings = [&](const auto& data, const auto& names) {
+        for (size_t i = 0; i < data.size(); ++i) {
+            if (i) out << ',';
+            const auto& t = data[i];
+            out << "{\"stage\":" << i << ",\"name\":" << schedulingJsonQuote(names[i])
+                << ",\"count\":" << t.sampleCount << ",\"total_ms\":" << t.totalMs << '}';
+        }
+    };
+    timings(s.profiling.cpu, cpuNames);
+    out << "],\"gpu\":[";
+    timings(s.profiling.gpu, gpuNames);
+    out << "],\"scale_trajectory_columns\":[\"step\",\"gaussians\",\"input\",\"duplicate\","
+           "\"split\",\"pruned\",\"event\"],\"scale_event_codes\":{\"initial\":0,\"adc\":1,"
+           "\"completed\":2},\"scale_trajectory\":[";
+    bool firstRow = true;
+    for (const auto& row : trajectory) {
+        if (!firstRow) out << ',';
+        firstRow = false;
+        out << '[';
+        for (size_t i = 0; i < row.size(); ++i) {
+            if (i) out << ',';
+            out << row[i];
+        }
+        out << ']';
+    }
+    out << "],\"shader_fnv1a64\":{";
+    std::vector<const char*> names{"train_full_sort_prepare_test", "train_loss",
+                                   "train_backward_loss_to_pixel"};
+    if (s.vkSplatCompute) {
+        names.insert(names.end(),
+                     {"train_vksplat_project", "train_vksplat_composite_64_soa",
+                      "train_vksplat_composite_subtile_64_soa", "train_vksplat_prefix_soa",
+                      "train_vksplat_sort_prepare_soa", "train_vksplat_emit_soa",
+                      "train_vksplat_composite_64", "train_vksplat_composite_subtile_64",
+                      "train_vksplat_project_soa", "train_vksplat_composite",
+                      "train_vksplat_composite_soa", "train_vksplat_composite_subtile",
+                      "train_vksplat_composite_subtile_soa", "train_vksplat_tensor_global",
+                      "train_vksplat_tensor_global_soa", "train_vksplat_tensor_shared",
+                      "train_vksplat_tensor_shared_soa", "train_vksplat_optimizer",
+                      "train_vksplat_adc_sum"});
+    }
+    if (s.vkSplatLossActive)
+        names.insert(names.end(),
+                     {"train_vksplat_ssim_forward", "train_vksplat_ssim_gradient_forward",
+                      "train_vksplat_ssim_backward"});
+    bool first = true;
+    for (const char* name : names) {
+        if (!first) out << ',';
+        first = false;
+        out << schedulingJsonQuote(name) << ':'
+            << schedulingJsonQuote(std::to_string(optimizerShaderHash(
+                   FileUtils::resolvePath(std::string("shaders/") + name + ".comp.spv"))));
+    }
+    out << "}}\n";
+    out.flush();
+    if (!out) throw std::runtime_error("Cannot save training report: " + path.string());
+}
 
 } // namespace
 
@@ -232,7 +378,11 @@ bool TrainingController::requiresDatasetReload() const {
                 (settings_.run.physicalTileKey16 && settings_.run.computeBackend == 0) ||
             (state_.datasetLoaded &&
              (training_.gpuResidentImages() != (settings_.run.trainingImageStorage == 1) ||
-              training_.vkSplatCompute() != (settings_.run.computeBackend == 1))));
+              training_.vkSplatCompute() != (settings_.run.computeBackend == 1) ||
+              training_.vkSplatAdcReuse() !=
+                  (settings_.run.computeBackend == 1 && settings_.run.vkSplatAdcExecution == 1) ||
+              training_.vkSplatProjectionSoA() != (settings_.run.computeBackend == 1 &&
+                                                   settings_.run.vkSplatProjectionStorage == 1))));
 }
 
 void TrainingController::loadDataset() {
@@ -295,6 +445,9 @@ void TrainingController::loadDataset() {
                              device.getTransferQueue(), transfer, compute,
                              vulkanValidationLayersEnabled_, device.trainingStorage16Enabled());
         training_.setVkSplatCompute(settings_.run.computeBackend == 1);
+        training_.setVkSplatOptimizations(
+            settings_.run.computeBackend == 1 && settings_.run.vkSplatAdcExecution == 1,
+            settings_.run.computeBackend == 1 && settings_.run.vkSplatProjectionStorage == 1);
         training_.loadDataset(std::move(dataset), std::move(resident));
         state_.datasetLoaded = true;
         setStatus("Dataset loaded: " + std::to_string(state_.frameCount) + " frames, " +
@@ -368,6 +521,11 @@ void TrainingController::applyConfiguration(const TrainingRunConfig& config) {
     training_.setVkSplatCompute(config.run.computeBackend == 1);
     training_.setVkSplatSubtile(config.run.vkSplatSubtile);
     training_.setVkSplatLoss(config.run.lossBackend == 1);
+    training_.setVkSplatOptimizations(
+        config.run.computeBackend == 1 && config.run.vkSplatAdcExecution == 1,
+        config.run.computeBackend == 1 && config.run.vkSplatProjectionStorage == 1);
+    training_.setLossOnCheck(config.run.lossBackend == 1 && config.run.vkSplatLossReporting == 1);
+    training_.setNumericChecksFirstLast(!smokeOptions_ && config.run.trainingNumericChecks == 1);
     training_.setMortonOrderingEnabled(config.run.mortonOrdering);
     training_.setDirectIntrinsicsProjection(config.run.directIntrinsicsProjection &&
                                             config.run.computeBackend == 0);
@@ -717,6 +875,11 @@ void TrainingController::startWorker() {
     }
     const bool pure = activeRunConfig_->run.pureTraining;
     if (worker_.joinable()) worker_.join();
+    if (training_.trainingIteration() == 0) {
+        scaleTrajectory_.clear();
+        scaleTrajectory_.push_back(
+            {0, training_.gaussianCount(), training_.gaussianCount(), 0, 0, 0, 0});
+    }
     smokeRun_.reset();
     if (smokeOptions_) {
         if (training_.trainingIteration() != 0 ||
@@ -889,6 +1052,17 @@ void TrainingController::finishTrainingRun() {
         }
         status += " Saved PLY: " + path.string();
     }
+    if (activeRunConfig_) {
+        auto reportPath = runOutputPath;
+        reportPath += ".training." +
+                      std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) +
+                      ".json";
+        const auto& info = trainingDevice_->getSelectedPhysicalDeviceInfo();
+        writeCompletionReport(reportPath, snapshot, *activeRunConfig_, elapsedSeconds(), info.name,
+                              info.uuid, vulkanValidationLayersEnabled_, scaleTrajectory_);
+        LOG_INFO("Completed training report saved: {}", reportPath.string());
+        status += " Report: " + reportPath.string();
+    }
     activeRunConfig_.reset();
     setStatus(std::move(status));
 }
@@ -1047,6 +1221,11 @@ TrainingUiSnapshot TrainingController::captureSnapshot() const {
     snapshot.densification = training_.densificationStats();
     snapshot.profiling = training_.profilingStats();
     snapshot.vkSplatCompute = training_.vkSplatCompute();
+    snapshot.vkSplatAdcReuse = training_.vkSplatAdcReuse();
+    snapshot.vkSplatProjectionSoA = training_.vkSplatProjectionSoA();
+    snapshot.lossOnCheck = training_.lossOnCheck();
+    snapshot.numericChecksFirstLast = training_.numericChecksFirstLast();
+    snapshot.lastLossStep = training_.lastLossStep();
     snapshot.vkSplatSubtile = training_.lastVkSplatSubtile();
     snapshot.vkSplatAllocatedBytes = training_.vkSplatAllocatedBytes();
     snapshot.vkSplatBoundarySeconds = training_.vkSplatBoundarySeconds();
@@ -1081,7 +1260,15 @@ void TrainingController::workerMain(std::stop_token stopToken, bool pure,
             } else {
                 uint32_t stepsSinceSnapshot = 0u;
                 while (!stopToken.stop_requested() && !training_.isTrainingComplete()) {
+                    const auto inputCount = training_.gaussianCount();
                     training_.trainStep();
+                    const auto completedStep = training_.trainingIteration();
+                    if (completedStep == training_.densificationStatsIteration()) {
+                        const auto& stats = training_.densificationStats();
+                        scaleTrajectory_.push_back({completedStep, training_.gaussianCount(),
+                                                    inputCount, stats.cloneSources,
+                                                    stats.splitSources, stats.prunedSources, 1});
+                    }
                     if (smokeRun_) {
                         smokeRun_->observe(training_.lastStepObservation());
                         if (Context::validationErrorCount())
@@ -1098,6 +1285,10 @@ void TrainingController::workerMain(std::stop_token stopToken, bool pure,
                     }
                 }
                 result.completed = training_.isTrainingComplete();
+                if (result.completed)
+                    scaleTrajectory_.push_back({training_.trainingIteration(),
+                                                training_.gaussianCount(),
+                                                training_.gaussianCount(), 0, 0, 0, 2});
             }
         } catch (const std::exception& error) {
             result.error = error.what();

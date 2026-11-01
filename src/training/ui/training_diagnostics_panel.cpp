@@ -21,7 +21,7 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
     }
 
     const auto& validation = snapshot.validation;
-    ImGui::Text("Loss %.6g", validation.meanLoss);
+    ImGui::Text("Loss %.6g (step %u)", validation.meanLoss, validation.iteration);
     ImGui::Text("Render alpha %.6g", validation.meanRenderedAlpha);
     if (snapshot.tileMode == TrainingTileMode::AdaptiveSpatial) {
         ImGui::Text("Stored tile items %u (parent %u, child %u)", validation.tileItemCount,
@@ -91,6 +91,19 @@ void TrainingDiagnosticsPanel::draw(const TrainingUiSnapshot& snapshot, uint32_t
             "Checkpoint capacity",
             "Z-order reorder (complete)",
             "VkSplat state boundary (complete)",
+            "Prepare command record",
+            "GPU query collection",
+            "Native workspace adopt (inside ADC complete)",
+            "Native post-ADC validation (complete)",
+            "ADC allocation (nested)",
+            "ADC count/readback (nested)",
+            "ADC growth (nested)",
+            "ADC compaction (nested)",
+            "ADC reset (nested)",
+            "ADC fence wait (nested)",
+            "ADC copy recording (nested)",
+            "Explicit Loss refresh",
+
         };
         static constexpr const char* gpuStageNames[] = {
             "Gaussian projection",

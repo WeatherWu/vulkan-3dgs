@@ -3,6 +3,11 @@
 #include <cstdint>
 
 namespace vulkan3DGS {
+constexpr bool trainingNumericCheckDue(uint32_t step, uint32_t total, uint32_t interval,
+                                       bool firstLast) noexcept {
+    return step > 0 && (step <= 5 || (firstLast ? total > 0 && step == total
+                                                : interval > 0 && step % interval == 0));
+}
 enum class TrainingProjectionFallback : uint32_t { None, MissingIntrinsics };
 struct TrainingProjectionState {
     bool executed = false;

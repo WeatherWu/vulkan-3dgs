@@ -65,6 +65,10 @@ struct TrainingDensificationSettings {
 };
 
 struct TrainingRunSettings {
+    int vkSplatAdcExecution = 0;
+    int vkSplatProjectionStorage = 0;
+    int vkSplatLossReporting = 0;
+    int trainingNumericChecks = 0;
     int computeBackend = 0;
     bool vkSplatSubtile = false;
     int lossBackend = 0;

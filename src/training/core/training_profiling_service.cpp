@@ -72,6 +72,7 @@ void TrainingProfilingService::resetStats() {
 void TrainingProfilingService::recordCpu(TrainingCpuProfileStage stage, float milliseconds) {
     TrainingTiming& timing = stats_.cpu[static_cast<size_t>(stage)];
     timing.lastMs = milliseconds;
+    timing.totalMs += milliseconds;
     ++timing.sampleCount;
     timing.averageMs += (milliseconds - timing.averageMs) / static_cast<float>(timing.sampleCount);
 }
@@ -143,6 +144,7 @@ bool TrainingProfilingService::collectGpu() {
 void TrainingProfilingService::recordGpu(TrainingGpuProfileStage stage, float milliseconds) {
     TrainingTiming& timing = stats_.gpu[static_cast<size_t>(stage)];
     timing.lastMs = milliseconds;
+    timing.totalMs += milliseconds;
     ++timing.sampleCount;
     timing.averageMs += (milliseconds - timing.averageMs) / static_cast<float>(timing.sampleCount);
 }

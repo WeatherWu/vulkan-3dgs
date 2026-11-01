@@ -7,8 +7,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <glm/glm.hpp>
+#include <limits>
 
 namespace vulkan3DGS {
 
@@ -282,6 +282,18 @@ enum class TrainingCpuProfileStage : uint32_t {
     CheckpointCapacity,
     MortonReorder,
     VkSplatStateBoundary,
+    PrepareRecord,
+    QueryCollect,
+    NativeWorkspaceAdopt,
+    NativePostValidation,
+    AdcAllocation,
+    AdcCount,
+    AdcGrowth,
+    AdcCompaction,
+    AdcReset,
+    AdcWait,
+    AdcCopyRecord,
+    ExplicitLossRefresh,
     Count,
 };
 
@@ -316,8 +328,10 @@ enum class TrainingGpuProfileStage : uint32_t {
     Count,
 };
 
-constexpr size_t kTrainingCpuProfileStageCount = static_cast<size_t>(TrainingCpuProfileStage::Count);
-constexpr size_t kTrainingGpuProfileStageCount = static_cast<size_t>(TrainingGpuProfileStage::Count);
+constexpr size_t kTrainingCpuProfileStageCount =
+    static_cast<size_t>(TrainingCpuProfileStage::Count);
+constexpr size_t kTrainingGpuProfileStageCount =
+    static_cast<size_t>(TrainingGpuProfileStage::Count);
 constexpr uint32_t kTrainingGpuTimestampQueryCount =
     static_cast<uint32_t>(kTrainingGpuProfileStageCount * 2u);
 
@@ -329,6 +343,7 @@ struct TrainingTiming {
     float lastMs = 0.0f;
     float averageMs = 0.0f;
     uint32_t sampleCount = 0;
+    double totalMs = 0.0;
 };
 
 struct TrainingProfilingStats {
@@ -362,7 +377,10 @@ struct TrainingStateFiniteCheck {
     uint64_t lossValues = 0, invalidLossValues = 0, gaussianValues = 0, invalidGaussianValues = 0;
     uint64_t invalidActivatedScales = 0;
     double meanLoss = 0, maxLoss = 0;
-    bool passed() const { return lossValues && gaussianValues && !invalidLossValues && !invalidGaussianValues && !invalidActivatedScales; }
+    bool passed() const {
+        return lossValues && gaussianValues && !invalidLossValues && !invalidGaussianValues &&
+               !invalidActivatedScales;
+    }
 };
 
 struct TrainingDensificationStats {
@@ -416,17 +434,14 @@ struct alignas(16) GaussianTrainParam {
     glm::vec4 sh[12]{};
 };
 
-inline glm::vec3 trainingSHCoefficient(const GaussianTrainParam& gaussian,
-                                       uint32_t coefficient) {
+inline glm::vec3 trainingSHCoefficient(const GaussianTrainParam& gaussian, uint32_t coefficient) {
     const uint32_t block = coefficient / 4u;
     const uint32_t lane = coefficient % 4u;
-    return glm::vec3(gaussian.sh[block][lane],
-                     gaussian.sh[4u + block][lane],
+    return glm::vec3(gaussian.sh[block][lane], gaussian.sh[4u + block][lane],
                      gaussian.sh[8u + block][lane]);
 }
 
-inline void setTrainingSHCoefficient(GaussianTrainParam& gaussian,
-                                     uint32_t coefficient,
+inline void setTrainingSHCoefficient(GaussianTrainParam& gaussian, uint32_t coefficient,
                                      const glm::vec3& value) {
     const uint32_t block = coefficient / 4u;
     const uint32_t lane = coefficient % 4u;

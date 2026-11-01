@@ -108,6 +108,61 @@ It shares the compute backend's numerical and backward-state conventions. The
 same-state unmasked backend is its reference. Current Tensor scheduling is retained;
 the upstream Thompson scheduler and quantized tile-depth sorting are not enabled.
 
+## Independent optimization controls
+
+The VkSplat controls retain separate default-off reference comparisons:
+
+| Control / persistent key | Reference default | Candidate |
+| --- | --- | --- |
+| VkSplat ADC Execution / `vksplat_adc_execution` | Reference (0) | Reuse (1); Load Dataset required |
+| VkSplat Projection Storage / `vksplat_projection_storage` | Reference (0) | Official SoA (1); Load Dataset required |
+| VkSplat Loss Reporting / `vksplat_loss_reporting` | Every Step (0) | On Check (1); next start/resume |
+| Training Numeric Checks / `training_numeric_checks` | Periodic (0) | First 5 + Final (1); next start/resume |
+
+ADC and projection choices apply only to VkSplat compute. Loss reporting applies
+only to VkSplat Loss. Unsupported combinations show their inactive state. Controls
+are locked while running; changing resource settings requires an explicit reload
+and never silently resets the model. Stopping a run is not normal completion.
+
+Reuse keeps masks, scan/index workspaces and physical capacities between events.
+Counts use the upstream sum reduction before conditional prefix/where operations.
+Pruning uses one reusable attribute scratch buffer and copies each compacted field
+back to persistent native storage. Duplicate/split/prune/reset arithmetic, the
+RNG and project event schedule are identical to the reference ADC.
+
+Official SoA stores XY, exact FP32 depth, conic/opacity, RGB, packed rectangles,
+radius and overlap counts separately. Consumers read that layout directly; it
+requires no per-step projected-AoS conversion. Composite and Tensor consumers load
+only XY, conic/opacity and RGB; sorting reads depth and ADC reads radius. Rectangles use two uint32 words
+without a new 16-bit device-feature request. The existing projected-gradient
+representation and Tensor thread organization remain unchanged.
+
+On Check omits scalar-loss output on ordinary steps while computing the same
+pixel gradients every step. Reports identify the last scalar-loss step. Numerical
+checks and explicit finite inspection require fresh scalar output; an older value
+is never represented as the current objective.
+
+First 5 + Final performs six checks in a normal 30000-step run: steps 1 through 5
+and step 30000. Intermediate non-finite detection may be delayed. It is independent
+of Vulkan validation layers; smoke tests keep their periodic contract and Fixed
+Benchmark retains its final measured-step check.
+
+## Timing scopes
+
+CPU submit/wait includes required GPU execution and scheduler latency; it is not
+removable host overhead. ADC complete includes allocation, recording, copies,
+GPU waits and count/workspace adoption. Nested subranges are labelled and must
+not be added to their parent. Detailed scheduling diagnostics remain opt-in.
+
+The upstream `Total - 220.930 / 227.931 secs` prints two different quantities:
+the sum of named stages excluding names beginning with `_`, and wall-clock time
+around the Python training loop. The first can include HostGuard host intervals
+and overlapping nested stages (Morton sort is also inside post-backward). The
+7.001-second difference is not a direct Python-overhead measurement. Upstream
+initialization and dataset preparation occur before that wall timer; compare its
+227.931 seconds with this project's training time, not the preparation-inclusive
+total. The official 1.37 GiB model-buffer value is not complete process VRAM.
+
 ## Correctness and target-device checks
 
 Build Debug and Release sequentially and run their CTest suites. The existing
@@ -141,14 +196,34 @@ loss/backend are rejected; PLY export remains supported.
 ## Full training comparisons
 
 After target correctness checks, use one Release build with shader debug and
-actual Vulkan validation disabled. Keep bonsai images_2, 30000 steps, learning
-rates including saved opacity LR, ADC, Faster-GS Sorting and Z-order identical.
-Disable legacy direct intrinsics and Physical16. Start each group from a fresh
-model: existing baseline; resident images only; VkSplat Loss only; native backend
-without subtile; native backend with subtile. Compare complete timing and setup,
-profiling counts, Gaussian/items trajectories, whole-scope memory and the same
-held-out PSNR. Kernel timing classifications must not be counted twice.
+actual Vulkan validation disabled. Keep bonsai images_2, 30000 steps, GPU Resident,
+VkSplat compute and Loss, the same subtile setting, saved learning rates, ADC,
+Faster-GS Sorting and Z-order identical. Disable legacy direct intrinsics and
+Physical16. Each group starts from a fresh model:
 
-284.671 seconds versus 227.931 seconds is a cross-implementation observation of
-56.740 seconds, not a promised saving. No training speed or quality gain is assumed
-from source similarity, successful compilation or synthetic checks.
+| Group | Change from the current VkSplat reference |
+| --- | --- |
+| A | All additional optimization controls at reference defaults |
+| B | ADC Reuse only |
+| C | Official SoA only |
+| D | Loss On Check only |
+| E | First 5 + Final numeric checks only |
+| F | Combination after the independent comparisons succeed |
+
+Pure Training is a separate comparison condition; do not enable it only for the
+candidate. Compare complete timing and setup, profiling counts, Gaussian/items
+trajectories, whole-scope memory and the same held-out PSNR. Kernel classifications
+and nested CPU ranges must not be counted twice.
+
+Normal completion saves a uniquely named `.training.<id>.json` beside the selected
+output model path and logs its filename. It records actual selections, the last
+scalar-loss step, complete preparation/training times, stage names, cumulative
+milliseconds/sample counts, ADC scale trajectory, device/build identity and shader fingerprints. Report
+writing, model export and external evaluation occur outside the training timer.
+The configuration describes the last Start/Resume snapshot; keep settings fixed
+throughout a fresh run for an independent A/B comparison.
+
+259.929 seconds versus 227.931 seconds is a cross-implementation observation of
+31.998 seconds, not a promised saving. No speed or quality gain is assumed from
+source similarity, compilation or synthetic checks. Full native Tensor lifecycle
+and performance must be checked on the target RTX3090.

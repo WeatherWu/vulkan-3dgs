@@ -323,7 +323,7 @@ inline glm::dvec3 officialNormal(uint32_t seed, uint32_t index) {
 }
 
 inline uint32_t adcBoundaries(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                              uint32_t family) {
+                              uint32_t family, bool reuse = false) {
     OptimizerCaptureTransfer transfer(device, physical, queue, family);
     uint32_t cases = 0;
     for (uint32_t n : {0u, 1u, 31u, 32u, 33u, 255u, 256u, 257u, 1023u, 1024u, 1025u, 4097u}) {
@@ -348,8 +348,9 @@ inline uint32_t adcBoundaries(vk::Device device, vk::PhysicalDevice physical, vk
         if (n) b.uploadGaussianParams(model.data(), n);
         morton_checks::upload(transfer, b.adamStatesInfo(), moments);
         morton_checks::upload(transfer, b.densificationStatesInfo(), stats);
-        TrainingVkSplatBackend core(device, physical, queue, family);
+        TrainingVkSplatBackend core(device, physical, queue, family, reuse);
         core.importCanonical(b, n);
+        if (reuse) b.enableNativeWorkspaceReuse();
         TrainingDensificationConfig c;
         c.maxGaussianCount = 10000;
         core.adc().prepare(c, 1, 100, false);
@@ -401,7 +402,7 @@ inline uint32_t adcBoundaries(vk::Device device, vk::PhysicalDevice physical, vk
         stats[0].screenGradCount = 1;
         stats[0].screenGradSum = 1;
         morton_checks::upload(transfer, b.densificationStatesInfo(), stats);
-        TrainingVkSplatBackend core(device, physical, queue, family);
+        TrainingVkSplatBackend core(device, physical, queue, family, reuse);
         core.importCanonical(b, 1);
         TrainingDensificationConfig c;
         c.maxGaussianCount = empty ? 10 : 1;
@@ -439,7 +440,7 @@ inline uint32_t adcBoundaries(vk::Device device, vk::PhysicalDevice physical, vk
         model[2].scale = glm::vec4(std::log(0.2f));
         model[3].scale.x = std::numeric_limits<float>::quiet_NaN();
         b.uploadGaussianParams(model.data(), 4);
-        TrainingVkSplatBackend core(device, physical, queue, family);
+        TrainingVkSplatBackend core(device, physical, queue, family, reuse);
         core.importCanonical(b, 4);
         TrainingDensificationConfig c;
         c.maxGaussianCount = 8;
@@ -471,7 +472,7 @@ inline uint32_t adcBoundaries(vk::Device device, vk::PhysicalDevice physical, vk
         for (auto& value : g)
             value.centerRadius = {0.02f, -0.01f, 0, 0};
         morton_checks::upload(transfer, b.projectedGradsInfo(), g);
-        TrainingVkSplatBackend core(device, physical, queue, family);
+        TrainingVkSplatBackend core(device, physical, queue, family, reuse);
         core.importCanonical(b, 2);
         TrainingDensificationConfig c;
         core.adc().prepare(c, 1, 1, false);
@@ -510,7 +511,7 @@ inline uint32_t adcBoundaries(vk::Device device, vk::PhysicalDevice physical, vk
 }
 
 inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                            uint32_t family) {
+                            uint32_t family, bool reuse = false) {
     OptimizerCaptureTransfer transfer(device, physical, queue, family);
     TrainingBuffers buffers;
     buffers.initialize(device, physical, queue, family, family);
@@ -534,8 +535,9 @@ inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::
     }
     morton_checks::upload(transfer, buffers.adamStatesInfo(), initialMoments);
     morton_checks::upload(transfer, buffers.densificationStatesInfo(), statistics);
-    TrainingVkSplatBackend core(device, physical, queue, family);
+    TrainingVkSplatBackend core(device, physical, queue, family, reuse);
     core.importCanonical(buffers, 4);
+    if (reuse) buffers.enableNativeWorkspaceReuse();
     TrainingDensificationConfig config;
     config.densifyGradThreshold = 0.0002f;
     config.maxGaussianCount = 32;
@@ -639,11 +641,218 @@ inline uint32_t stateEvents(vk::Device device, vk::PhysicalDevice physical, vk::
     return 2;
 }
 
+inline uint32_t projectionStorage(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
+                                  uint32_t family) {
+    OptimizerCaptureTransfer transfer(device, physical, queue, family);
+    CommandPool pool;
+    pool.create(device, family, vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+    auto command = pool.allocateCommandBuffer();
+    auto fence = device.createFenceUnique({});
+    auto submit = [&] {
+        command.end();
+        queue.submit(vk::SubmitInfo{}.setCommandBuffers(command), *fence);
+        (void)device.waitForFences(*fence, true, UINT64_MAX);
+        device.resetFences(*fence);
+    };
+    uint32_t cases = 0;
+    for (uint32_t count : {0u, 1u, 31u, 32u, 33u, 65u, 257u}) {
+        constexpr TrainingExtent extent{33, 31};
+        std::vector<ProjectedGaussian> referenceProjected;
+        std::vector<glm::vec4> referenceColors;
+        std::vector<PixelBlendState> referenceBlends;
+        std::vector<uint32_t> referenceIDs;
+        std::vector<glm::uvec4> referenceRanges;
+        std::vector<ProjectedGaussianGrad> referenceGradients;
+        uint32_t referenceCount = 0;
+        for (bool soa : {false, true}) {
+            TrainingBuffers b;
+            b.initialize(device, physical, queue, family, family);
+            b.resize(std::max(count, 1u), extent);
+            std::vector<GaussianTrainParam> g(std::max(count, 1u));
+            for (uint32_t i = 0; i < g.size(); ++i) {
+                g[i].positionOpacity = {float(i % 7) * 0.04f - 0.1f, -0.12f,
+                                        2.0f + float(i % 5) * 0.01f, -0.3f};
+                if (i % 11 == 10) g[i].positionOpacity.z = -1;
+                g[i].scale = {-2.0f, -2.2f, -2.5f, 0};
+                g[i].rotation = {0, 0, 0, 1};
+                for (uint32_t k = 0; k < 12; ++k)
+                    g[i].sh[k] = glm::vec4(0.001f * float(k + i % 3));
+            }
+            if (count) b.uploadGaussianParams(g.data(), count);
+            TrainingVkSplatBackend core(device, physical, queue, family, false, soa);
+            core.importCanonical(b, count);
+            TrainingForwardCamera camera{};
+            camera.view = camera.model = glm::mat4(1);
+            camera.viewport = {0, 0, 33, 31};
+            camera.focalTan = {17, 19, 33.0f / 34, 31.0f / 38};
+            b.uploadCameraWithIntrinsics(camera, {{17, 19, 15.7f, 14.8f}});
+            GaussianForwardRenderer forward;
+            struct ForwardCleanup {
+                GaussianForwardRenderer& renderer;
+                ~ForwardCleanup() {
+                    renderer.cleanup();
+                }
+            } cleanup{forward};
+            forward.initialize(device, physical, queue, family, count, extent);
+            forward.setFasterSortEnabled(true);
+            forward.setVkSplatBackend(&core, false);
+            TrainingPushConstants push{};
+            push.gaussianCount = count;
+            push.width = 33;
+            push.height = 31;
+            push.pixelCount = 33 * 31;
+            push.activeSHDegree = 3;
+            command.reset();
+            command.begin(
+                vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+            forward.setTrainingBuffers(b, command, push);
+            forward.prepareTileItems();
+            b.recordTileItemCountReadback(command);
+            submit();
+            push.tileItemCount = b.requiredTileItemCount();
+            if (push.tileItemCount > b.tileItemCapacity())
+                b.resizeTileItems(push.tileItemCount + 256);
+            command.reset();
+            command.begin(
+                vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+            forward.setTrainingBuffers(b, command, push);
+            forward.renderPreparedTiles(push.tileItemCount);
+            submit();
+            auto ranges = morton_checks::read<glm::uvec4>(transfer, b.tileRangesInfo());
+            auto ids = morton_checks::read<uint32_t>(transfer, b.tileItemsInfo());
+            ids.resize(push.tileItemCount);
+            auto colors = morton_checks::read<glm::vec4>(transfer, b.renderedColorInfo());
+            auto blends = morton_checks::read<PixelBlendState>(transfer, b.pixelBlendStatesInfo());
+            std::vector<ProjectedGaussian> projected(count);
+            if (!soa) {
+                auto values = morton_checks::read<ProjectedGaussian>(transfer, b.projectedInfo());
+                std::copy_n(values.begin(), count, projected.begin());
+            } else {
+                auto info = core.projectionInfos();
+                auto xy = morton_checks::read<glm::vec2>(transfer, info[0]);
+                auto depth = morton_checks::read<float>(transfer, info[1]);
+                auto conic = morton_checks::read<glm::vec4>(transfer, info[2]);
+                auto rgb = morton_checks::read<float>(transfer, info[3]);
+                auto radius = morton_checks::read<int32_t>(transfer, info[5]);
+                auto counts = morton_checks::read<uint32_t>(transfer, info[6]);
+                for (uint32_t i = 0; i < count; ++i)
+                    if (counts[i]) {
+                        projected[i].centerRadius = {xy[i].x, xy[i].y, depth[i], float(radius[i])};
+                        projected[i].conicOpacity = conic[i];
+                        projected[i].color = {rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2], 1};
+                    }
+            }
+            if (!soa) {
+                referenceProjected = projected;
+                referenceIDs = ids;
+                referenceRanges = ranges;
+                referenceColors = colors;
+                referenceBlends = blends;
+                referenceCount = push.tileItemCount;
+            } else {
+                require(push.tileItemCount == referenceCount, "SoA overlap count differs");
+                morton_checks::exact(projected, referenceProjected,
+                                     "SoA valid projection/depth bits differ");
+                morton_checks::exact(ids, referenceIDs, "SoA exact sort IDs differ");
+                morton_checks::exact(ranges, referenceRanges, "SoA exact tile ranges differ");
+                morton_checks::exact(colors, referenceColors,
+                                     "SoA reference composite bits differ");
+                morton_checks::exact(blends, referenceBlends, "SoA backward pixel states differ");
+            }
+            command.reset();
+            command.begin(
+                vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+            core.recordComposite({b, command, push}, true);
+            submit();
+            auto masked = morton_checks::read<glm::vec4>(transfer, b.renderedColorInfo());
+            auto maskedBlends =
+                morton_checks::read<PixelBlendState>(transfer, b.pixelBlendStatesInfo());
+            for (size_t i = 0; i < colors.size(); ++i)
+                for (uint32_t c = 0; c < 4; ++c)
+                    close(masked[i][c], colors[i][c], "SoA/reference subtile changed colors");
+            morton_checks::exact(maskedBlends, blends,
+                                 "SoA/reference subtile changed backward state");
+            if (soa) {
+                auto info = core.projectionInfos();
+                command.reset();
+                command.begin(
+                    vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+                for (auto descriptor : info)
+                    command.fillBuffer(descriptor.buffer, 0, descriptor.range, 0x3f123456u);
+                vk::MemoryBarrier fillVisible{vk::AccessFlagBits::eTransferWrite,
+                                              vk::AccessFlagBits::eShaderRead |
+                                                  vk::AccessFlagBits::eShaderWrite};
+                command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                        vk::PipelineStageFlagBits::eComputeShader, {}, fillVisible,
+                                        {}, {});
+                forward.setTrainingBuffers(b, command, push);
+                forward.prepareTileItems();
+                b.recordTileItemCountReadback(command);
+                submit();
+                require(b.requiredTileItemCount() == push.tileItemCount,
+                        "Repeated SoA overlap count changed");
+                command.reset();
+                command.begin(
+                    vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+                forward.setTrainingBuffers(b, command, push);
+                forward.renderPreparedTiles(push.tileItemCount);
+                submit();
+                constexpr std::array<uint32_t, 7> words{2, 1, 4, 3, 2, 1, 1};
+                for (uint32_t field = 0; field < 7; ++field) {
+                    const auto values = morton_checks::read<uint32_t>(transfer, info[field]);
+                    for (size_t i = size_t(count) * words[field]; i < values.size(); ++i)
+                        require(values[i] == 0x3f123456u,
+                                "SoA projection overwrote capacity tail canary");
+                }
+                auto repeatedIDs = morton_checks::read<uint32_t>(transfer, b.tileItemsInfo());
+                repeatedIDs.resize(push.tileItemCount);
+                morton_checks::exact(repeatedIDs, referenceIDs,
+                                     "Repeated SoA sort changed exact IDs");
+            }
+            if (TrainingVkSplatBackend::supportsLifecycle(physical) && count) {
+                std::vector<PixelGrad> pixels(33 * 31);
+                for (auto& v : pixels)
+                    v.color = {0.01f, -0.02f, 0.03f, 0};
+                morton_checks::upload(transfer, b.pixelGradsInfo(), pixels);
+                command.reset();
+                command.begin(
+                    vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+                command.fillBuffer(b.projectedGradsInfo().buffer, 0, VK_WHOLE_SIZE, 0);
+                vk::MemoryBarrier ready{vk::AccessFlagBits::eTransferWrite,
+                                        vk::AccessFlagBits::eShaderRead |
+                                            vk::AccessFlagBits::eShaderWrite};
+                command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                        vk::PipelineStageFlagBits::eComputeShader, {}, ready, {},
+                                        {});
+                core.recordPixel({b, command, push}, true);
+                submit();
+                auto gradient =
+                    morton_checks::read<ProjectedGaussianGrad>(transfer, b.projectedGradsInfo());
+                gradient.resize(count);
+                if (!soa)
+                    referenceGradients = gradient;
+                else
+                    for (uint32_t i = 0; i < count; ++i) {
+                        auto actual = std::bit_cast<std::array<float, 12>>(gradient[i]);
+                        auto expected = std::bit_cast<std::array<float, 12>>(referenceGradients[i]);
+                        for (uint32_t k = 0; k < 12; ++k)
+                            close(actual[k], expected[k], "SoA Tensor gradient differs");
+                    }
+            }
+        }
+        ++cases;
+    }
+    return cases;
+}
+
 inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                          uint32_t family) {
+                          uint32_t family, bool reuse = false, bool soa = false,
+                          bool onCheck = false) {
     GaussianTraining training;
     training.initialize(device, physical, queue, family, family);
     training.setVkSplatCompute(true);
+    training.setVkSplatOptimizations(reuse, soa);
+    training.setLossOnCheck(onCheck);
     training.setVkSplatLoss(true);
     training.setFasterSortEnabled(true);
     training.setMortonOrderingEnabled(true);
@@ -676,7 +885,7 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
     adc.maxGaussianCount = 128;
     adc.densifyGradThreshold = 0;
     training.setDensificationConfig(adc);
-    training.setValidationInterval(1);
+    training.setValidationInterval(onCheck ? 3u : 1u);
     uint32_t adoptions = 0, resets = 0;
     uint32_t previousCount = training.gaussianCount();
     bool grew = false;
@@ -718,6 +927,7 @@ inline uint32_t lifecycle(vk::Device device, vk::PhysicalDevice physical, vk::Qu
             "Native ADC/reset/Morton lifecycle coverage incomplete");
     require(training.inspectTrainingStateFinite().passed(),
             "Native final finite inspection failed");
+    require(training.lastLossStep() == 8, "Explicit finite inspection did not refresh scalar Loss");
     adc.densifyUntilIteration = 12;
     adc.densifyGradThreshold = 1e6f;
     adc.minOpacity = 0.9f;

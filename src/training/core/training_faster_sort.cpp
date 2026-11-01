@@ -17,14 +17,23 @@ uint64_t aligned(uint64_t bytes, uint64_t alignment) {
 }
 } // namespace
 TrainingFasterSort::TrainingFasterSort(vk::Device device, vk::PhysicalDevice physical,
-                                       vk::Queue queue, uint32_t family, bool native)
-    : native_(native), device_(device), physical_(physical), queue_(queue), family_(family) {
+                                       vk::Queue queue, uint32_t family, bool native, bool soa)
+    : native_(native), soa_(soa), device_(device), physical_(physical), queue_(queue),
+      family_(family) {
     const std::array<const char*, 4> names{
-        "train_full_sort_prepare_test", native ? "train_vksplat_emit" : "train_full_sort_emit_test",
+        soa ? "train_vksplat_sort_prepare_soa" : "train_full_sort_prepare_test",
+        soa ? "train_vksplat_emit_soa"
+            : (native ? "train_vksplat_emit" : "train_full_sort_emit_test"),
         "train_range_boundaries_sorted_keys_test", "train_forward_tile_sort"};
     std::array<std::vector<uint32_t>, 4> bindings{
         {{3, 32, 60, 61, 62, 63}, {3, 21, 24, 32, 62}, {5, 23}, {5}}};
-    if (native_) bindings[1].push_back(75u);
+    if (soa_) {
+        bindings[0][0] = 81;
+        bindings[1].erase(bindings[1].begin());
+        for (uint32_t b = 80; b <= 86; ++b)
+            bindings[1].push_back(b);
+    } else if (native_)
+        bindings[1].push_back(75u);
     std::vector<vk::DescriptorSetLayout> layouts;
     auto init = [&](ComputePipeline& pipeline, const std::string& name, const auto& bs,
                     uint32_t pushBytes) {
@@ -48,7 +57,7 @@ TrainingFasterSort::TrainingFasterSort(vk::Device device, vk::PhysicalDevice phy
     for (size_t bank = 0; bank < 2; ++bank)
         for (auto& p : prefixPipelines_)
             layouts.push_back(p.getDescriptorSetLayout());
-    const auto sets = descriptors_.create(device, native_ ? 41u : 40u, 0, layouts);
+    const auto sets = descriptors_.create(device, soa_ ? 46u : (native_ ? 41u : 40u), 0, layouts);
     std::copy_n(sets.begin(), 4, sets_.begin());
     for (size_t bank = 0; bank < 2; ++bank)
         for (size_t i = 0; i < 5; ++i)
@@ -112,7 +121,16 @@ void TrainingFasterSort::bindInputs(TrainingBuffers& buffers) {
           ranges_[1].getDescriptorInfo(), ids_.getDescriptorInfo()},
          {buffers.tileRangesInfo(), buffers.tileSortScratchInfo()},
          {buffers.tileRangesInfo()}}};
-    if (native_) {
+    if (soa_) {
+        bindings[0][0] = 81;
+        infos[0][0] = soaInfos_[1];
+        bindings[1].erase(bindings[1].begin());
+        infos[1].erase(infos[1].begin());
+        for (uint32_t i = 0; i < 7; ++i) {
+            bindings[1].push_back(80 + i);
+            infos[1].push_back(soaInfos_[i]);
+        }
+    } else if (native_) {
         bindings[1].push_back(75u);
         infos[1].push_back(nativeRectangles_);
     }

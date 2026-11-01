@@ -39,6 +39,19 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
             actions.methodVariantsChanged = true;
         ImGui::TextDisabled("Compute backend changes require Load Dataset.");
         ImGui::BeginDisabled(run.computeBackend != 1);
+        static constexpr const char* adcExecution[] = {"Reference", "Reuse (Experimental)"};
+        static constexpr const char* projectionStorage[] = {"Reference",
+                                                            "Official SoA (Experimental)"};
+        if (ImGui::Combo("VkSplat ADC Execution", &run.vkSplatAdcExecution, adcExecution, 2))
+            actions.methodVariantsChanged = true;
+        if (ImGui::Combo("VkSplat Projection Storage", &run.vkSplatProjectionStorage,
+                         projectionStorage, 2))
+            actions.methodVariantsChanged = true;
+        ImGui::TextDisabled("ADC/storage changes require Load Dataset.");
+        if (snapshot.trainingIteration && snapshot.vkSplatCompute)
+            ImGui::Text("Last ADC: %s; projection storage: %s",
+                        snapshot.vkSplatAdcReuse ? "Reuse" : "Reference",
+                        snapshot.vkSplatProjectionSoA ? "Official SoA" : "Reference");
         if (ImGui::Checkbox("VkSplat Subtile Culling", &run.vkSplatSubtile))
             actions.methodVariantsChanged = true;
         ImGui::EndDisabled();
@@ -64,14 +77,24 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         static constexpr const char* lossBackends[] = {"Existing", "VkSplat (Experimental)"};
         if (ImGui::Combo("Loss Backend", &run.lossBackend, lossBackends, 2))
             actions.methodVariantsChanged = true;
+        ImGui::BeginDisabled(run.lossBackend != 1);
+        static constexpr const char* lossReporting[] = {"Every Step", "On Check (Experimental)"};
+        if (ImGui::Combo("VkSplat Loss Reporting", &run.vkSplatLossReporting, lossReporting, 2))
+            actions.methodVariantsChanged = true;
+        ImGui::EndDisabled();
+        if (snapshot.validation.iteration)
+            ImGui::Text("Displayed Loss: step %u", snapshot.validation.iteration);
         if (snapshot.trainingIteration)
-            ImGui::Text("Last Loss: %s", snapshot.vkSplatLossActive ? "VkSplat" : "Existing");
+            ImGui::Text(
+                "Last Loss: %s; reporting: %s", snapshot.vkSplatLossActive ? "VkSplat" : "Existing",
+                snapshot.vkSplatLossActive ? (snapshot.lossOnCheck ? "On Check" : "Every Step")
+                                           : "Existing");
         else
             ImGui::TextDisabled("Last Loss: not executed");
         if (run.lossBackend == 1) ImGui::BeginDisabled();
-        static constexpr const char* ssimModes[] = {
-            "2D (Baseline)", "Separable (Full, Experimental)",
-            "2D Loss + Separable Backward (Experimental)"};
+        static constexpr const char* ssimModes[] = {"2D (Baseline)",
+                                                    "Separable (Full, Experimental)",
+                                                    "2D Loss + Separable Backward (Experimental)"};
         if (ImGui::Combo("SSIM Mode", &run.ssimMode, ssimModes, IM_ARRAYSIZE(ssimModes))) {
             actions.ssimModeChanged = true;
         }
@@ -191,10 +214,14 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
                 std::clamp(run.adaptiveTileSplitThreshold, 1u, 1000000u);
             if (run.pixelTo2DGSMode == static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor)) {
                 static constexpr const char* batches[] = {"8", "16", "32"};
-                int batchChoice = run.adaptiveTensorChildBatch == 32u ? 2 :
-                                  run.adaptiveTensorChildBatch == 16u ? 1 : 0;
-                if (ImGui::Combo("Adaptive Tensor Child Batch", &batchChoice, batches, IM_ARRAYSIZE(batches))) {
-                    run.adaptiveTensorChildBatch = batchChoice == 2 ? 32u : batchChoice == 1 ? 16u : 8u;
+                int batchChoice = run.adaptiveTensorChildBatch == 32u   ? 2
+                                  : run.adaptiveTensorChildBatch == 16u ? 1
+                                                                        : 0;
+                if (ImGui::Combo("Adaptive Tensor Child Batch", &batchChoice, batches,
+                                 IM_ARRAYSIZE(batches))) {
+                    run.adaptiveTensorChildBatch = batchChoice == 2   ? 32u
+                                                   : batchChoice == 1 ? 16u
+                                                                      : 8u;
                     actions.adaptiveTensorBatchChanged = true;
                 }
             }
@@ -213,7 +240,7 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
         if (run.pixelTo2DGSMode == static_cast<int>(TrainingPixelTo2DGSMode::VkSplatTensor) &&
             run.tileMode == static_cast<int>(TrainingTileMode::Fixed16)) {
             if (ImGui::Checkbox("Tensor Subgroup Reduction (Experimental)",
-                                 &run.tensorSubgroupReduction)) {
+                                &run.tensorSubgroupReduction)) {
                 actions.tensorReductionChanged = true;
             }
             if (run.tensorSubgroupReduction) {
@@ -226,21 +253,25 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
                 }
                 if (run.tensorGlobalPixelGrad &&
                     ImGui::Checkbox("Tensor RGB Latency Hiding (Experimental)",
-                                     &run.tensorRgbLatencyHiding)) {
+                                    &run.tensorRgbLatencyHiding)) {
                     actions.tensorRgbScheduleChanged = true;
                 }
             }
             if (snapshot.rendererInitialized && run.tensorSubgroupReduction &&
                 !snapshot.tensorSubgroupReductionSupported) {
-                ImGui::TextDisabled("Requires native subgroup32 with compute shuffle; using Shared.");
+                ImGui::TextDisabled(
+                    "Requires native subgroup32 with compute shuffle; using Shared.");
             }
         } else if (run.tensorSubgroupReduction) {
-            ImGui::TextDisabled("Tensor subgroup reduction only applies to Fixed16 + VkSplat Tensor.");
+            ImGui::TextDisabled(
+                "Tensor subgroup reduction only applies to Fixed16 + VkSplat Tensor.");
         }
         if (ImGui::Checkbox("Tensor EarlyCull (Training, Experimental)", &run.tensorEarlyCull))
             actions.tensorEarlyCullChanged = true;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Normal/Pure training only. Requires Fixed16 / Workgroup Shared / Tensor Subgroup + Global / RGB Baseline. Benchmark buttons select their own path.");
+            ImGui::SetTooltip(
+                "Normal/Pure training only. Requires Fixed16 / Workgroup Shared / Tensor Subgroup "
+                "+ Global / RGB Baseline. Benchmark buttons select their own path.");
         ImGui::TextWrapped("Training EarlyCull selection: %s",
                            trainingPixelCullStatusName(snapshot.tensorEarlyCullStatus));
         ImGui::Text("EarlyCull run steps: %llu active, %llu fallback / %llu completed",
@@ -256,7 +287,8 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
                             snapshot.tensorGlobalPixelGradActive ? "Global" : "Shared");
                 if (snapshot.tensorGlobalPixelGradActive) {
                     ImGui::Text("Active Tensor RGB Schedule: %s",
-                                snapshot.tensorRgbLatencyHidingActive ? "Latency Hiding" : "Baseline");
+                                snapshot.tensorRgbLatencyHidingActive ? "Latency Hiding"
+                                                                      : "Baseline");
                 }
             }
             if (snapshot.tileMode == TrainingTileMode::AdaptiveSpatial) {
@@ -281,6 +313,18 @@ TrainingSettingsPanelActions TrainingSettingsPanel::drawTrainingAndDensification
             ImGui::TextDisabled(
                 "Only elapsed time refreshes; the final PLY is exported automatically.");
         }
+        static constexpr const char* numericChecks[] = {"Periodic",
+                                                        "First 5 + Final (Experimental)"};
+        if (ImGui::Combo("Training Numeric Checks", &run.trainingNumericChecks, numericChecks, 2))
+            actions.methodVariantsChanged = true;
+        ImGui::TextDisabled("Numerical checks are independent of Vulkan validation layers. Fixed "
+                            "Benchmark checks its final step.");
+        if (run.trainingNumericChecks == 1)
+            ImGui::TextWrapped("Intermediate non-finite detection may be delayed. Smoke tests "
+                               "retain periodic checks.");
+        if (snapshot.trainingIteration)
+            ImGui::Text("Applied numeric check policy: %s",
+                        snapshot.numericChecksFirstLast ? "First 5 + Final" : "Periodic");
         if (ImGui::InputScalar("Validation Interval", ImGuiDataType_U32,
                                &schedule.validationInterval)) {
             actions.validationIntervalChanged = true;

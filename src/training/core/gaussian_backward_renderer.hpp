@@ -26,11 +26,21 @@ public:
     void setVkSplatLoss(bool enabled) {
         lossPass_.setVkSplat(enabled);
     }
+    void setVkSplatLossOnCheck(bool enabled) {
+        lossPass_.setVkSplatOnCheck(enabled);
+    }
+    void recordExplicitLoss(const BackwardPassContext& context) {
+        lossPass_.recordLoss(context);
+    }
     bool vkSplatLossActive() const {
         return lossPass_.vkSplatActive();
     }
-    void setSsimMode(TrainingSsimMode mode) { lossPass_.setSsimMode(mode); }
-    [[nodiscard]] TrainingSsimMode activeSsimMode() const { return lossPass_.activeSsimMode(); }
+    void setSsimMode(TrainingSsimMode mode) {
+        lossPass_.setSsimMode(mode);
+    }
+    [[nodiscard]] TrainingSsimMode activeSsimMode() const {
+        return lossPass_.activeSsimMode();
+    }
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode) {
         pixelDispatcher_.setRequestedMode(mode);
     }
@@ -83,15 +93,22 @@ public:
         vkSplat_ = backend;
     }
     void backward() override;
-    void prepareCheckpointDiagnostics(TrainingBuffers& buffers, uint32_t itemCount, bool warp = false) {
+    void prepareCheckpointDiagnostics(TrainingBuffers& buffers, uint32_t itemCount,
+                                      bool warp = false) {
         pixelDispatcher_.prepareCheckpointDiagnostics(buffers, itemCount, warp);
     }
     void recordCheckpointDiagnostics(bool resetRun) {
         pixelDispatcher_.recordCheckpointDiagnostics(context(), resetRun);
     }
-    void setCheckpointWarp(bool enabled) { checkpointWarp_ = enabled; }
-    void setTensorEarlyCull(bool enabled) { tensorEarlyCull_ = enabled; }
-    void setOptimizerCapture(TrainingOptimizerCaptureSession* capture) { optimizerCapture_ = capture; }
+    void setCheckpointWarp(bool enabled) {
+        checkpointWarp_ = enabled;
+    }
+    void setTensorEarlyCull(bool enabled) {
+        tensorEarlyCull_ = enabled;
+    }
+    void setOptimizerCapture(TrainingOptimizerCaptureSession* capture) {
+        optimizerCapture_ = capture;
+    }
     void setDirectIntrinsics(bool enabled) {
         directIntrinsics_ = enabled;
         if (!enabled) projectionOptimizer_.releaseDirectResources();
@@ -99,7 +116,9 @@ public:
     bool hasDirectResources() const {
         return projectionOptimizer_.hasDirectResources();
     }
-    bool fusedOptimizerEnabled() const { return projectionOptimizer_.fusedEnabled(); }
+    bool fusedOptimizerEnabled() const {
+        return projectionOptimizer_.fusedEnabled();
+    }
     [[nodiscard]] bool tensorEarlyCullSupported() const {
         return pixelDispatcher_.tensorEarlyCullSupported();
     }

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <optional>
-#include <filesystem>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -38,16 +38,17 @@ public:
                     bool storage16Enabled = false);
     void cleanup();
     void resize(uint32_t gaussianCount, TrainingExtent extent);
-    void initializeTrainingRenderers(vk::Device device,
-                                     vk::PhysicalDevice physicalDevice,
-                                     vk::Queue computeQueue,
-                                     uint32_t computeQueueFamilyIndex,
-                                     uint32_t gaussianCount,
-                                     TrainingExtent extent);
+    void initializeTrainingRenderers(vk::Device device, vk::PhysicalDevice physicalDevice,
+                                     vk::Queue computeQueue, uint32_t computeQueueFamilyIndex,
+                                     uint32_t gaussianCount, TrainingExtent extent);
 
     void trainStep();
-    const TrainingStepObservation& lastStepObservation() const { return lastStepObservation_; }
-    void setStepObservationEnabled(bool enabled) { stepObservationEnabled_ = enabled; }
+    const TrainingStepObservation& lastStepObservation() const {
+        return lastStepObservation_;
+    }
+    void setStepObservationEnabled(bool enabled) {
+        stepObservationEnabled_ = enabled;
+    }
     // Worker/stopped-owner only, after a completed step; inspection does not advance training.
     TrainingStateFiniteCheck inspectTrainingStateFinite();
     bool inspectNativeOpacityReset();
@@ -71,8 +72,12 @@ public:
     void setTrainingFrameIndex(size_t frameIndex);
     void startFixedWorkloadBenchmark(const TrainingFixedBenchmarkConfig& config);
     void stopFixedWorkloadBenchmark();
-    void setDensificationConfig(const TrainingDensificationConfig& config) { densificationConfig_ = config; }
-    void setOptimizerConfig(const TrainingOptimizerConfig& config) { optimizerConfig_ = config; }
+    void setDensificationConfig(const TrainingDensificationConfig& config) {
+        densificationConfig_ = config;
+    }
+    void setOptimizerConfig(const TrainingOptimizerConfig& config) {
+        optimizerConfig_ = config;
+    }
     void setScheduleConfig(const TrainingScheduleConfig& config);
     void setPixelTo2DGSMode(TrainingPixelTo2DGSMode mode);
     void setAdaptiveTensorChildBatch(uint32_t batch);
@@ -115,12 +120,36 @@ public:
     const TrainingSortState& lastSortState() const {
         return lastSortState_;
     }
-    void setTensorEarlyCull(bool enabled) { tensorEarlyCull_ = enabled; }
+    void setTensorEarlyCull(bool enabled) {
+        tensorEarlyCull_ = enabled;
+    }
     TrainingPixelCullStatus tensorEarlyCullStatus() const;
     void resetTensorEarlyCullRunStats();
-    const TrainingPixelCullRunStats& tensorEarlyCullRunStats() const { return pixelCullRunStats_; }
+    const TrainingPixelCullRunStats& tensorEarlyCullRunStats() const {
+        return pixelCullRunStats_;
+    }
     void setSsimMode(TrainingSsimMode mode);
     void setVkSplatLoss(bool enabled);
+    void setVkSplatOptimizations(bool adcReuse, bool projectionSoA);
+    bool vkSplatAdcReuse() const {
+        return vkSplatAdcReuse_;
+    }
+    bool vkSplatProjectionSoA() const {
+        return vkSplatProjectionSoA_;
+    }
+    void setLossOnCheck(bool enabled);
+    bool lossOnCheck() const {
+        return lossOnCheck_;
+    }
+    void setNumericChecksFirstLast(bool enabled) {
+        numericChecksFirstLast_ = enabled;
+    }
+    bool numericChecksFirstLast() const {
+        return numericChecksFirstLast_;
+    }
+    uint32_t lastLossStep() const {
+        return lastLossStep_;
+    }
     void setVkSplatCompute(bool enabled);
     bool vkSplatCompute() const {
         return vkSplatComputeRequested_;
@@ -143,7 +172,9 @@ public:
     bool tensorGlobalPixelGradActive() const;
     bool tensorSubgroupReductionSupported() const;
     bool tensorSubgroupReductionActive() const;
-    uint32_t adaptiveTensorChildBatch() const { return adaptiveTensorChildBatch_; }
+    uint32_t adaptiveTensorChildBatch() const {
+        return adaptiveTensorChildBatch_;
+    }
     void setPixelTo2DGSMinSubgroupUtilization(float utilization) {
         pixelTo2DGSMinSubgroupUtilization_ = std::clamp(utilization, 0.0f, 1.0f);
     }
@@ -155,35 +186,65 @@ public:
     bool vkSplatTensorSupported() const;
     bool adaptiveSpatialBackwardSupported() const;
     TrainingPixelTo2DGSMode activePixelTo2DGSMode() const;
-    TrainingTileMode tileMode() const { return tileMode_; }
+    TrainingTileMode tileMode() const {
+        return tileMode_;
+    }
     uint32_t activeTileSize() const {
         return tileMode_ == TrainingTileMode::AdaptiveSpatial ? 0u : trainingTileSize(tileMode_);
     }
-    uint32_t adaptiveTileSplitThreshold() const { return adaptiveTileSplitThreshold_; }
-    void setValidationInterval(uint32_t interval) { validationInterval_ = interval; }
-    uint32_t validationInterval() const { return validationInterval_; }
+    uint32_t adaptiveTileSplitThreshold() const {
+        return adaptiveTileSplitThreshold_;
+    }
+    void setValidationInterval(uint32_t interval) {
+        validationInterval_ = interval;
+    }
+    uint32_t validationInterval() const {
+        return validationInterval_;
+    }
 
-    bool isInitialized() const { return initialized_; }
-    bool isRendererInitialized() const { return rendererInitialized_; }
-    bool hasDataset() const { return !dataset_.empty(); }
-    bool hasTrainableModel() const { return trainableGaussianCount_ > 0; }
+    bool isInitialized() const {
+        return initialized_;
+    }
+    bool isRendererInitialized() const {
+        return rendererInitialized_;
+    }
+    bool hasDataset() const {
+        return !dataset_.empty();
+    }
+    bool hasTrainableModel() const {
+        return trainableGaussianCount_ > 0;
+    }
     bool isTrainingComplete() const;
-    bool isFixedWorkloadBenchmarkActive() const { return fixedBenchmarkStats_.active; }
+    bool isFixedWorkloadBenchmarkActive() const {
+        return fixedBenchmarkStats_.active;
+    }
     const TrainingFixedBenchmarkStats& fixedWorkloadBenchmarkStats() const {
         return fixedBenchmarkStats_;
     }
-    bool usedRandomInitialization() const { return usedRandomInitialization_; }
-    uint32_t gaussianCount() const { return trainableGaussianCount_; }
-    uint32_t trainingIteration() const { return trainingIteration_; }
-    uint32_t totalIterations() const { return frameScheduler_.totalIterations(); }
+    bool usedRandomInitialization() const {
+        return usedRandomInitialization_;
+    }
+    uint32_t gaussianCount() const {
+        return trainableGaussianCount_;
+    }
+    uint32_t trainingIteration() const {
+        return trainingIteration_;
+    }
+    uint32_t totalIterations() const {
+        return frameScheduler_.totalIterations();
+    }
     const TrainingValidationStats& validationStats() const {
         return validationService_.stats();
     }
     const TrainingCandidateProfileStats& candidateProfileStats() const {
         return validationService_.candidateProfileStats();
     }
-    const TrainingDensificationStats& densificationStats() const { return lastDensificationStats_; }
-    uint32_t densificationStatsIteration() const { return lastDensificationStatsIteration_; }
+    const TrainingDensificationStats& densificationStats() const {
+        return lastDensificationStats_;
+    }
+    uint32_t densificationStatsIteration() const {
+        return lastDensificationStatsIteration_;
+    }
     const TrainingProfilingStats& profilingStats() const {
         return profilingService_.stats();
     }
@@ -193,20 +254,34 @@ public:
     DeviceImageCacheStats deviceImageCacheStats() const {
         return residentImages_ ? residentImages_->stats() : imageRuntime_.deviceImageCacheStats();
     }
-    size_t datasetFrameCount() const { return dataset_.size(); }
-    size_t currentFrameIndex() const { return frameScheduler_.currentFrame(); }
-    TrainingBuffers& buffers() { return buffers_; }
-    ForwardTrainingRenderer& forward() { return *forward_; }
-    BackwardRenderer& backward() { return *backward_; }
-    const ForwardTrainingRenderer& forward() const { return *forward_; }
-    const BackwardRenderer& backward() const { return *backward_; }
+    size_t datasetFrameCount() const {
+        return dataset_.size();
+    }
+    size_t currentFrameIndex() const {
+        return frameScheduler_.currentFrame();
+    }
+    TrainingBuffers& buffers() {
+        return buffers_;
+    }
+    ForwardTrainingRenderer& forward() {
+        return *forward_;
+    }
+    BackwardRenderer& backward() {
+        return *backward_;
+    }
+    const ForwardTrainingRenderer& forward() const {
+        return *forward_;
+    }
+    const BackwardRenderer& backward() const {
+        return *backward_;
+    }
 
 private:
     TrainingPushConstants createPushConstants() const;
-    TrainingDensificationPushConstants createDensificationPushConstants(bool pruneByScreenSize) const;
+    TrainingDensificationPushConstants
+    createDensificationPushConstants(bool pruneByScreenSize) const;
     bool shouldRunDensification() const;
-    void createTrainingProfilingResources(vk::Device device,
-                                          vk::PhysicalDevice physicalDevice,
+    void createTrainingProfilingResources(vk::Device device, vk::PhysicalDevice physicalDevice,
                                           uint32_t computeQueueFamilyIndex);
     void destroyTrainingProfilingResources();
     void detachProfilingQueryPool();
@@ -230,6 +305,9 @@ private:
     TrainingValidationService validationService_;
     TrainingProfilingService profilingService_;
     TrainingFrameScheduler frameScheduler_;
+    bool vkSplatAdcReuse_ = false, vkSplatProjectionSoA_ = false;
+    bool lossOnCheck_ = false, numericChecksFirstLast_ = false;
+    uint32_t lastLossStep_ = 0;
     bool vkSplatComputeRequested_ = false;
     bool vkSplatSubtile_ = false;
     bool lastVkSplatSubtile_ = false;
@@ -264,7 +342,8 @@ private:
     uint32_t lastDensificationStatsIteration_ = 0;
     TrainingPixelTo2DGSMode pixelTo2DGSMode_ = TrainingPixelTo2DGSMode::Auto;
     float pixelTo2DGSMinSubgroupUtilization_ = 0.5f;
-    TrainingForwardCompositeMode forwardCompositeMode_ = TrainingForwardCompositeMode::WorkgroupShared;
+    TrainingForwardCompositeMode forwardCompositeMode_ =
+        TrainingForwardCompositeMode::WorkgroupShared;
     TrainingTileMode tileMode_ = TrainingTileMode::Fixed16;
     uint32_t adaptiveTileSplitThreshold_ = 256u;
     uint32_t adaptiveTensorChildBatch_ = 8u;
@@ -284,7 +363,6 @@ private:
     float sceneExtent_ = 1.0f;
     TrainingOptimizerCaptureSession* optimizerCapture_ = nullptr;
     bool optimizerCaptureStateUncertain_ = false;
-
 };
 
 } // namespace vulkan3DGS

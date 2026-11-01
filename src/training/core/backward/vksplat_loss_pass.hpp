@@ -11,7 +11,7 @@ namespace vulkan3DGS {
 class VkSplatLossPass {
 public:
     VkSplatLossPass(vk::Device device, vk::PhysicalDevice physical, vk::Queue queue,
-                    uint32_t family);
+                    uint32_t family, bool onCheck = false);
     void recordForward(const BackwardPassContext& context);
     void recordBackward(const BackwardPassContext& context);
     vk::DescriptorBufferInfo stateInfo() const {
@@ -25,7 +25,9 @@ private:
     vk::Queue queue_;
     uint32_t family_;
     Buffer state_;
-    std::array<ComputePipeline, 3> pipelines_;
+    bool onCheck_ = false;
+    std::array<ComputePipeline, 4> pipelines_;
+    std::array<std::array<vk::DescriptorBufferInfo, 4>, 4> lastInfos_{};
     BackwardDescriptorPool descriptors_;
     std::vector<vk::DescriptorSet> sets_;
 };

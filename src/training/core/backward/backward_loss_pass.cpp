@@ -129,7 +129,8 @@ void BackwardLossPass::recordLoss(const BackwardPassContext& context) {
                      context.pushConstants.height > 10u;
     if (vkSplatActive_) {
         if (!vkSplat_)
-            vkSplat_ = std::make_unique<VkSplatLossPass>(device_, physical_, queue_, family_);
+            vkSplat_ = std::make_unique<VkSplatLossPass>(device_, physical_, queue_, family_,
+                                                         vkSplatOnCheck_);
         vkSplat_->recordForward(context);
         return;
     }
@@ -295,8 +296,7 @@ void BackwardLossPass::recordLossToPixel(const BackwardPassContext& context) {
     const auto ssimBackwardStatesInfo = context.buffers.ssimBackwardStatesInfo();
     if (separable) recordSsimHorizontal(context, true);
     const auto& pipeline = separable ? separableLossToPixelPipeline_ : lossToPixelPipeline_;
-    const auto descriptorSet =
-        separable ? separableLossToPixelSet_ : lossToPixelDescriptorSet_;
+    const auto descriptorSet = separable ? separableLossToPixelSet_ : lossToPixelDescriptorSet_;
     std::array<vk::DescriptorBufferInfo, 5> infos = {renderedColorInfo, targetColorInfo,
                                                      pixelGradsInfo, ssimBackwardStatesInfo,
                                                      context.buffers.ssimScratchInfo()};

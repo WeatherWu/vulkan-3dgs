@@ -22,6 +22,9 @@ namespace vulkan3DGS {
 class Device;
 
 struct TrainingUiSnapshot {
+    bool vkSplatAdcReuse = false, vkSplatProjectionSoA = false;
+    bool lossOnCheck = false, numericChecksFirstLast = false;
+    uint32_t lastLossStep = 0;
     bool vkSplatCompute = false;
     bool vkSplatSubtile = false;
     uint64_t vkSplatAllocatedBytes = 0;
@@ -175,6 +178,7 @@ public:
     void saveSettings();
 
 private:
+    std::vector<std::array<uint32_t, 7>> scaleTrajectory_;
     DeviceFactory deviceFactory_;
     std::unique_ptr<Device> makeTrainingDevice(std::optional<std::string> selector);
     std::optional<bool> vulkanValidationLayersEnabled_;
